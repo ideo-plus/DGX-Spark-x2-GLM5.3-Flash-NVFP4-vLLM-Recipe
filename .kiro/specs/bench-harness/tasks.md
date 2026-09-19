@@ -98,7 +98,7 @@
   - _Requirements: 1.3, 1.4, 3.6, 6.9_
 
 - [ ] 3. 速さの計測と、計測ランの進行
-- [ ] 3.1 測る項目のまとまりに共通の約束事を作る
+- [x] 3.1 測る項目のまとまりに共通の約束事を作る
   - 条件の鍵、主な結果と参考の区別、試行の回数と慣らしの回数、サンプリングの設定、出力の上限、同時の本数を持つ、条件の計画の形を決める
   - 上限より長い条件を、送る前に飛ばす。上限が不明で、対象サーバーが上限の超過を返したときは、その条件を飛ばして理由を残す
   - すべての試行に共通の印 (狙った長さからの外れ、出力のトークンが少なすぎる、出力が壊れている疑い) を付ける
@@ -334,3 +334,8 @@
 - 2.7: 上限の判断は、純粋な関数 `fits_context(limit, input_tokens, max_tokens)` (入力 + 出力の上限が、上限とちょうど等しいなら収まる。上限が不明なら `None` を返すので、送ってみて 400 を見る) と `is_context_limit_error(result)` (種類が `http` で状態が 400 のときだけ真)。3.1 と 7.2 は、この 2 つを使う。エラー文は解析せず、理由としてそのまま残す
 - 2.7: トークン数の計数は `count_input_tokens(client, target, request, …) -> TokenCount` (`tokens` と、どちらの方法で数えたかの `method`)。数える口に送る本文は、公式の項目 (`model`、`messages`、`system`、`tools` など) と、トークン数に効きうる `extra` だけ。口が「ない」と見なすのは 404 / 405 / 501 だけで、それ以外の失敗は `ProbeError`。比の測定のコマンド (5.1) は、これを呼んで表示するだけ
 - 2.7: 繰り返し出た型の問題。外から来た値 (サーバーの応答、`/metrics`、設定ファイル、外部のコマンドの結果) を、共有の型に渡す前に、型だけでなく範囲 (0 以上、1 以上、有限) も確かめる。確かめずに渡すと、pydantic の検証エラーが、決まりのエラー (`ConfigError`、`StoreError`、`ProbeError`、失敗の値) に包まれずに外へ出る。1.3、2.3、2.7 で、どれもレビューが見つけた。実装の前に、外から来る値の一覧と、それぞれの範囲の外の値のときの振る舞いを決めて、試験にすること
+- 3.1: まとまりの共通の部品は `bench_harness.suites.base`。まとまりは薄く書く: `plan(ctx)` では `plan_condition(...)` (上限に収まらなければ `SkippedCondition` が返る) だけで計画を作り、`run_condition(ctx, cond)` では `iter_trials(cond)` で `(試行の番号, 慣らしか)` を回し、入力を作って `run_trial(ctx, cond, trial_index=…, warmup=…, system=…, messages=…, …)` を呼び、返ったレコードを `yield` し、その直後に `abort_if_context_limit(cond, record)` を呼ぶ (上限の超過なら `ConditionAborted` が飛ぶ)。要求の組み立て、本文の保存、共通の印、判定の付加 (`verdict=`) は、`run_trial` が受け持つ。まとまりは `suites/base.py` を変更しない
+- 3.1: `run_trial` の引数。生成速度を測る試行は `measures_decode_speed=True` (出力が 16 トークン未満なら印)、出力の上限まで書かせる試行は `expect_full_output=True` (上限に届かずに終われば印)。同時処理は `round_id`、`stream_index`、`start_gate` (本文を保存したあと、送る直前に待つ合図。送信の時刻は、合図のあとに打たれる)。サーバーごとの追加の項目は `extra=` (型のある項目と重なると `ValueError`)。同じ条件の試行が同じ設定になるのは、計画を `plan_condition` で 1 つだけ作って使う限りで保証される
+- 3.1: 番号と種。慣らしと本番は、それぞれ 0 から番号を振る (`(条件, warmup, 番号)` で一意)。試行ごとの種は `trial_seed(profile.seed, cond.key, trial_index, warmup=…, stream_index=…)` (`run_id` を含まないので、本番の i 番目は、計測ランをまたいで同じ入力になる)。先頭の識別子は `cold_prefix_nonce(...)` (`run_id` を含む) と `warm_prefix_nonce(...)`、先頭の行つきのシステムプロンプトは `system_with_prefix(...)`。接続を温める慣らしの既定の回数は `DEFAULT_CONNECTION_WARMUP_TRIALS`
+- 3.1: 計測ランの進行 (3.5) への申し送り。`make_suite_context(...)` は、設定の thinking が `server_default` でないと `ValueError` を投げる (渡し方は 8.4 で決まる)。計測ランのディレクトリを作る前に文脈を組み立て、投げられたら前提の不足として終了の値 1 にする。`ConditionAborted` は捕まえて、`skipped` を実行の条件に足し、連続の失敗には数えず、次の条件に進む。`put_body` が投げた例外 (保存の失敗) は、握りつぶさずに計測ランを止める
+- 3.1: 条件の鍵の長さの表記 `tokens_label(20000)` は `20k` (0 で埋めない)。長い会話の段階 (7.2) の鍵を設計どおり `agent/stage/020k` にするなら、7.2 の側で組み立てる
