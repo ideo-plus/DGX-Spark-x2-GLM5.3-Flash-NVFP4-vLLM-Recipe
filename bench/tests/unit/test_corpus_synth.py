@@ -328,7 +328,7 @@ _GOLDEN_TARGET: Final[int] = 300
 _GOLDEN_HASHES: Final[dict[str, str]] = {
     "prose_en": "4f4b152bc381f3d68d7288e0e4ed153d7ea291e566affd0eff19651c0fe5953e",
     "prose_ja": "dc0e5a1055e59b53cd01145d9e90a1ae57ccfb340d6f6ced460c7aa7025ae616",
-    "code": "2141e53a10d66c3e9911fd0386e98917448cba4d046b447a831f5bc481960fa8",
+    "code": "11c947dd37c46ee156085437a58d0ec11574c3985d93ecbd3bb0be53ac302852",
     "log": "03e49db8bf8d0c0e4648941c51437ca9b419372f0268ceece8484784c47579a3",
 }
 

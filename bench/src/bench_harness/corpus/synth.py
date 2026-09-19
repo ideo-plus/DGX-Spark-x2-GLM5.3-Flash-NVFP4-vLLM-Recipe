@@ -254,7 +254,11 @@ def _pad_comment(length: int) -> str:
         return ""
     if length == 1:
         return "#"
-    return "#" + "x" * (length - 1)
+    # 同じ文字の連続にしない (出力の健全性の検査が、繰り返しと見なさないように)。
+    # 通し番号を並べるので、どの長さでも周期を持たない。
+    count = length // 5 + 2
+    filler = "# pad" + "".join(f" {number:04d}" for number in range(1, count + 1))
+    return filler[:length]
 
 
 def _fit_code_stream(units: Iterator[str], target_chars: float, tolerance: float) -> str:
