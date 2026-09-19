@@ -949,6 +949,8 @@ class Summary(BaseModel):
 
 - 直列化は JSON (UTF-8)。時刻は ISO 8601 の UTC。経過の時間はナノ秒の整数
 - `schema_version` は 1 から始める。項目を足すだけの変更では上げない。意味を変える変更、または項目を消す変更で上げる
+- 共有の型は、すべて凍結 (frozen) で、知らない項目を拒否する。足した項目には必ず既定値を持たせ、新しい道具が古い生データを読めるようにする。古い道具で新しい生データを読むことは保証しない
+- 共有の型の実装で、設計のコードの例に足した項目: 採点の結果の型 2 つの判別子 `kind` (どちらも `correct` という値を持つので、JSON から読み戻すのに要る)。`TrialRecord.tier` と `TrialRecord.target_input_tokens` (分析は計測の側を読み込めないので、生データに持たせる)。`ConditionPlan.suite` と `SkippedCondition.suite`。`RunManifest.datasets` (5.5 の出どころの記録先)
 - 対象サーバーの定義の例:
 
 ```toml
