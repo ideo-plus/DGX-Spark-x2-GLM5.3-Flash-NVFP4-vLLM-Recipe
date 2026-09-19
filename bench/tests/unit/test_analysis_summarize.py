@@ -1103,8 +1103,14 @@ def test_missing_timings_and_usage_do_not_raise(tmp_path: Path) -> None:
     assert result.warnings, "値にできなかった試行が伝わっていない"
 
 
-def test_suites_summarized_later_emit_no_rows(tmp_path: Path) -> None:
-    """品質と長い会話のまとまりは、この版では何も出さない (4.2 が足す)。"""
+def test_proportion_suites_stay_out_of_the_continuous_rows(tmp_path: Path) -> None:
+    """品質と長い会話のまとまりは、速さの値を 1 つも出さない (4.2 で割合の行になった)。
+
+    task 4.2 の前は、この 2 つのまとまりから行が 1 つも出なかった。いまは条件
+    ごとに割合の行が 1 行だけ出る (中身は
+    `test_analysis_summarize_proportions.py` が確かめる)。ここで確かめるのは、
+    速さの値 (`decode_tps` など) にも `trial_values` にも混ざらないことである。
+    """
     store = _store(tmp_path, suites=[SuiteName.QUALITY, SuiteName.AGENT])
     _append(
         store,
@@ -1129,10 +1135,15 @@ def test_suites_summarized_later_emit_no_rows(tmp_path: Path) -> None:
             output_tokens=41,
         ),
     )
-    summary = _summary(_finish(store))
+    finished = _finish(store)
+    summary = _summary(finished)
 
-    assert summary.results == []
-    assert summary.agent is None
+    assert {(row.condition, row.metric) for row in summary.results} == {
+        ("quality/toolcall", "accuracy"),
+        ("agent/stage/020k", "agent_break_rate"),
+    }
+    assert all(row.continuous is None for row in summary.results)
+    assert trial_values(*_read_back(finished)) == {}
 
 
 # --- 2 つの要約 (8.2、8.3、8.6、4.4) ----------------------------------------
