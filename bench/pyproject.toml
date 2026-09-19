@@ -48,7 +48,11 @@ quote-style = "double"
 python_version = "3.12"
 strict = true
 files = ["src", "tests"]
+# tests/fake_server.py を `import fake_server` で解決する (pytest の pythonpath と揃える)
+mypy_path = "tests"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+# tests/ 直下の助け (fake_server.py) を、どの試験からも import できるようにする
+pythonpath = ["tests"]
