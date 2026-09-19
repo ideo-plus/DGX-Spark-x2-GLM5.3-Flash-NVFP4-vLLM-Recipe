@@ -142,7 +142,7 @@
   - _Requirements: 1.2, 1.3, 1.6, 1.7, 7.1, 10.3, 10.4_
 
 - [ ] 4. 要約、比較、公開
-- [ ] 4.1 (P) 生データから、速さの要約を作る
+- [x] 4.1 (P) 生データから、速さの要約を作る
   - 成功して、慣らしでない試行だけから、生成速度、最初のトークンまでの時間、入力の処理速度を、条件ごとに集計する。同時処理は、1 本あたりの速さ、1 回ぶんの速さの合計、1 本ごとの最初のトークンまでの時間を出す
   - 条件ごとに、失敗の件数と、印の件数 (早く終わった、長さが外れた、出力が壊れている疑い) を示す。成功した試行が最小の数に届かない条件と、一部が失敗した同時処理の条件に、印を付ける
   - 要約の先頭に実行の条件を置き、未完了の計測ランにはその旨を示す。内部の指標の導出値を、条件ごとに載せる
@@ -352,3 +352,9 @@
 - 4.4: 公開は `bench_harness.analysis.publish` の `publish_run(run_dir, docs_results_root=None) -> PublishedSummary` (行き先、2 つのファイルの場所、`incomplete`)。断るときは `PublishError` (何も作らない)。計測ランでない場所を渡すと `StoreError`、置き換えの失敗は `OSError` が、そのまま外に出る (コマンドの入口が終了の値 2 に直す)。既定の公開の場所は `<リポジトリ>/docs/results` で、git が使えなければ `PublishError` (作業ディレクトリには落ちない)。未完了の計測ランも公開できるので、入口は `incomplete` を見て警告を出す
 - 4.4: 守っていること: 写すのは許可の一覧の 2 つだけ、`summary.json` は型として正しく、計測ランの識別子が実行の条件と一致する、どちらもシンボリックリンクでもハードリンクでもない、行き先は公開の場所の内側。守っていないこと: `summary.md` を手で書き換えた中身の真正性と、確認と読み取りの間の差し替え。使い方の文書 (8.5) に、公開の前に `summary.md` を目で見ることを書く
 - 4.4 / 4.1: 設定の `quick` の `min_successes` を 5 にした (入力の処理が 5 回、同時処理が 5 回ぶんなので、10 だと常に「試行が足りない」の印が付いていた)。試行の回数を変えるときは、`min_successes` との関係を確かめること
+- 4.1: 要約は `bench_harness.analysis.summarize` の `summarize_run(run_dir) -> SummaryResult` (`summary` と、読み取りの警告の `warnings`) と `write_summary(run_dir) -> (summary.json, summary.md)`。入口 (5.1) は `warnings` を表示する。値の名前は `ttft_s`、`decode_tps`、`prefill_tps`、`round_total_tps` (同時処理の 1 回ぶんの合計。設計にはなかった名前)。`flag_counts` の鍵は `short_output`、`length_off_target`、`too_few_output_tokens`、`replacement_char`、`repetition_loop` (4.2 が `not_scored` を足す)
+- 4.1: 比較 (4.3) は、速さの式を書き写さず、公開の `trial_values(records, manifest) -> {(条件, 値の名前): [TrialValue(trial_index, stream_index, value)]}` を使う (慣らしと失敗は入らない。同時処理の 1 本ごとの値は `(round_id, stream_index)`、1 回ぶんの合計は `(round_id, None)`。別の計測ランのレコードを混ぜると `ValueError`)。要約の集計も、同じ道を通っている
+- 4.1: `INSUFFICIENT_TRIALS` は行ごと: その行の値の数 (`continuous.n`。なければ 0) が `min_successes` に届かなければ付く。`decode_tps` は、16 トークン未満を除いたあとの数。n の単位は行で違う (本、回)。4.2 の割合の行の決まりは、4.2 で決めて、「表の読み方」の節に書き足す
+- 4.1: 4.2 の継ぎ目。まとまりごとの値の名前は `_SUITE_METRICS`。割合の行は、`_summarize_condition` の中に分岐を足して、`MetricResult.proportion` を埋める。長い会話の段階の表は `Summary.agent`
+- 4.1: 失敗した試行でも、クライアントは、途中までの時刻とトークン数を返す (`message_delta` のあとに接続が切れると、失敗 + 最初と最後のトークンの時刻 + 16 以上の出力のトークン数)。集計の試験の失敗のレコードには、必ず、もっともらしい時刻とトークン数を持たせること (持たせないと、失敗を混ぜる壊れ方を検出できない)
+- 4.1: 守りを二重にしたり、判定の場所を移したりする修正のあとは、それまで壊れ方を検出していた試験が、効かなくなっていないかを確かめ直す (判定に頼っていた別の計算がなくなると、同じ試験が素通りする)。修正のあとに、壊れ方の確認を、もう一度やり直すこと
