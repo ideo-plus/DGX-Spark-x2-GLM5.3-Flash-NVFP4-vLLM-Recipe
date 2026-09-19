@@ -217,7 +217,7 @@
   - _Requirements: 5.3, 11.1, 11.4_
   - _Boundary: corpus/needle, scoring/needle_
 
-- [ ] 6.5 (P) 公開のコードの課題を、版を固定して取得する
+- [x] 6.5 (P) 公開のコードの課題を、版を固定して取得する
   - HumanEval+ を、決まった入手先と版から取得し、ハッシュを確かめて読む。リポジトリには同梱せず、管理の対象でない場所に置く。名前、版、入手先、ライセンス、採点の方法を返す (`LICENSES.md` への記入は 8.5)
   - 完了の状態: ハッシュが合わないファイルで失敗する。取得のあと、164 問が読める。返した出どころの情報に、名前、版、入手先、ライセンス、採点の方法が入っている
   - _Requirements: 5.5, 11.1_
@@ -380,3 +380,7 @@
 - 6.3: 設計の順序どおり、`stop_reason` が `max_tokens` の応答は、呼び出しが完結していて正しくても `EMPTY_OR_TRUNCATED` になる (崩れた割合を膨らませる側 = 厳しい側)。呼び出しのあとに本文を続けるモデルでは、`agent.max_tokens = 256` だとここに落ちやすい。6.7 と 7.2 は `max_tokens` を十分に大きく取り、8.3 の実機の確認で内訳を見ること
 - 6.3: 課題の側が壊れているとき (スキーマが不正、同じ名前のツール、正解のツールが目録にない、正解の引数がスキーマに合わない、解決できない `$ref`) は `ToolTaskError` で止まる。6.7 と 7.2 は、これをモデルの誤りとして握りつぶさないこと。利用側は `from bench_harness.scoring.toolcall import classify_tool_call` と書く
 - 壊し方の確認 (ミューテーション) の落とし穴: 大きさの変わらない書き換えを同じ秒のうちに行うと、`__pycache__` の古いバイトコードが使われて、結果が嘘になる。`PYTHONDONTWRITEBYTECODE=1` を付け、変異のたびに `__pycache__` を消し、変異なしで通ることを毎回確かめ直すこと
+- 6.5: HumanEval+ は `https://github.com/evalplus/humanevalplus_release/releases/download/v0.1.10/HumanEvalPlus-OriginFmt.jsonl.gz` (1,350,689 バイト、SHA-256 `daa7661c8189924068069b0872a440b491edb60f8bdf431d5957adc88d18bae5`、164 問) に固定した。ライセンスは上流の LICENSE で確かめた: EvalPlus と `humanevalplus_release` は Apache-2.0、OpenAI HumanEval (`https://github.com/openai/human-eval`) は MIT。8.5 は `LICENSES.md` に 2 行に分けて書く (OpenAI の側の URL は module から取れないので、ここから写す)。`-OriginFmt` を選んだのは、`test` がそれだけで完結した `check(candidate)` で、正解の解を動かして期待値を作る必要がないため。`evalplus` のコードは写しておらず、依存にも足していない
+- 6.5 → 6.1 / 6.6: 164 問のうち 163 問の `test` が `import numpy` をする (`np.allclose` など。使わないのは `HumanEval/32` だけ。ほかは `typing` と `math`)。設定のイメージ `python:3.13-slim` には numpy がないので、6.1 は numpy (BSD-3-Clause) を入れたイメージを自分で作って、ダイジェストで固定すること。いちばん長い `test` は約 502 KB (`HumanEval/113`)、展開後の合計は約 11.3 MB。6.6 が標準入力で渡す大きさの目安
+- 6.5 → 6.7: 利用側は `from bench_harness.corpus import humaneval`。飛ばす理由にしてよいのは `DatasetUnavailable` (`.reason`) だけ。`DatasetVerificationError`、`DatasetFormatError`、`DatasetCacheError` は飛ばさずに、そのまま外に出す (壊れと取り違えを黙って見逃さない)。`RunManifest.datasets` を埋める製品のコードはまだない。6.7 が `RunStore.update_manifest(datasets=…)` で `dataset_ref()` を入れること (入れれば、要約の「公開の課題」の節にそのまま出る)。`select_problems(problems, limit)` は、番号の順の先頭 N 問
+- 6.5: 確かめてから解釈するファイルは、1 回だけ読んで、確かめたのと同じバイト列を解釈する (確かめたあとに経路から開き直すと、その間の入れ替わりに気付けない)。置き場所の判定に `config._ensure_not_tracked` (私的な名前) を使っている。git の判定を二重に書かないためで、公開の名前にするなら 8.x で
