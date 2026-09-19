@@ -14,7 +14,9 @@
 
 [profiles.quick]
 seed = 0
-min_successes = 10
+# quick は試行が少ない (入力の処理が 5 回、同時処理が 5 回ぶん) ので、5 にする。10 のままだと、
+# 1 件も失敗していなくても、常に「試行が足りない」の印が付く
+min_successes = 5
 max_consecutive_failures = 5
 length_tolerance = 0.05
 compare_tolerance = 0.02
