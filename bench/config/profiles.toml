@@ -46,9 +46,13 @@ repeat_min_chars = 12
 repeat_min_count = 8
 
 [profiles.quick.sandbox]
+# この Mac では Docker Desktop を使う (タスク 6.1 で確かめて決めた。"auto" は podman、docker の順に探す)
 runtime = "auto"
-image = "python:3.13-slim"
-# image_digest はタスク 6.1 でイメージのダイジェストに固定するまで未設定 (省略)
+# 公式の python:3.13-slim (ダイジェストで固定) に numpy だけを足した、自前のイメージ。
+# HumanEval+ の検査のプログラムが numpy を使うため。作り方は bench/sandbox/Dockerfile。
+# image_digest は `docker image inspect <image> --format '{{.Id}}'` の値。作り直したら、書き換える
+image = "bench-sandbox:py3.13-numpy2.5.3"
+image_digest = "sha256:f75a1d43009306248ecbe68c0cc992b700a472037ba6ea336e519404ec1d1de6"
 timeout_s = 20.0
 memory_mb = 512
 cpus = 1.0
@@ -118,7 +122,8 @@ repeat_min_count = 8
 
 [profiles.full.sandbox]
 runtime = "auto"
-image = "python:3.13-slim"
+image = "bench-sandbox:py3.13-numpy2.5.3"
+image_digest = "sha256:f75a1d43009306248ecbe68c0cc992b700a472037ba6ea336e519404ec1d1de6"
 timeout_s = 20.0
 memory_mb = 512
 cpus = 1.0

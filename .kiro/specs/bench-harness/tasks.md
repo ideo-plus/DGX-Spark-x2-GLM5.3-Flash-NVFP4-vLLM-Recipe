@@ -190,7 +190,7 @@
   - _Requirements: 1.8, 8.3, 8.7, 9.3, 9.4, 10.4, 10.5_
 
 - [ ] 6. 品質の検査
-- [ ] 6.1 コードの隔離に使う実行環境を確かめて決める
+- [x] 6.1 コードの隔離に使う実行環境を確かめて決める
   - この Mac で使えるコンテナの実行環境 (Podman、Docker) を確かめる。ネットワークなし、読み取り専用、マウントなしの起動が実際にできることを、手で 1 回流して確かめる
   - Docker Desktop は、会社の規模によっては有償契約が要る。Docker を使い続けるか、Podman を入れるかを、計測者に確認して決める。ソフトウェアの導入は、計測者の了承を得てから行う
   - 公式の Python のスリムなイメージを取得し、ダイジェストを設定に書く。イメージの名前、版、入手先、ライセンスを控える (`LICENSES.md` への記入は 8.5)
@@ -210,7 +210,7 @@
   - _Requirements: 5.1, 6.3_
   - _Boundary: scoring/toolcall_
 
-- [ ] 6.4 (P) 長い入力から情報を探す課題を作る
+- [x] 6.4 (P) 長い入力から情報を探す課題を作る
   - 合成の文章の干し草に、決まった位置 (0、25、50、75、100%) で情報を埋め、問いと正解を生成する。応答に正解が含まれるかを判定する
   - 完了の状態: 同じ種と引数で、同じ課題になる。埋めた情報が、狙った位置の ±5% にある。正解を含む応答と含まない応答が、正しく判定される
   - _Depends: 2.5_
@@ -384,3 +384,8 @@
 - 6.5 → 6.1 / 6.6: 164 問のうち 163 問の `test` が `import numpy` をする (`np.allclose` など。使わないのは `HumanEval/32` だけ。ほかは `typing` と `math`)。設定のイメージ `python:3.13-slim` には numpy がないので、6.1 は numpy (BSD-3-Clause) を入れたイメージを自分で作って、ダイジェストで固定すること。いちばん長い `test` は約 502 KB (`HumanEval/113`)、展開後の合計は約 11.3 MB。6.6 が標準入力で渡す大きさの目安
 - 6.5 → 6.7: 利用側は `from bench_harness.corpus import humaneval`。飛ばす理由にしてよいのは `DatasetUnavailable` (`.reason`) だけ。`DatasetVerificationError`、`DatasetFormatError`、`DatasetCacheError` は飛ばさずに、そのまま外に出す (壊れと取り違えを黙って見逃さない)。`RunManifest.datasets` を埋める製品のコードはまだない。6.7 が `RunStore.update_manifest(datasets=…)` で `dataset_ref()` を入れること (入れれば、要約の「公開の課題」の節にそのまま出る)。`select_problems(problems, limit)` は、番号の順の先頭 N 問
 - 6.5: 確かめてから解釈するファイルは、1 回だけ読んで、確かめたのと同じバイト列を解釈する (確かめたあとに経路から開き直すと、その間の入れ替わりに気付けない)。置き場所の判定に `config._ensure_not_tracked` (私的な名前) を使っている。git の判定を二重に書かないためで、公開の名前にするなら 8.x で
+- 6.1: 実行環境は Docker Desktop (サーバー 29.7.2、arm64) に決めた (計測者の判断、2026-09-20)。Podman は入れていない。`runtime = "auto"` は podman、docker の順に探すので、そのままで docker になる。手で確かめたこと: `--network none` で外への接続が `Network is unreachable`、`--read-only` で `/` への書き込みが `Read-only file system`、マウントなしで `/Users` が見えない、`--user 65534:65534` + `--cap-drop ALL` + `--security-opt no-new-privileges` + `--memory 512m --cpus 1 --pids-limit 64` + `--tmpfs /tmp:rw,size=64m` で Python が動く
+- 6.1: イメージは自前の `bench-sandbox:py3.13-numpy2.5.3` (`bench/sandbox/Dockerfile`)。土台は `python@sha256:8d9d0b8bcf6506481eae4907c18f5e3e7902e629f5f6d684f9e7c32e85e3ddf0` (python:3.13-slim、Python 3.13.15)、足したのは `numpy==2.5.3` だけ (ホイールのハッシュで固定。ライセンスは PyPI の申告で BSD-3-Clause AND 0BSD AND MIT AND Zlib AND CC0-1.0)。作ったイメージの識別子を `profiles.toml` の `sandbox.image_digest` に書いてある。作り直すと識別子が変わるので、書き換えること。8.5 は `LICENSES.md` に、Docker Desktop、公式の Python のイメージ、numpy を書く
+- 6.1 → 6.6: **時間切れで `docker run` のプロセスを殺しても、コンテナは動き続ける** (無限ループのコンテナが残ったのを確かめた)。6.6 は、コンテナに一意の名前 (`--name`) を付けて起動し、時間切れ・中断・例外のときに `docker kill <name>` すること。試験で、終わらないコードのあとにコンテナが 1 つも残っていないことを確かめること。起動の引数は `python -I -` で、コードは標準入力で渡す (イメージに ENTRYPOINT はない)。手元のイメージの識別子が `image_digest` と合わなければ、使えないものとして扱う
+- 6.1 → 6.6 / 6.7: 正解の解 + 検査のプログラム + `check(<entry_point>)` を、この隔離の中で 164 問すべて流した。163 問が合格 (中央値 0.30 秒、95% 点 0.38 秒、最長は `HumanEval/139` の 4.05 秒。`timeout_s = 20` で足りる)。`HumanEval/32` だけは、検査のプログラムの側の誤り (`_poly(*candidate(*inp), inp)` と、引数の順が逆) で、正解の解でも落ちる。`humaneval.UNSCORABLE_PROBLEMS` に理由つきで入れ、`select_problems` が外してから数える (`quick` の先頭 40 問に入っていた)。採点に回す問題は、必ず `select_problems` を通すこと。8.5 の文書にも、外した問題と理由を書く
+- 6.4: 採点の守りは、正直な正解を不正解にしないことを、実際にありそうな応答で確かめること (6.4 の 1 回目は、「正解と同じ長さの語が 2 つあれば不正解」という守りが、ふつうの 14 文字の英単語や、問いのコード名の引用で働いて、16〜27% の正解を不正解にした。`\w` は仮名と漢字も語の文字に含むので、日本語に隣接した正解も見つからなかった)。境界の文字の集まりは、ASCII を明示して書く。6.7 は `make_needle_case(..., chars_per_token=ctx.profile.chars_per_token…)` で較正した比を渡し、応答の `text` ブロックをつないで `score_needle` に渡す。採点は文字どおりの一致で、小文字、全角、Unicode のハイフンは不正解 (8.5 の文書に書く)。±5% の深さは、8k トークン以上の長さが前提

@@ -87,6 +87,7 @@ __all__ = [
     "DatasetPin",
     "HUMANEVAL_PLUS",
     "HumanEvalError",
+    "UNSCORABLE_PROBLEMS",
     "DatasetCacheError",
     "DatasetUnavailable",
     "DatasetVerificationError",
@@ -536,14 +537,31 @@ def load_humaneval_plus(
     return dataset_ref(pin), read_problems(path, pin=pin)
 
 
-def select_problems(problems: Sequence[CodeProblem], limit: int | None) -> list[CodeProblem]:
-    """`Profile.quality.code_problem_limit` のぶんだけ、先頭から取る。
+UNSCORABLE_PROBLEMS: Final[dict[str, str]] = {
+    "HumanEval/32": (
+        "v0.1.10 の -OriginFmt の検査のプログラムが `_poly(*candidate(*inp), inp)` と書かれて"
+        "いて (引数の順が逆)、データセット自身の正解の解でも `TypeError` で落ちる。"
+        "どんな応答も合格にならないので、採点の対象から外す"
+    ),
+}
+"""採点の対象にしない問題と、その理由。
 
+固定した版の 164 問に、正解の解 (`canonical_solution`) + 検査のプログラム +
+`check(<entry_point>)` を、隔離のイメージ (numpy 入り) の中で流して確かめた
+(タスク 6.1、2026-09-20)。163 問は合格し、ここに挙げた問題だけが落ちた。
+残しておくと、モデルの出来と関係なく、正解の割合の上限が下がる。固定した版を
+変えるときは、同じ確認をやり直して、この表を見直すこと。
+"""
+
+
+def select_problems(problems: Sequence[CodeProblem], limit: int | None) -> list[CodeProblem]:
+    """採点できる問題から、`Profile.quality.code_problem_limit` のぶんだけ、先頭から取る。
+
+    先に `UNSCORABLE_PROBLEMS` を外す (外してから数えるので、限りが 40 なら 40 問になる)。
     並びは番号の順に決まっているので、同じ限りなら、いつでも同じ部分集合になる
-    (11.4)。`None` は全部。
+    (11.4)。`None` は、採点できる問題の全部。
     """
-    if limit is None:
-        return list(problems)
-    if limit < 1:
+    if limit is not None and limit < 1:
         raise ValueError(f"code_problem_limit は 1 以上である必要がある (受け取った値: {limit})")
-    return list(problems[:limit])
+    scorable = [problem for problem in problems if problem.task_id not in UNSCORABLE_PROBLEMS]
+    return scorable if limit is None else scorable[:limit]

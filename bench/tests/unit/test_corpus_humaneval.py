@@ -561,6 +561,24 @@ def test_select_problems_takes_the_first_n_in_order(tmp_path: Path) -> None:
     assert h.select_problems(problems, 99) == problems
 
 
+def test_select_problems_leaves_out_the_problem_whose_own_test_is_broken(tmp_path: Path) -> None:
+    """`HumanEval/32` は、正解の解でも検査に通らない (6.1 で確かめた)。外してから数える。"""
+    records = [_record(31), _record(32), _record(33), _record(34)]
+    path, pin = _write(tmp_path, _gz(records), count=4)
+    problems = h.read_problems(path, pin=pin)
+    assert "HumanEval/32" in h.UNSCORABLE_PROBLEMS
+
+    assert [p.task_id for p in h.select_problems(problems, None)] == [
+        "HumanEval/31",
+        "HumanEval/33",
+        "HumanEval/34",
+    ]
+    # 限りは、外したあとの数で数える (32 のぶん、1 問少なくならない)
+    assert [p.task_id for p in h.select_problems(problems, 2)] == ["HumanEval/31", "HumanEval/33"]
+    # 読み取りの側は、164 問をそのまま返す (外すのは、採点に回すときだけ)
+    assert len(problems) == 4
+
+
 def test_select_problems_refuses_a_limit_below_one(tmp_path: Path) -> None:
     path, pin = _write(tmp_path, _SMALL_DATA, count=3)
     problems = h.read_problems(path, pin=pin)

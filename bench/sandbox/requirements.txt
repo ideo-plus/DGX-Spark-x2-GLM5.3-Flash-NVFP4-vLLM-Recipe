@@ -1,0 +1,6 @@
+# コードの隔離のイメージに入れる部品。版とハッシュを固定する (pip の --require-hashes で確かめる)。
+# numpy: HumanEval+ の検査のプログラム (164 問のうち 163 問) が `np.allclose` などを使う。
+# ライセンス: BSD-3-Clause AND 0BSD AND MIT AND Zlib AND CC0-1.0 (PyPI の申告。同梱の部品を含む)
+numpy==2.5.3 \
+    --hash=sha256:c76d5dde9f445058f83d0c02af00557a4db91de9a9a57c0df87d1535001d654b \
+    --hash=sha256:a5fa86b80fd24bcd1aff83ad23be44ea323de3f787be8f8b15d4a65621e25321
