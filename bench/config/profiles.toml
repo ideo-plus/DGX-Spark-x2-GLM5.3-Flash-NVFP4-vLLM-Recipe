@@ -1,0 +1,157 @@
+# 計測の設定 (Requirement 1.1、1.6、2.2、4.1、6.8)。
+#
+# `[profiles.<名前>]` が 1 つの計測の設定に対応する。`<名前>` はこのテーブルの
+# 鍵から取るので、テーブルの中に改めて `name` を書く必要はない。`Profile` の
+# 全ての項目を、既定値と同じであっても省略せずに書く。このファイルが、すべて
+# のつまみを見渡せる場所になるようにするため
+#
+# `quick` は開発中の素早い確認向け、`full` は公開する結果を作るための本番の
+# 設定。差は主に試行の回数で、それ以外はそろえてある
+#
+# TOML には null (未設定) を書く記法がないので、既定が `None` の項目
+# (`sampling.top_p`、`sampling.top_k`、`sandbox.image_digest`、
+# `quality.code_problem_limit`) は、値を決めていない場合は省略する
+
+[profiles.quick]
+seed = 0
+min_successes = 10
+max_consecutive_failures = 5
+length_tolerance = 0.05
+compare_tolerance = 0.02
+metrics_interval_s = 1.0
+
+[profiles.quick.sampling]
+temperature = 0.0
+# top_p、top_k は既定の None のまま (省略)。GLM の thinking の渡し方を実機で
+# 確かめるまでは server_default だけを使う
+thinking = "server_default"
+
+[profiles.quick.chars_per_token]
+# 実機のトークナイザで測り直す前の初期値。タスク 8.2 で校正し直す
+prose_en = 4.0
+prose_ja = 1.5
+code = 3.5
+log = 3.0
+
+[profiles.quick.timeout]
+connect_s = 10.0
+first_event_s = 120.0
+idle_s = 60.0
+total_s = 900.0
+
+[profiles.quick.output_sanity]
+repeat_min_chars = 12
+repeat_min_count = 8
+
+[profiles.quick.sandbox]
+runtime = "auto"
+image = "python:3.13-slim"
+# image_digest はタスク 6.1 でイメージのダイジェストに固定するまで未設定 (省略)
+timeout_s = 20.0
+memory_mb = 512
+cpus = 1.0
+pids_limit = 64
+
+[profiles.quick.decode]
+trials = 10
+warmup_trials = 2
+max_tokens = 1024
+
+[profiles.quick.prefill]
+trials = 5
+warmup_trials = 1
+max_tokens = 16
+target_input_tokens = [8000, 32000, 128000]
+
+[profiles.quick.concurrency]
+levels = [1, 2, 4, 8]
+rounds = 5
+max_tokens = 256
+input_tokens = 2000
+
+[profiles.quick.quality]
+toolcall_tasks = 50
+needle_lengths = [8000, 32000, 128000]
+needle_depths = [0, 25, 50, 75, 100]
+trials_per_cell = 2
+code_max_tokens = 1024
+code_problem_limit = 40
+
+[profiles.quick.agent]
+start_tokens = 20000
+end_tokens = 120000
+step_tokens = 20000
+trials_per_stage = 50
+conversations_per_stage = 5
+threshold = 0.01
+max_tokens = 256
+
+[profiles.full]
+seed = 0
+min_successes = 10
+max_consecutive_failures = 5
+length_tolerance = 0.05
+compare_tolerance = 0.02
+metrics_interval_s = 1.0
+
+[profiles.full.sampling]
+temperature = 0.0
+thinking = "server_default"
+
+[profiles.full.chars_per_token]
+prose_en = 4.0
+prose_ja = 1.5
+code = 3.5
+log = 3.0
+
+[profiles.full.timeout]
+connect_s = 10.0
+first_event_s = 120.0
+idle_s = 60.0
+total_s = 900.0
+
+[profiles.full.output_sanity]
+repeat_min_chars = 12
+repeat_min_count = 8
+
+[profiles.full.sandbox]
+runtime = "auto"
+image = "python:3.13-slim"
+timeout_s = 20.0
+memory_mb = 512
+cpus = 1.0
+pids_limit = 64
+
+[profiles.full.decode]
+trials = 20
+warmup_trials = 2
+max_tokens = 1024
+
+[profiles.full.prefill]
+trials = 10
+warmup_trials = 1
+max_tokens = 16
+target_input_tokens = [8000, 32000, 128000]
+
+[profiles.full.concurrency]
+levels = [1, 2, 4, 8]
+rounds = 10
+max_tokens = 256
+input_tokens = 2000
+
+[profiles.full.quality]
+toolcall_tasks = 200
+needle_lengths = [8000, 32000, 128000]
+needle_depths = [0, 25, 50, 75, 100]
+trials_per_cell = 4
+code_max_tokens = 1024
+# code_problem_limit は既定の None (省略)。HumanEval+ の全 164 問を使う
+
+[profiles.full.agent]
+start_tokens = 20000
+end_tokens = 120000
+step_tokens = 20000
+trials_per_stage = 300
+conversations_per_stage = 5
+threshold = 0.01
+max_tokens = 256

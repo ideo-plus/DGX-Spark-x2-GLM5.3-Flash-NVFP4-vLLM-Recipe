@@ -1,0 +1,29 @@
+# 対象サーバーの定義 (Requirement 1.1)。
+#
+# `[targets.<名前>]` が 1 つの対象サーバーに対応する。`<名前>` はこのテーブルの
+# 鍵から取るので、テーブルの中に改めて `name` を書く必要はない (書いても無視
+# される)。計測者は `bench run --target <名前>` のように、この名前で選ぶ。
+#
+# 認証の情報が要る対象サーバーでは、値そのものではなく、値を入れた環境変数の
+# 名前を `api_key_env` に書く。実際の値は実行時に環境変数から読み、生データにも
+# 要約にも書き出さない (Requirement 1.8)。このファイルに実在する秘密の値を
+# 書いてはならない。
+
+[targets.candidate-d]
+base_url = "http://10.0.1.60:8001"
+model = "glm-5.3-flash"
+max_context_tokens = 1000000
+notes = "比較の基準となる対象サーバー。中身 (量子化や投機的デコードの設定など) は参照しない"
+
+# 自前で立てた対象サーバーの例。認証の情報 (api_key_env) と、対象サーバー固有の
+# 内部指標の名前への上書き (metric_map) の書き方を示す (コメントアウトしてある
+# ので、そのままでは読み込まれない)。
+# [targets.own-p1]
+# base_url = "http://10.0.1.60:8000"
+# model = "glm-5.3-flash"
+# max_context_tokens = 1000000
+# notes = "上流の vLLM main、NVFP4、MTP k=1"
+# api_key_env = "BENCH_OWN_API_KEY"
+#
+# [targets.own-p1.metric_map]
+# kv_usage = "custom:kv_cache_usage_ratio"
