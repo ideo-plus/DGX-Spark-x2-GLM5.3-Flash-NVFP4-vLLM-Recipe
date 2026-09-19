@@ -93,6 +93,9 @@
   して数え、**必ず警告にする** (黙って落とすと、割合が静かに良くなる)
 - `INSUFFICIENT_TRIALS` は、割合の行には付けない。不確かさは区間そのものが
   表しているので、印で二重に示さない (「表の読み方」に書いてある)
+- 割合の表 (品質の検査、段階) にも、速さの表と同じ**印の欄**を出す。出力が
+  壊れている疑いの件数 (10.7) は、条件ごとに数えてあるのに、欄がないと人に
+  届かない
 - 区間は、正確な二項の区間 (`binomial_interval`)。しきい値の判定
   (`threshold_verdict`) は、「下回った」を片側 95% の上限で、「上回った」を
   両側 95% の下限で決める (2.4)
@@ -1034,8 +1037,12 @@ _BREAK_RATE_NOTE: Final[str] = (
 )
 _INTERVAL_NOTE: Final[str] = (
     "割合に添えた区間は、正確な二項の区間 (Clopper-Pearson) の両側 95% である。"
-    "「片側 95% の上限」は、しきい値を下回ったと言えるかの判定に使う値である。"
 )
+_ONE_SIDED_NOTE: Final[str] = (
+    "段階の表の「片側 95% の上限」は、しきい値を下回ったと言えるかの判定に使う、別の量である"
+    " (両側の区間と同じものとして読まないこと)。"
+)
+"""片側の上限の説明。**段階の表を出すときだけ**添える (その欄は、そこにしかない)。"""
 _VERDICT_NOTE: Final[str] = (
     "しきい値に対する判定は 3 つ。`下回った` = 片側 95% の上限がしきい値より小さい。"
     "`上回った` = 両側 95% の下限がしきい値より大きい。"
@@ -1091,7 +1098,11 @@ def render_markdown(summary: Summary, warnings: Sequence[str] = ()) -> str:
 
 
 def _legend_section(summary: Summary) -> list[str]:
-    """表の読み方。どの表からも同じなので、1 回だけ出す。"""
+    """表の読み方。どの表からも同じなので、1 回だけ出す。
+
+    出てこない欄の説明は書かない。しきい値の判定と片側 95% の上限は、段階の表
+    にしかない欄なので、その表を出すときだけ添える。
+    """
     notes: list[str] = []
     if any(row.metric not in _PROPORTION_METRICS for row in summary.results):
         notes += [
@@ -1103,10 +1114,16 @@ def _legend_section(summary: Summary) -> list[str]:
             notes.append(_PREFILL_NOTE)
     if any(row.metric == METRIC_ACCURACY for row in summary.results):
         notes.append(_ACCURACY_NOTE)
+    has_stage_table = summary.agent is not None and bool(summary.agent.stages)
     if summary.agent is not None:
-        notes += [_BREAK_RATE_NOTE, _VERDICT_NOTE]
+        notes.append(_BREAK_RATE_NOTE)
+        if has_stage_table:
+            notes.append(_VERDICT_NOTE)
     if any(row.metric in _PROPORTION_METRICS for row in summary.results):
-        notes += [_INTERVAL_NOTE, _PROPORTION_FLAG_NOTE]
+        notes.append(_INTERVAL_NOTE)
+        if has_stage_table:
+            notes.append(_ONE_SIDED_NOTE)
+        notes.append(_PROPORTION_FLAG_NOTE)
     if not notes:
         return []
     lines = ["## 表の読み方", ""]
@@ -1296,15 +1313,22 @@ def _flags_text(row: MetricResult) -> str:
 
 
 def _quality_section(summary: Summary) -> list[str]:
-    """品質の検査の割合 (5.6、5.7)。分母と分子と、不確かさの幅を添える。"""
+    """品質の検査の割合 (5.6、5.7)。分母と分子と、不確かさの幅と、印を添える。
+
+    印は速さの表と同じ `_flags_text` で書く。出力が壊れている疑いの件数 (10.7)
+    は、この表にも出さないと、割合しか見ない読み手に届かない。
+    """
     rows = [row for row in summary.results if row.metric == METRIC_ACCURACY]
     if not rows:
         return []
     lines = [
         "## 品質の検査",
         "",
-        "| 条件 | 正解 | 採点の対象 | 正解の割合 | 95% の区間 | 採点できなかった | 要求の失敗 |",
-        "|---|--:|--:|--:|---|--:|--:|",
+        (
+            "| 条件 | 正解 | 採点の対象 | 正解の割合 | 95% の区間 | 採点できなかった |"
+            " 要求の失敗 | 印 |"
+        ),
+        "|---|--:|--:|--:|---|--:|--:|---|",
     ]
     for row in rows:
         stat = row.proportion
@@ -1316,6 +1340,7 @@ def _quality_section(summary: Summary) -> list[str]:
             _interval(stat),
             str(row.flag_counts.get(NOT_SCORED_COUNT, 0)),
             str(row.failures),
+            _flags_text(row),
         ]
         lines.append("| " + " | ".join(cells) + " |")
     lines.append("")
@@ -1329,11 +1354,15 @@ def _agent_section(summary: Summary) -> list[str]:
         return []
     lines = ["## 長い会話でのツール呼び出し", ""]
     first = (
-        f"{agent.first_exceeded_tokens} トークン (実際の入力のトークン数の中央値)"
+        f"{agent.first_exceeded_tokens} トークン ({_first_exceeded_kind(agent)})"
         if agent.first_exceeded_tokens is not None
         else "どの段階も超えていない"
     )
-    reached = f"{agent.reached_tokens} トークン" if agent.reached_tokens is not None else _EMPTY
+    reached = (
+        f"{agent.reached_tokens} トークン (狙いの長さ)"
+        if agent.reached_tokens is not None
+        else _EMPTY
+    )
     bullets = [
         f"崩れのしきい値: {_num(agent.threshold)}",
         f"しきい値を初めて超えた会話の長さ: {first}",
@@ -1344,20 +1373,65 @@ def _agent_section(summary: Summary) -> list[str]:
     for bullet in bullets:
         lines += [f"- {bullet}", ""]
     if not agent.stages:
-        lines += ["(段階の試行が 1 つも残っていない)", ""]
+        lines += [_no_stage_text(summary), ""]
         return lines
-    lines += _agent_stage_table(agent.stages, agent.threshold)
+    lines += _agent_stage_table(agent.stages, agent.threshold, _flags_by_condition(summary))
     lines += _agent_outcome_table(agent.stages)
     return lines
 
 
-def _agent_stage_table(stages: Sequence[AgentStageResult], threshold: float) -> list[str]:
+def _first_exceeded_kind(agent: AgentSummary) -> str:
+    """「初めて超えた長さ」が、どちらの量なのか (6.6 の決め方と同じ順でたどる)。
+
+    `_first_exceeded_tokens` は、実際の入力のトークン数の中央値を使い、それが
+    残っていなければ狙いの長さで代える。どちらを出したのかを書かないと、
+    狙いの長さと実際の長さを取り違えて読まれる。
+    """
+    for stage in agent.stages:
+        if stage.break_rate is not None and stage.break_rate.rate > agent.threshold:
+            if stage.actual_input_tokens is not None:
+                return "実際の入力のトークン数の中央値"
+            return "狙いの長さ (実際の入力のトークン数が残っていない)"
+    return "狙いの長さ"
+
+
+def _no_stage_text(summary: Summary) -> str:
+    """段階の表が空のときに、何が起きたのかを書く。
+
+    段階の表が空になるのは、試行が 1 つもない場合と、試行はあるのに会話の長さ
+    が決められなかった場合の 2 つである。後者を「試行が残っていない」と書くと、
+    残っている生データを人が探しに行かなくなる。
+    """
+    without_length = [
+        row.condition for row in summary.results if row.metric == METRIC_AGENT_BREAK_RATE
+    ]
+    if not without_length:
+        return "(段階の試行が 1 つも残っていない)"
+    keys = "、".join(f"`{_cell(condition)}`" for condition in without_length)
+    return (
+        f"(試行は残っているが、会話の長さが決められないので、段階の表に出せない: {keys}。"
+        "理由は警告にある)"
+    )
+
+
+def _flags_by_condition(summary: Summary) -> dict[str, str]:
+    """条件 → 印の文字列 (段階の表に、速さの表と同じ印を出すために引く)。"""
+    return {
+        row.condition: _flags_text(row)
+        for row in summary.results
+        if row.metric == METRIC_AGENT_BREAK_RATE
+    }
+
+
+def _agent_stage_table(
+    stages: Sequence[AgentStageResult], threshold: float, flags: dict[str, str]
+) -> list[str]:
     lines = [
         (
             "| 段階 | 狙いの入力 | 実際の入力 (中央値) | 試行 | 崩れ | 分母 |"
-            " 崩れた割合 | 95% の区間 | 片側 95% の上限 | 判定 |"
+            " 崩れた割合 | 95% の区間 | 片側 95% の上限 | 判定 | 印 |"
         ),
-        "|---|--:|--:|--:|--:|--:|--:|---|--:|---|",
+        "|---|--:|--:|--:|--:|--:|--:|---|--:|---|---|",
     ]
     needed = _trials_needed(threshold)
     for stage in stages:
@@ -1374,6 +1448,7 @@ def _agent_stage_table(stages: Sequence[AgentStageResult], threshold: float) -> 
             _interval(stat),
             _num(stat.upper95_one_sided) if stat is not None else _EMPTY,
             _verdict_text(stage, needed),
+            flags.get(stage.stage_key, _EMPTY),
         ]
         lines.append("| " + " | ".join(cells) + " |")
     lines.append("")

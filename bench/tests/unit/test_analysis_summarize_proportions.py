@@ -243,6 +243,43 @@ def _repeat(outcome: ToolCallOutcome, count: int) -> list[ToolCallOutcome]:
     return [outcome] * count
 
 
+def _suspect_trial(
+    *,
+    condition: str,
+    suite: SuiteName,
+    trial_index: int,
+    flag: TrialFlag,
+    verdict: Verdict,
+    target_input_tokens: int | None = None,
+) -> TrialRecord:
+    """出力が壊れている疑いの印が付いた試行 (10.7)。時刻は、ほかと重ならない。"""
+    start = 5000.0 + trial_index * 10.0
+    return _trial(
+        condition=condition,
+        suite=suite,
+        trial_index=trial_index,
+        sent_s=start,
+        first_s=start + 0.5,
+        last_s=start + 1.5,
+        input_tokens=700 + trial_index,
+        output_tokens=45 + trial_index,
+        flags=[flag],
+        verdict=verdict,
+        target_input_tokens=target_input_tokens,
+    )
+
+
+def _table_lines(text: str, key: str) -> list[str]:
+    """表の升目の先頭がその鍵である行を、出てきた順に返す。"""
+    return [line for line in text.splitlines() if line.startswith(f"| `{key}`")]
+
+
+def _bullet(text: str, head: str) -> str:
+    matched = [line for line in text.splitlines() if line.startswith(f"- {head}")]
+    assert len(matched) == 1, f"`{head}` で始まる箇条書きが {len(matched)} 行ある"
+    return matched[0]
+
+
 # --- 長い会話の段階ごとの表 (6.4) -------------------------------------------
 
 
@@ -475,10 +512,15 @@ def test_agent_warmups_never_reach_the_stage_table(tmp_path: Path) -> None:
 
 
 def test_stages_are_ordered_by_length_even_when_the_records_are_shuffled(tmp_path: Path) -> None:
-    """段階は、会話の長さの順に並べる (実行の順ではない)。"""
+    """段階は、会話の長さの順に並べる (実行の順ではない)。
+
+    桁の違う鍵 (`200k` と `1000k`) を混ぜてある。0 埋めの 3 桁だけでは、鍵の
+    文字列で並べる壊れ方を見つけられない (注 4.2)。文字列で並べると
+    `1000k` が `200k` の前に来る。
+    """
     store = _store(tmp_path)
     records: list[TrialRecord] = []
-    for index, tokens in enumerate((60000, 20000, 120000, 40000)):
+    for index, tokens in enumerate((60000, 20000, 1000000, 120000, 200000, 40000)):
         records.extend(
             _agent_records(
                 key=f"agent/stage/{tokens // 1000:03d}k",
@@ -492,11 +534,21 @@ def test_stages_are_ordered_by_length_even_when_the_records_are_shuffled(tmp_pat
     summary = _summary(_finish(store))
 
     assert summary.agent is not None
+    assert [stage.stage_key for stage in summary.agent.stages] == [
+        "agent/stage/020k",
+        "agent/stage/040k",
+        "agent/stage/060k",
+        "agent/stage/120k",
+        "agent/stage/200k",
+        "agent/stage/1000k",
+    ]
     assert [stage.target_input_tokens for stage in summary.agent.stages] == [
         20000,
         40000,
         60000,
         120000,
+        200000,
+        1000000,
     ]
 
 
@@ -1185,6 +1237,195 @@ def test_markdown_shows_the_first_exceeded_and_the_reached_length(tmp_path: Path
 
     assert "40000" in text
     assert "入力の長さの上限に達した" in text
+
+
+def test_the_quality_table_shows_the_flags(tmp_path: Path) -> None:
+    """品質の検査の表にも、印の欄を出す (10.7: 出力が壊れている疑いの件数)。
+
+    印がこの表に出ないと、割合だけが並び、壊れた出力を数えたことが人に届かない。
+    """
+    store = _store(tmp_path, suites=[SuiteName.QUALITY])
+    _append(
+        store,
+        *_quality_records(
+            key="quality/toolcall",
+            task="toolcall",
+            correct=3,
+            incorrect=1,
+            not_scored=0,
+            request_failed=0,
+        ),
+        _suspect_trial(
+            condition="quality/toolcall",
+            suite=SuiteName.QUALITY,
+            trial_index=90,
+            flag=TrialFlag.REPLACEMENT_CHAR,
+            verdict=QualityVerdict(task="toolcall", outcome=QualityOutcome.INCORRECT),
+        ),
+        _suspect_trial(
+            condition="quality/toolcall",
+            suite=SuiteName.QUALITY,
+            trial_index=91,
+            flag=TrialFlag.REPETITION_LOOP,
+            verdict=QualityVerdict(task="toolcall", outcome=QualityOutcome.INCORRECT),
+        ),
+    )
+    _, md_path = write_summary(_finish(store).run_dir)
+    text = md_path.read_text(encoding="utf-8")
+
+    lines = _table_lines(text, "quality/toolcall")
+    assert len(lines) == 1, f"品質の検査の行が {len(lines)} 行ある"
+    assert "出力が壊れている疑い 2 件" in lines[0], f"印が出ていない: {lines[0]}"
+
+
+def test_the_agent_stage_table_shows_the_flags(tmp_path: Path) -> None:
+    """段階の表にも、印の欄を出す (10.7)。"""
+    store = _store(tmp_path)
+    _append(
+        store,
+        *_agent_records(
+            key="agent/stage/020k",
+            outcomes=_repeat(ToolCallOutcome.CORRECT, 4),
+            target_tokens=20000,
+        ),
+        _suspect_trial(
+            condition="agent/stage/020k",
+            suite=SuiteName.AGENT,
+            trial_index=90,
+            flag=TrialFlag.REPETITION_LOOP,
+            verdict=ToolCallVerdict(outcome=ToolCallOutcome.CORRECT),
+            target_input_tokens=20000,
+        ),
+    )
+    _, md_path = write_summary(_finish(store).run_dir)
+    text = md_path.read_text(encoding="utf-8")
+
+    lines = _table_lines(text, "agent/stage/020k")
+    assert len(lines) == 2, "段階の表と、分類の内訳の表に、1 行ずつ出るはず"
+    assert "出力が壊れている疑い 1 件" in lines[0], f"段階の表に印が出ていない: {lines[0]}"
+
+
+def test_the_agent_bullets_say_which_length_each_number_is(tmp_path: Path) -> None:
+    """「初めて超えた長さ」は実際の入力、「いちばん長い段階」は狙いの長さである。
+
+    同じ「トークン」でも量が違うので、どちらなのかを書かないと読み違える。
+    """
+    store = _store(tmp_path)
+    _append(
+        store,
+        *_agent_records(
+            key="agent/stage/020k",
+            outcomes=_repeat(ToolCallOutcome.CORRECT, 20),
+            target_tokens=20000,
+            actual_tokens=[20000] * 20,
+        ),
+        *_agent_records(
+            key="agent/stage/040k",
+            outcomes=[*_repeat(ToolCallOutcome.NO_CALL, 5), *_repeat(ToolCallOutcome.CORRECT, 15)],
+            target_tokens=40000,
+            actual_tokens=[40005 + index * 10 for index in range(20)],
+            base_s=1000.0,
+        ),
+    )
+    _, md_path = write_summary(_finish(store).run_dir)
+    text = md_path.read_text(encoding="utf-8")
+
+    first = _bullet(text, "しきい値を初めて超えた会話の長さ")
+    assert "40100" in first
+    assert "実際の入力のトークン数の中央値" in first, f"どちらの長さか書いていない: {first}"
+    reached = _bullet(text, "採点できた試行が残っている")
+    assert "40000" in reached
+    assert "狙いの長さ" in reached, f"どちらの長さか書いていない: {reached}"
+
+
+def test_the_one_sided_bound_is_explained_only_where_it_is_shown(tmp_path: Path) -> None:
+    """片側 95% の上限の説明は、段階の表を出すときだけにする。
+
+    品質の検査だけの計測ランには片側の欄がないので、書くと、どこにも出て
+    こない値の説明が残る。
+    """
+    quality = _store(tmp_path, root="quality", suites=[SuiteName.QUALITY])
+    _append(
+        quality,
+        *_quality_records(
+            key="quality/toolcall",
+            task="toolcall",
+            correct=3,
+            incorrect=1,
+            not_scored=0,
+            request_failed=0,
+        ),
+    )
+    _, quality_md = write_summary(_finish(quality).run_dir)
+    quality_text = quality_md.read_text(encoding="utf-8")
+
+    assert "二項" in quality_text, "両側の区間の説明まで消している"
+    assert "片側 95% の上限" not in quality_text, "出てこない値を説明している"
+
+    agent = _store(tmp_path, root="agent")
+    _append(
+        agent,
+        *_agent_records(
+            key="agent/stage/020k",
+            outcomes=_repeat(ToolCallOutcome.CORRECT, 4),
+            target_tokens=20000,
+        ),
+    )
+    _, agent_md = write_summary(_finish(agent).run_dir)
+    agent_text = agent_md.read_text(encoding="utf-8")
+
+    assert "片側 95% の上限" in agent_text, "段階の表を出すのに、片側の説明がない"
+
+
+def test_stages_without_a_length_say_what_actually_happened(tmp_path: Path) -> None:
+    """長さが決められなかっただけの段階を、「試行がない」と言わない (10.4 の心得)。"""
+    store = _store(tmp_path)
+    _append(
+        store,
+        *_agent_records(
+            key="agent/stage/unknown",
+            outcomes=_repeat(ToolCallOutcome.CORRECT, 3),
+            target_tokens=None,
+        ),
+    )
+    _, md_path = write_summary(_finish(store).run_dir)
+    text = md_path.read_text(encoding="utf-8")
+
+    assert "段階の試行が 1 つも残っていない" not in text, "試行はあるのに、ないと書いている"
+    assert "agent/stage/unknown" in text
+    assert "会話の長さ" in text
+
+
+def test_a_run_with_only_a_skipped_stage_says_that_no_trial_is_left(tmp_path: Path) -> None:
+    """段階の試行が本当に 1 つもないときは、そのとおりに書く。"""
+    store = _store(
+        tmp_path,
+        suites=[SuiteName.DECODE, SuiteName.AGENT],
+        skipped=[
+            {
+                "suite": SuiteName.AGENT,
+                "key": "agent/stage/020k",
+                "reason": "入力の長さの上限より長いので、送る前に飛ばした",
+            }
+        ],
+    )
+    _append(
+        store,
+        _trial(
+            condition="decode/code/en",
+            suite=SuiteName.DECODE,
+            trial_index=0,
+            sent_s=0.0,
+            first_s=0.5,
+            last_s=2.5,
+            input_tokens=11,
+            output_tokens=41,
+        ),
+    )
+    _, md_path = write_summary(_finish(store).run_dir)
+    text = md_path.read_text(encoding="utf-8")
+
+    assert "段階の試行が 1 つも残っていない" in text
 
 
 def test_markdown_shows_the_public_datasets(tmp_path: Path) -> None:

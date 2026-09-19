@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import ast
 import os
+import random
 import subprocess
 import sys
 from collections.abc import Iterable, Sequence
@@ -43,9 +44,10 @@ from bench_harness.analysis.compare import (
     render_comparison_markdown,
     write_comparison,
 )
-from bench_harness.analysis.stats import binomial_interval
+from bench_harness.analysis.stats import binomial_interval, diff_verdict
 from bench_harness.store.rawstore import RunStore, StoreError
 from bench_harness.types import (
+    AgentSettings,
     ComparisonReport,
     ComparisonRow,
     ContentBlock,
@@ -53,6 +55,9 @@ from bench_harness.types import (
     MetricResult,
     Profile,
     ProportionStat,
+    QualityOutcome,
+    QualitySettings,
+    QualityVerdict,
     RequestError,
     RunManifest,
     RunStatus,
@@ -232,6 +237,43 @@ def _row(report: ComparisonReport, condition: str, metric: str) -> ComparisonRow
     return matched[0]
 
 
+def _warnings_about(report: ComparisonReport, *needles: str) -> list[str]:
+    return [warning for warning in report.warnings if all(n in warning for n in needles)]
+
+
+def _noisy(base: float, *, seed: int, count: int = 20) -> tuple[float, ...]:
+    """ばらつきのある連続の値を、決まった乱数の種から作る (何度流しても同じ値)。
+
+    再標本化の区間が、本当に乱数の種で動くようにするため、10 件以上を使う
+    (Implementation Notes 4.3: 数件の厳密な値では、種を変えても区間が動かない)。
+    """
+    rng = random.Random(seed)
+    return tuple(base * (1.0 + rng.uniform(-0.08, 0.08)) for _ in range(count))
+
+
+def _noisy_pair(tmp_path: Path) -> tuple[Path, Path]:
+    """連続の値を 12 件ずつ持つ、**対応のない**比較になる 2 つの計測ラン。
+
+    行の種が変われば区間が動く標本を作るには、対応のない比較にする必要がある。
+    対応のある比較は、差の列の中央値を引き直すだけなので、値が 12 件あっても、
+    区間の端が同じ離散の値に貼り付いて動かない (ここで実測した)。
+    """
+    dir_a = _write_run(
+        tmp_path,
+        "a",
+        RUN_A,
+        _speed_records(RUN_A, _noisy(20.0, seed=0), _noisy(0.5, seed=2)),
+    )
+    dir_b = _write_run(
+        tmp_path,
+        "b",
+        RUN_B,
+        _speed_records(RUN_B, _noisy(22.0, seed=1), _noisy(0.5, seed=3)),
+        profile=Profile(name="test", seed=7),  # 種が違うので、対応のない比較になる
+    )
+    return dir_a, dir_b
+
+
 # --- 同じ生データどうし (tasks.md 4.3 の完了の状態 1) ------------------------
 
 
@@ -371,6 +413,76 @@ def test_pairing_orders_both_sides_by_the_trial_key(tmp_path: Path) -> None:
     decode = _row(expected, CONDITION, "decode_tps")
     assert decode.verdict is not None
     assert decode.verdict.median_diff == pytest.approx(2.0), "試行ごとの差の中央値が違う"
+
+
+# --- 対応なしへの退化を、黙って済ませない (Implementation Notes 4.3) ----------
+
+
+def test_losing_the_pairing_warns_row_by_row(tmp_path: Path) -> None:
+    """種も生成器の版もそろっているのに対応なしへ退化したら、行ごとに警告する。
+
+    失敗が 1 件あるだけで対応なしになり、検出力が大きく落ちる (注 4.3)。黙って
+    退化すると、同じ差でも「収まる」と出るようになるので、必ず報せる。
+    """
+    dir_a = _write_run(tmp_path, "a", RUN_A, _speed_records(RUN_A))
+    dir_b = _write_run(tmp_path, "b", RUN_B, _speed_records(RUN_B, failed=(3,)))
+    report = compare_runs(dir_a, dir_b).report
+
+    row = _row(report, CONDITION, "decode_tps")
+    assert row.verdict is not None
+    assert row.verdict.paired is False, "番号がそろわないのに対応のある比較にしている"
+
+    matched = _warnings_about(report, CONDITION, "decode_tps", "対応のない比較")
+    assert len(matched) == 1, f"退化の警告がない、または重なっている: {report.warnings}"
+    assert "A: 4 件" in matched[0], f"A の値の数がない: {matched[0]}"
+    assert "B: 3 件" in matched[0], f"B の値の数がない: {matched[0]}"
+    assert "検出力" in matched[0], f"検出力が下がることを書いていない: {matched[0]}"
+    assert len(_warnings_about(report, CONDITION, "ttft_s", "対応のない比較")) == 1
+
+
+def test_no_pairing_warning_when_the_pairing_was_never_expected(tmp_path: Path) -> None:
+    """種が違えば、そもそも対応のある比較にならない。行ごとの警告は重ねない。
+
+    種と生成器の版の食い違いには、それぞれの警告がすでにある (9.4)。
+    """
+    cases: list[dict[str, Any]] = [
+        {"profile": Profile(name="test", seed=7)},
+        {"generator_version": 2},
+    ]
+    for index, overrides in enumerate(cases):
+        dir_a, dir_b = _pair(tmp_path / f"case{index}", manifest_b=overrides)
+        report = compare_runs(dir_a, dir_b).report
+
+        row = _row(report, CONDITION, "decode_tps")
+        assert row.verdict is not None
+        assert row.verdict.paired is False
+        assert _warnings_about(report, "対応のない比較") == [], (
+            f"対応を期待していない比較で、行ごとの警告を出している: {report.warnings}"
+        )
+
+
+def test_duplicate_trial_numbers_are_never_treated_as_paired(tmp_path: Path) -> None:
+    """同じ番号の値が重なっている行は、対応のある比較にしない (守りの判定)。
+
+    両方に同じ重なりがあると、番号の列は見かけ上そろう。そのまま対応のある
+    比較にすると、どの値とどの値の差を取ったのかが決まらない。
+    """
+
+    def records(run_id: str) -> list[TrialRecord]:
+        return [
+            *_speed_records(run_id),
+            # まとまりの不具合や、書き足しの重なりで、同じ番号が 2 回入った
+            _speed_trial(run_id, trial_index=2, tps=30.0, ttft=0.70),
+        ]
+
+    dir_a = _write_run(tmp_path, "a", RUN_A, records(RUN_A))
+    dir_b = _write_run(tmp_path, "b", RUN_B, records(RUN_B))
+    report = compare_runs(dir_a, dir_b).report
+
+    row = _row(report, CONDITION, "decode_tps")
+    assert row.verdict is not None
+    assert row.verdict.paired is False, "同じ番号が重なっているのに、対応のある比較にしている"
+    assert len(_warnings_about(report, CONDITION, "decode_tps", "対応のない比較")) == 1
 
 
 # --- 値が足りない行 (9.2、10.2) ----------------------------------------------
@@ -547,10 +659,144 @@ def test_setting_differences_warn_naming_both_values(
     dir_a, dir_b = _pair(tmp_path, manifest_b=overrides_b)
     report = compare_runs(dir_a, dir_b).report
 
-    matched = [
-        warning for warning in report.warnings if all(needle in warning for needle in needles)
-    ]
+    matched = _warnings_about(report, *needles)
     assert len(matched) == 1, f"{needles} の警告がない、または重なっている: {report.warnings}"
+    assert not matched[0].startswith("(参考)"), (
+        f"測り方に効く食い違いを、参考に落としている: {matched[0]}"
+    )
+
+
+def _target(**overrides: Any) -> TargetDef:
+    payload: dict[str, Any] = {
+        "name": "fake",
+        "base_url": HttpUrl("http://127.0.0.1:8000"),
+        "model": "glm-5.3-flash",
+    }
+    payload.update(overrides)
+    return TargetDef.model_validate(payload)
+
+
+@pytest.mark.parametrize(
+    ("overrides", "needles"),
+    [
+        pytest.param(
+            {"base_url": HttpUrl("http://10.0.1.60:8000")},
+            ("接続先", "127.0.0.1:8000", "10.0.1.60:8000"),
+            id="base_url",
+        ),
+        pytest.param(
+            {"model": "glm-5.3-flash-w8a8"},
+            ("モデル", "glm-5.3-flash", "glm-5.3-flash-w8a8"),
+            id="model",
+        ),
+    ],
+)
+def test_the_same_target_name_with_a_different_identity_warns(
+    tmp_path: Path, overrides: dict[str, Any], needles: tuple[str, ...]
+) -> None:
+    """名前は同じでも接続先やモデルが違えば、測った相手が同じとは限らない (注 4.3)。
+
+    繰り返しの結論 (9.3) は、対象サーバーの**定義の名前**で決まるので出したまま
+    にするが、警告は参考ではなく、ふつうの警告として表より先に出す。
+    """
+    dir_a, dir_b = _pair(tmp_path, manifest_b={"target": _target(**overrides)})
+    result = compare_runs(dir_a, dir_b)
+    report = result.report
+
+    matched = _warnings_about(report, *needles)
+    assert len(matched) == 1, f"{needles} の警告がない、または重なっている: {report.warnings}"
+    assert not matched[0].startswith("(参考)"), "対象サーバーの食い違いを参考に落としている"
+    assert report.repeatability is not None, "結論を出すのをやめている (9.3)"
+
+    lines = render_comparison_markdown(report, proportions=result.proportions).splitlines()
+    warning_at = [i for i, line in enumerate(lines) if all(n in line for n in needles)]
+    table_at = [i for i, line in enumerate(lines) if line.startswith("|")]
+    assert warning_at and table_at
+    assert max(warning_at) < min(table_at), "警告が表より後ろに出ている"
+
+
+def test_the_comparison_never_carries_a_credential(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """設定にあるのは環境変数の名前だけで、値は比較にも出ない (1.8)。"""
+    monkeypatch.setenv("BENCH_API_KEY", "sk-secret-xyzzy")
+    dir_a, dir_b = _pair(
+        tmp_path,
+        manifest_a={"target": _target(api_key_env="BENCH_API_KEY")},
+        manifest_b={"target": _target(api_key_env="BENCH_API_KEY", model="glm-5.3-flash-w8a8")},
+    )
+    result = compare_runs(dir_a, dir_b)
+    text = render_comparison_markdown(result.report, proportions=result.proportions)
+
+    assert "sk-secret-xyzzy" not in text
+    assert "sk-secret-xyzzy" not in render_comparison_json(result.report)
+
+
+# --- 警告の絞り込み (9.4: 効きうる違いだけを、ふつうの警告にする) -------------
+
+
+def test_a_setting_of_a_suite_that_neither_run_measured_is_informational(tmp_path: Path) -> None:
+    """どちらの計測ランも測っていないまとまりの設定は、参考に落とす。"""
+    dir_a, dir_b = _pair(
+        tmp_path,
+        manifest_b={"profile": Profile(name="test", agent=AgentSettings(trials_per_stage=30))},
+    )
+    report = compare_runs(dir_a, dir_b).report
+
+    matched = _warnings_about(report, "agent.trials_per_stage", "50", "30")
+    assert len(matched) == 1, f"設定の違いを落としている: {report.warnings}"
+    assert matched[0].startswith("(参考)"), (
+        f"測っていないまとまりの設定を、ふつうの警告にしている: {matched[0]}"
+    )
+
+
+def test_a_setting_of_a_suite_that_both_runs_measured_stays_a_warning(tmp_path: Path) -> None:
+    """両方が測ったまとまりの設定の違いは、ふつうの警告のままにする (9.4)。"""
+    suites = [SuiteName.DECODE, SuiteName.AGENT]
+    dir_a, dir_b = _pair(
+        tmp_path,
+        manifest_a={"suites": suites},
+        manifest_b={
+            "suites": suites,
+            "profile": Profile(name="test", agent=AgentSettings(trials_per_stage=30)),
+        },
+    )
+    report = compare_runs(dir_a, dir_b).report
+
+    matched = _warnings_about(report, "agent.trials_per_stage", "50", "30")
+    assert len(matched) == 1, f"設定の違いを落としている: {report.warnings}"
+    assert not matched[0].startswith("(参考)"), (
+        f"測ったまとまりの設定を、参考に落としている: {matched[0]}"
+    )
+
+
+def test_the_sandbox_settings_follow_the_quality_suite(tmp_path: Path) -> None:
+    """コードの隔離の設定は、品質の検査を測ったときだけ、ふつうの警告にする。"""
+    changed = {"profile": Profile(name="test", quality=QualitySettings(toolcall_tasks=20))}
+    dir_a, dir_b = _pair(tmp_path / "off", manifest_b=changed)
+    off = compare_runs(dir_a, dir_b).report
+    assert _warnings_about(off, "quality.toolcall_tasks")[0].startswith("(参考)")
+
+    suites = [SuiteName.DECODE, SuiteName.QUALITY]
+    dir_a, dir_b = _pair(
+        tmp_path / "on",
+        manifest_a={"suites": suites},
+        manifest_b={"suites": suites, **changed},
+    )
+    on = compare_runs(dir_a, dir_b).report
+    assert not _warnings_about(on, "quality.toolcall_tasks")[0].startswith("(参考)")
+
+
+def test_the_metrics_interval_is_only_informational(tmp_path: Path) -> None:
+    """内部の指標を読む間隔は、測る値そのものを変えないので、参考に落とす。"""
+    dir_a, dir_b = _pair(
+        tmp_path, manifest_b={"profile": Profile(name="test", metrics_interval_s=2.0)}
+    )
+    report = compare_runs(dir_a, dir_b).report
+
+    matched = _warnings_about(report, "metrics_interval_s", "1.0", "2.0")
+    assert len(matched) == 1, f"設定の違いを落としている: {report.warnings}"
+    assert matched[0].startswith("(参考)")
 
 
 def test_an_incomplete_run_warns(tmp_path: Path) -> None:
@@ -698,6 +944,86 @@ def test_a_missing_proportion_on_one_side_is_not_judged() -> None:
     assert report.repeatability.all_within is False
 
 
+def _quality_trial(
+    run_id: str,
+    *,
+    trial_index: int,
+    outcome: QualityOutcome,
+    condition: str = "quality/toolcall",
+) -> TrialRecord:
+    """品質の検査の試行を 1 つ作る (割合の行の生データ)。"""
+    start = trial_index * 10.0
+    timing = StreamTiming(
+        sent_at_utc=AT,
+        sent_at_ns=_ns(start),
+        first_token_ns=_ns(start + 0.5),
+        last_token_ns=_ns(start + 1.5),
+        end_ns=_ns(start + 1.6),
+    )
+    return TrialRecord(
+        run_id=run_id,
+        suite=SuiteName.QUALITY,
+        condition=condition,
+        tier="primary",
+        trial_index=trial_index,
+        request_body_ref="0" * 64,
+        result=StreamResult(
+            timing=timing,
+            usage=Usage(input_tokens=400 + trial_index, output_tokens=20 + trial_index),
+            stop_reason="end_turn",
+            blocks=[ContentBlock(type="text", text="本文")],
+        ),
+        verdict=QualityVerdict(task="toolcall", outcome=outcome),
+    )
+
+
+def _one_sided_proportion_pair(tmp_path: Path) -> tuple[Path, Path]:
+    """A だけが採点できた品質の検査の、2 つの計測ラン (正解 3 / 採点 5)。"""
+    scored = [
+        _quality_trial(
+            RUN_A,
+            trial_index=index,
+            outcome=QualityOutcome.CORRECT if index < 3 else QualityOutcome.INCORRECT,
+        )
+        for index in range(5)
+    ]
+    unscored = [
+        _quality_trial(RUN_B, trial_index=index, outcome=QualityOutcome.NOT_SCORED)
+        for index in range(5)
+    ]
+    dir_a = _write_run(tmp_path, "a", RUN_A, scored, suites=[SuiteName.QUALITY])
+    dir_b = _write_run(tmp_path, "b", RUN_B, unscored, suites=[SuiteName.QUALITY])
+    return dir_a, dir_b
+
+
+def test_a_proportion_row_with_only_one_side_stays_in_the_proportion_table(
+    tmp_path: Path,
+) -> None:
+    """片方にしか割合がない行も、割合の表に出す (連続の値の欄に並べない)。
+
+    連続の表に落ちると、数える単位も欄も違う行が、速さの行と同じ形で並ぶ。
+    """
+    dir_a, dir_b = _one_sided_proportion_pair(tmp_path)
+    result = compare_runs(dir_a, dir_b)
+
+    row = _row(result.report, "quality/toolcall", "accuracy")
+    assert row.proportion_verdict is None
+    assert row.value_a == pytest.approx(0.6)
+    assert row.value_b is None
+
+    text = result.to_markdown()
+    lines = text.splitlines()
+    heading = lines.index("### 割合で表す結果")
+    table_rows = [i for i, line in enumerate(lines) if line.startswith("| `quality/toolcall`")]
+    assert table_rows, f"割合の行が表に出ていない: {text}"
+    assert min(table_rows) > heading, "割合の行が、連続の値の表に落ちている"
+    assert not [line for line in lines if line.startswith("| 条件 |") and "再標本化" in line], (
+        "連続の値の表を出している"
+    )
+    assert "判定できない" in text
+    assert "3/5" in text, "片側だけでも、分かっている側の分子と分母を添える"
+
+
 def test_continuous_rows_without_values_are_not_judged() -> None:
     """要約だけを渡した比較では、試行ごとの値がないので判定できない。"""
     from bench_harness.analysis.stats import describe
@@ -755,10 +1081,19 @@ sys.stdout.write(render_comparison_json(result.report))
 """
 
 
-def _run_script(dir_a: Path, dir_b: Path, hashseed: str) -> str:
+_ROW_SEED_SCRIPT = """
+import sys
+
+from bench_harness.analysis.compare import _row_seed
+
+sys.stdout.write(str(_row_seed(sys.argv[1], sys.argv[2], ("decode/code/en", "decode_tps"))))
+"""
+
+
+def _run_script(script: str, args: Sequence[str], hashseed: str) -> str:
     env = {**os.environ, "PYTHONHASHSEED": hashseed, "PYTHONIOENCODING": "utf-8"}
     completed = subprocess.run(
-        [sys.executable, "-c", _HASHSEED_SCRIPT, str(dir_a), str(dir_b)],
+        [sys.executable, "-c", script, *args],
         env=env,
         capture_output=True,
         text=True,
@@ -768,11 +1103,45 @@ def _run_script(dir_a: Path, dir_b: Path, hashseed: str) -> str:
     return completed.stdout
 
 
-def test_the_output_does_not_depend_on_pythonhashseed(tmp_path: Path) -> None:
-    """辞書や集合の巡り方に依存していないことを、別のプロセスで確かめる。"""
-    dir_a, dir_b = _pair(tmp_path, tps_b=TPS_FASTER)
+def test_the_row_seed_itself_does_not_depend_on_pythonhashseed() -> None:
+    """再標本化の種そのものを、2 つのプロセスで突き合わせる (注 4.3 の死角)。
 
-    assert _run_script(dir_a, dir_b, "0") == _run_script(dir_a, dir_b, "12345")
+    出来上がりの数字だけを見る試験は、値の並びによっては、種が変わっても区間が
+    動かず素通りする。ここは値に依らないので、`hash()` で種を作る壊れ方が、
+    必ず落ちる。
+    """
+    args = [RUN_A, RUN_B]
+
+    assert _run_script(_ROW_SEED_SCRIPT, args, "0") == _run_script(_ROW_SEED_SCRIPT, args, "12345")
+
+
+def test_the_output_does_not_depend_on_pythonhashseed(tmp_path: Path) -> None:
+    """辞書や集合の巡り方に依存していないことを、別のプロセスで確かめる。
+
+    再標本化の区間が種で本当に動くように、連続の値を 12 件ずつ持つ生データで
+    行う (注 4.3: 数件の厳密な値では、種を変えても区間が動かない)。
+    """
+    dir_a, dir_b = _noisy_pair(tmp_path)
+    args = [str(dir_a), str(dir_b)]
+
+    assert _run_script(_HASHSEED_SCRIPT, args, "0") == _run_script(_HASHSEED_SCRIPT, args, "12345")
+
+
+def test_the_noisy_sample_really_moves_when_the_seed_moves() -> None:
+    """上の試験が使う標本で、種を変えると区間の表示が動くことを確かめておく。
+
+    区間が動かない標本を使うと、種の壊れ方があっても出来上がりが同じになり、
+    試験が黙って素通りする (注 4.3 の死角)。
+    """
+    values_a = list(_noisy(20.0, seed=0))
+    values_b = list(_noisy(22.0, seed=1))
+    seen = {
+        (f"{verdict.ci95_low:.3f}", f"{verdict.ci95_high:.3f}")
+        for seed in (1, 2, 3, 12345, 999_983)
+        for verdict in [diff_verdict(values_a, values_b, False, 0.02, seed)]
+    }
+
+    assert len(seen) > 1, "種を変えても、表に出る区間が動かない標本になっている"
 
 
 def test_the_output_has_no_nan(tmp_path: Path) -> None:
@@ -879,6 +1248,39 @@ def test_write_comparison_writes_the_markdown(tmp_path: Path) -> None:
 
     assert out_path.read_text(encoding="utf-8") == render_comparison_markdown(result.report)
     assert [path.name for path in tmp_path.iterdir() if path.name.startswith(".compare")] == []
+
+
+# --- 件数を渡し忘れられない口 (注 4.3) ---------------------------------------
+
+
+def test_to_markdown_and_to_json_match_the_render_functions(tmp_path: Path) -> None:
+    """`ComparisonResult` から直に書き出せる (`proportions=` を渡し忘れられない)。"""
+    dir_a, dir_b = _pair(tmp_path)
+    result = compare_runs(dir_a, dir_b)
+
+    assert result.to_markdown() == render_comparison_markdown(
+        result.report, proportions=result.proportions
+    )
+    assert result.to_json() == render_comparison_json(result.report)
+
+
+def test_to_markdown_keeps_the_counts_that_the_bare_report_would_lose(tmp_path: Path) -> None:
+    """`report` だけを渡すと分子と分母が消えるが、`ComparisonResult` なら残る。"""
+    dir_a, dir_b = _one_sided_proportion_pair(tmp_path)
+    result = compare_runs(dir_a, dir_b)
+
+    assert "3/5" in result.to_markdown()
+    assert "3/5" not in render_comparison_markdown(result.report)
+
+
+def test_write_comparison_accepts_a_comparison_result(tmp_path: Path) -> None:
+    """`write_comparison` は `ComparisonResult` も受け取る (件数つきで書ける)。"""
+    dir_a, dir_b = _one_sided_proportion_pair(tmp_path)
+    result = compare_runs(dir_a, dir_b)
+    out_path = write_comparison(result, tmp_path / "compare.md")
+
+    assert out_path.read_text(encoding="utf-8") == result.to_markdown()
+    assert "3/5" in out_path.read_text(encoding="utf-8")
 
 
 # --- 壊れた入力 --------------------------------------------------------------

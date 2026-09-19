@@ -46,6 +46,15 @@ value)` の列で、慣らしと失敗はすでに外れている。比較の側
 対応のある比較にするときは、両方の列を鍵で並べ替えてから `diff_verdict` に
 渡す。書き足した順のまま渡すと、番号の違う試行どうしの差を取ってしまう。
 
+同じ番号が 2 回入っている列も、対応のある比較にしない。両方に同じ重なりが
+あると番号の列は見かけ上そろうが、どの値とどの値の差を取るのかが決まらない。
+
+**対応なしへの退化は、行ごとに警告する** (Implementation Notes 4.3)。1 と 2 が
+そろっていて対応のある比較になるはずだったのに、3 で落ちた行が対象である。
+失敗が 1 件あるだけで退化し、検出力が大きく落ちる (同じ +3% の差が、対応あり
+では「収まらない」、対応なしでは「収まる」) ので、黙って済ませない。1 か 2 が
+食い違う比較には、それぞれの警告がすでにあるので、行ごとには重ねない。
+
 値が 2 つに満たない行は判定しない (`verdict=None`)。「判定できない」を「収まっ
 た」と読ませないため、警告にも、繰り返しの結論の一覧にも、理由つきで出す。
 
@@ -55,6 +64,27 @@ value)` の列で、慣らしと失敗はすでに外れている。比較の側
 **主な結果 (primary)** の行だけで、参考 (reference) の行は表に出すが結論には
 数えない (4.4: 1 本と 2 本が主な結果、4 本と 8 本は余力を知るための参考)。
 判定できなかった行は、結論を `all_within=False` にして、理由つきで一覧に出す。
+
+名前が同じでも、接続先 (`target.base_url`) かモデル (`target.model`) が違えば、
+同じものを 2 回測った証拠にはならない。9.3 が言う「同じ対象サーバーの定義」は
+定義そのもの (= 名前) なので結論は出したままにするが、その食い違いは**参考
+ではなく、ふつうの警告**として、表より先に出す (Implementation Notes 4.3)。
+
+## 警告と、参考の警告の分け方 (9.4)
+
+測った値に効きうる食い違いは、すべてふつうの警告にする。参考 (`(参考)` で
+始まる文) に落とすのは、次の 3 つだけである。
+
+1. 対象サーバーの定義の名前そのものが違う (構成どうしの比較なので、ふつうは
+   これでよい) と、サーバーが申告したモデルや版の違い
+2. どちらの計測ランも測っていないまとまりの設定 (`quality.*`、`agent.*`、
+   コードの隔離の `sandbox.*` など)。比べる行が 1 つも出ないので、値に効かない
+3. 内部の指標を読む間隔 (`metrics_interval_s`)。読む回数が変わるだけで、測る
+   値の決め方は変わらない
+
+サンプリングの設定、thinking、出力の上限、試行の回数、慣らしの回数、乱数の種、
+1 トークンあたりの文字数、制限時間、許容の幅、出力が壊れている疑いのしきい値
+は、測ったまとまりのものを 1 つも落とさない。
 
 ## 依存の向き (design.md)
 
@@ -77,7 +107,13 @@ from pathlib import Path
 from typing import Any, Final
 
 from bench_harness.analysis.stats import diff_verdict, proportion_diff_verdict
-from bench_harness.analysis.summarize import TrialValue, summarize_run, trial_values
+from bench_harness.analysis.summarize import (
+    METRIC_ACCURACY,
+    METRIC_AGENT_BREAK_RATE,
+    TrialValue,
+    summarize_run,
+    trial_values,
+)
 from bench_harness.store.rawstore import RunStore
 from bench_harness.types import (
     ComparisonReport,
@@ -89,13 +125,16 @@ from bench_harness.types import (
     RepeatabilityConclusion,
     RunManifest,
     RunStatus,
+    SuiteName,
     Summary,
+    TargetDef,
     Tier,
 )
 
 __all__ = [
     "ComparisonResult",
     "ProportionPairs",
+    "ProportionSides",
     "TrialValues",
     "compare_runs",
     "compare_summaries",
@@ -109,6 +148,22 @@ TrialValues = Mapping[tuple[str, str], Sequence[TrialValue]]
 
 ProportionPairs = Mapping[tuple[str, str], tuple[ProportionStat, ProportionStat]]
 """割合の行の、両方の計測ランの分子と分母 (人が読む表に添える)。"""
+
+ProportionSides = Mapping[tuple[str, str], tuple[ProportionStat | None, ProportionStat | None]]
+"""割合の行の、それぞれの計測ランの分子と分母。**片方にしかない行も入る**。
+
+`ProportionPairs` は両方にそろった行だけを持つ。片方でしか採点できなかった行は、
+判定できないが、分かっている側の件数は表に出したい。`ComparisonResult` は
+こちらを持ち、`to_markdown()` がこれを使う。
+"""
+
+_PROPORTION_METRICS: Final[frozenset[str]] = frozenset({METRIC_ACCURACY, METRIC_AGENT_BREAK_RATE})
+"""割合で表す値の名前 (4.2)。行を表に振り分けるのに使う。
+
+`ComparisonRow` は、連続の値か割合かを持たない。片方にしか割合がない行は
+`proportion_verdict` が空になるので、それだけを見ると連続の値の表に落ちる。
+値の名前で見れば、片側しかない行も割合の表に出せる。
+"""
 
 _MIN_VALUES_FOR_VERDICT: Final[int] = 2
 """判定に要る、片側の値の数 (`diff_verdict` の下限と同じ)。"""
@@ -129,6 +184,28 @@ _PROFILE_PATHS_WARNED_ELSEWHERE: Final[frozenset[str]] = frozenset(
 _MISSING_FIELD: Final[str] = "(項目なし)"
 """片方の計測ランにしかない設定の項目 (版が違う生データ) の表示。"""
 
+_PROFILE_PATH_SUITES: Final[dict[str, SuiteName]] = {
+    "decode": SuiteName.DECODE,
+    "prefill": SuiteName.PREFILL,
+    "concurrency": SuiteName.CONCURRENCY,
+    "quality": SuiteName.QUALITY,
+    "sandbox": SuiteName.QUALITY,  # コードの隔離は、品質の検査だけが使う
+    "agent": SuiteName.AGENT,
+}
+"""計測の設定の経路の先頭 → その設定が効くまとまり (9.4 の絞り込みに使う)。
+
+ここにない経路 (乱数の種、サンプリング、1 トークンあたりの文字数、制限時間、
+許容の幅、出力が壊れている疑いのしきい値など) は、どのまとまりにも効きうる
+ので、まとまりで絞り込まない。
+"""
+
+_PROFILE_PATHS_INFORMATIONAL: Final[frozenset[str]] = frozenset({"metrics_interval_s"})
+"""測ったまとまりに関わらず、参考に落とす経路。
+
+`metrics_interval_s` は、計測の間に内部の指標を読む間隔である。読む回数が
+変わるだけで、速さも割合も、決め方は変わらない。
+"""
+
 
 # --- 返り値 -----------------------------------------------------------------
 
@@ -143,6 +220,10 @@ class ComparisonResult:
     `report.warnings` の先頭にも、どちらの計測ランのものかを添えて入って
     いる (10.5)。`proportions` は、割合の行の分子と分母で、人が読む表に
     件数を添えるために使う (`ComparisonRow` は割合しか持たない)。
+
+    書き出すときは `to_markdown()` と `to_json()` を使うこと。
+    `render_comparison_markdown(result.report)` と書くと、割合の行の分子と
+    分母が黙って消える (注 4.3)。この 2 つなら、渡し忘れようがない。
     """
 
     report: ComparisonReport
@@ -151,6 +232,18 @@ class ComparisonResult:
     proportions: dict[tuple[str, str], tuple[ProportionStat, ProportionStat]] = field(
         default_factory=dict
     )
+    proportion_sides: dict[tuple[str, str], tuple[ProportionStat | None, ProportionStat | None]] = (
+        field(default_factory=dict)
+    )
+    """片方にしか割合がない行も含む、それぞれの側の分子と分母 (`ProportionSides`)。"""
+
+    def to_markdown(self) -> str:
+        """人が読む比較の結果。件数を渡し忘れようがない口 (注 4.3)。"""
+        return _render_markdown(self.report, self.proportion_sides)
+
+    def to_json(self) -> str:
+        """道具が読む比較の結果 (`render_comparison_json` と同じ)。"""
+        return render_comparison_json(self.report)
 
 
 @dataclass(frozen=True)
@@ -184,11 +277,13 @@ def compare_runs(
         read_warnings_a=data_a.warnings,
         read_warnings_b=data_b.warnings,
     )
+    sides = _proportion_sides(data_a.summary, data_b.summary)
     return ComparisonResult(
         report=report,
         read_warnings_a=list(data_a.warnings),
         read_warnings_b=list(data_b.warnings),
-        proportions=_proportion_pairs(data_a.summary, data_b.summary),
+        proportions=_both_sides(sides),
+        proportion_sides=sides,
     )
 
 
@@ -327,7 +422,14 @@ def _setting_warnings(
             f"B: `{manifest_b.profile_name}`)。"
         )
 
-    warnings.extend(_profile_warnings(manifest_a.profile, manifest_b.profile))
+    warnings.extend(_target_warnings(manifest_a.target, manifest_b.target))
+    warnings.extend(
+        _profile_warnings(
+            manifest_a.profile,
+            manifest_b.profile,
+            measured=frozenset(manifest_a.suites) | frozenset(manifest_b.suites),
+        )
+    )
 
     tolerance_a = manifest_a.profile.compare_tolerance
     tolerance_b = manifest_b.profile.compare_tolerance
@@ -342,11 +444,47 @@ def _setting_warnings(
     return warnings
 
 
-def _profile_warnings(profile_a: Profile, profile_b: Profile) -> list[str]:
+def _target_warnings(target_a: TargetDef, target_b: TargetDef) -> list[str]:
+    """名前は同じなのに、実体が違う対象サーバー (注 4.3)。
+
+    繰り返しの結論 (9.3) を出すかどうかは、対象サーバーの**定義の名前**で
+    決める。名前が同じなら結論は出したままにするが、接続先かモデルが違えば
+    「同じものを 2 回測った」証拠にはならないので、参考ではなく、ふつうの警告
+    として表より先に出す。名前そのものが違う比較は、参考の警告で報せている
+    (構成どうしの比較なので、ふつうはそれでよい)。
+
+    出すのは接続先とモデルだけである。認証の情報は、設定に環境変数の**名前**
+    しかなく、値はどこにも入っていない (1.8)。ここでも読まないし、書かない。
+    """
+    if target_a.name != target_b.name:
+        return []
+    note = "同じものを 2 回測ったとは限らないので、繰り返しの結論はそのつもりで読むこと。"
+    warnings: list[str] = []
+    if str(target_a.base_url) != str(target_b.base_url):
+        warnings.append(
+            f"対象サーバーの定義の名前は同じ (`{target_a.name}`) だが、接続先が違う "
+            f"(A: {target_a.base_url}, B: {target_b.base_url})。{note}"
+        )
+    if target_a.model != target_b.model:
+        warnings.append(
+            f"対象サーバーの定義の名前は同じ (`{target_a.name}`) だが、モデルが違う "
+            f"(A: {target_a.model}, B: {target_b.model})。{note}"
+        )
+    return warnings
+
+
+def _profile_warnings(
+    profile_a: Profile, profile_b: Profile, *, measured: frozenset[SuiteName]
+) -> list[str]:
     """計測の設定を丸ごと突き合わせ、違う項目を点でつないだ経路で報せる (9.4)。
 
     サンプリングの設定、出力の上限、試行の回数、乱数の種は、すべてこの差分に
     含まれる。項目を手で並べないので、設定が増えても見落とさない。
+
+    比べた値に効きようのない項目 (`_informational_reason` を見ること) だけは、
+    `(参考)` に落とす。落とさないほうに寄せてあるので、迷う項目はふつうの警告
+    のままになる。`measured` は、**どちらかの計測ランが測った**まとまりである
+    (片方だけが測ったまとまりの設定も、読み手には見せる)。
     """
     flat_a = _flatten(profile_a.model_dump(mode="json"))
     flat_b = _flatten(profile_b.model_dump(mode="json"))
@@ -356,9 +494,37 @@ def _profile_warnings(profile_a: Profile, profile_b: Profile) -> list[str]:
             continue
         value_a = flat_a.get(path, _MISSING_FIELD)
         value_b = flat_b.get(path, _MISSING_FIELD)
-        if value_a != value_b:
-            warnings.append(f"計測の設定 `{path}` が違う (A: {value_a}, B: {value_b})。")
+        if value_a == value_b:
+            continue
+        reason = _informational_reason(path, measured)
+        head = "(参考) " if reason is not None else ""
+        detail = f"計測の設定 `{path}` が違う (A: {value_a}, B: {value_b})。"
+        warnings.append(f"{head}{detail}{reason or ''}")
     return warnings
+
+
+def _informational_reason(path: str, measured: frozenset[SuiteName]) -> str | None:
+    """参考に落としてよい設定の差か。落としてよければ、その理由を返す (9.4)。
+
+    落とすのは、次の 2 つだけである。
+
+    1. どちらの計測ランも測っていないまとまりの設定。比べる行が 1 つも出ない
+       ので、並べた値には効きようがない。コードの隔離 (`sandbox.*`) は、品質の
+       検査だけが使うので、品質の検査に従う
+    2. 内部の指標を読む間隔 (`metrics_interval_s`)。読む回数が変わるだけで、
+       測る値の決め方は変わらない
+
+    ほかは、すべてふつうの警告のままにする。サンプリングの設定、thinking、
+    出力の上限、試行の回数、慣らしの回数、乱数の種、1 トークンあたりの文字数、
+    制限時間、許容の幅、出力が壊れている疑いのしきい値は、測ったまとまりのもの
+    を 1 つも落とさない。
+    """
+    if path in _PROFILE_PATHS_INFORMATIONAL:
+        return "内部の指標を読む間隔なので、比べた値の決め方には効かない。"
+    suite = _PROFILE_PATH_SUITES.get(path.split(".", 1)[0])
+    if suite is not None and suite not in measured:
+        return f"どちらの計測ランも `{suite.value}` を測っていないので、比べた値には効かない。"
+    return None
 
 
 def _flatten(data: Mapping[str, Any], prefix: str = "") -> dict[str, str]:
@@ -452,7 +618,7 @@ def _build_rows(
         verdict: DiffVerdict | None = None
         marker: str | None = None
         if row_a.continuous is not None and row_b.continuous is not None:
-            verdict, marker = _continuous_verdict(
+            verdict, marker, pairing_warning = _continuous_verdict(
                 key,
                 values_a=values_a,
                 values_b=values_b,
@@ -460,6 +626,8 @@ def _build_rows(
                 manifest_b=manifest_b,
                 tolerance=tolerance,
             )
+            if pairing_warning is not None:
+                warnings.append(pairing_warning)
 
         proportion_verdict = None
         if row_a.proportion is not None and row_b.proportion is not None:
@@ -507,45 +675,83 @@ def _continuous_verdict(
     manifest_a: RunManifest,
     manifest_b: RunManifest,
     tolerance: float,
-) -> tuple[DiffVerdict | None, str | None]:
-    """連続の値の行の判定 (9.2)。判定できないときは、理由を返す。"""
+) -> tuple[DiffVerdict | None, str | None, str | None]:
+    """連続の値の行の判定 (9.2)。
+
+    返すのは `(判定, 判定できない理由, 対応なしへ退化した警告)` である。
+    退化の警告は、対応のある比較になるはずだったのに、番号がそろわなかった
+    行だけに付く (注 4.3)。
+    """
     items_a = list(values_a.get(key, ()))
     items_b = list(values_b.get(key, ()))
     if len(items_a) < _MIN_VALUES_FOR_VERDICT or len(items_b) < _MIN_VALUES_FOR_VERDICT:
-        return None, (
-            f"値の数が足りない (A: {len(items_a)} 件、B: {len(items_b)} 件。"
-            f"{_MIN_VALUES_FOR_VERDICT} 件以上が要る)"
+        return (
+            None,
+            (
+                f"値の数が足りない (A: {len(items_a)} 件、B: {len(items_b)} 件。"
+                f"{_MIN_VALUES_FOR_VERDICT} 件以上が要る)"
+            ),
+            None,
         )
 
-    paired = _is_paired(manifest_a, manifest_b, items_a, items_b)
-    if paired:
+    pairing = _pairing(manifest_a, manifest_b, items_a, items_b)
+    if pairing.paired:
         # 番号で突き合わせるため、両方を同じ鍵で並べ替えてから渡す
         items_a.sort(key=_value_key)
         items_b.sort(key=_value_key)
     verdict = diff_verdict(
         [item.value for item in items_a],
         [item.value for item in items_b],
-        paired,
+        pairing.paired,
         tolerance,
         _row_seed(manifest_a.run_id, manifest_b.run_id, key),
     )
-    return verdict, None
+    warning = None
+    if pairing.expected and not pairing.paired:
+        condition, metric = key
+        warning = (
+            f"`{condition}` の `{metric}` は、試行の番号がそろわないので、対応のない比較に"
+            f"した (A: {len(items_a)} 件、B: {len(items_b)} 件)。"
+            "検出力が下がるので、同じ差でも「収まる」と出やすくなる。"
+        )
+    return verdict, None, warning
 
 
-def _is_paired(
+@dataclass(frozen=True)
+class _Pairing:
+    """対応のある比較にできるか (9.2) と、そもそも期待できたか。
+
+    `expected` は、生成器の版と乱数の種がそろっていて、同じ番号の試行が同じ
+    入力になるはずだった、ということである。期待できた比較が対応なしへ落ちた
+    ことだけを、行ごとの警告にする (版や種の食い違いには、別の警告がある)。
+    """
+
+    paired: bool
+    expected: bool
+
+
+def _pairing(
     manifest_a: RunManifest,
     manifest_b: RunManifest,
     items_a: Sequence[TrialValue],
     items_b: Sequence[TrialValue],
-) -> bool:
-    """対応のある比較にしてよいか (9.2 の 3 つの条件)。"""
-    if manifest_a.generator_version != manifest_b.generator_version:
-        return False
-    if manifest_a.profile.seed != manifest_b.profile.seed:
-        return False
+) -> _Pairing:
+    """対応のある比較にしてよいか (9.2 の 3 つの条件)。
+
+    同じ番号が 2 回入っている列は、対応のある比較にしない。両方に同じ重なりが
+    あると、並べ替えた番号の列は見かけ上そろうが、どの値とどの値の差を取るのか
+    が決まらない (守りの判定)。
+    """
+    expected = (
+        manifest_a.generator_version == manifest_b.generator_version
+        and manifest_a.profile.seed == manifest_b.profile.seed
+    )
+    if not expected:
+        return _Pairing(paired=False, expected=False)
     keys_a = sorted(_value_key(item) for item in items_a)
     keys_b = sorted(_value_key(item) for item in items_b)
-    return bool(keys_a) and keys_a == keys_b
+    distinct = len(set(keys_a)) == len(keys_a) and len(set(keys_b)) == len(keys_b)
+    return _Pairing(paired=bool(keys_a) and distinct and keys_a == keys_b, expected=True)
 
 
 def _value_key(item: TrialValue) -> tuple[int, int, int]:
@@ -613,17 +819,34 @@ def _repeatability(
     return RepeatabilityConclusion(all_within=not outside, outside=outside)
 
 
-def _proportion_pairs(
+def _proportion_sides(
     summary_a: Summary, summary_b: Summary
-) -> dict[tuple[str, str], tuple[ProportionStat, ProportionStat]]:
-    """割合の行の、両方の分子と分母 (人が読む表に件数を添えるために持ち回る)。"""
+) -> dict[tuple[str, str], tuple[ProportionStat | None, ProportionStat | None]]:
+    """割合の行の、それぞれの側の分子と分母 (人が読む表に件数を添えるために持ち回る)。
+
+    片方でしか採点できなかった行も入れる。判定はできないが、分かっている側の
+    件数は表に出す (5.6: 割合には必ず分母と分子を添える)。
+    """
     index_b = _index(summary_b)
-    pairs: dict[tuple[str, str], tuple[ProportionStat, ProportionStat]] = {}
+    sides: dict[tuple[str, str], tuple[ProportionStat | None, ProportionStat | None]] = {}
     for key, row_a in _index(summary_a).items():
         row_b = index_b.get(key)
-        if row_b is None or row_a.proportion is None or row_b.proportion is None:
+        if row_b is None:
             continue
-        pairs[key] = (row_a.proportion, row_b.proportion)
+        if row_a.proportion is None and row_b.proportion is None:
+            continue
+        sides[key] = (row_a.proportion, row_b.proportion)
+    return sides
+
+
+def _both_sides(
+    sides: ProportionSides,
+) -> dict[tuple[str, str], tuple[ProportionStat, ProportionStat]]:
+    """両方にそろった行だけを取り出す (`ComparisonResult.proportions` の形)。"""
+    pairs: dict[tuple[str, str], tuple[ProportionStat, ProportionStat]] = {}
+    for key, (stat_a, stat_b) in sides.items():
+        if stat_a is not None and stat_b is not None:
+            pairs[key] = (stat_a, stat_b)
     return pairs
 
 
@@ -668,7 +891,16 @@ def render_comparison_markdown(
     警告 → 繰り返しの結論 → 主な結果 → 参考 → 外した条件 → 読み方、の順に出す。
     警告は、どの表よりも先に出す (9.4)。`proportions` を渡すと、割合の行に
     分子と分母を添える (`ComparisonRow` は割合しか持たないため)。
+
+    `compare_runs` の返り値があるなら、`ComparisonResult.to_markdown()` を
+    使うこと。`proportions=` を渡し忘れようがなく、片方でしか採点できなかった
+    行の件数も残る (注 4.3)。
     """
+    return _render_markdown(report, proportions or {})
+
+
+def _render_markdown(report: ComparisonReport, sides: ProportionSides) -> str:
+    """人が読む比較の結果の中身 (`sides` は、片側しかない行も持てる形)。"""
     lines: list[str] = [
         "# 計測ランの比較",
         "",
@@ -678,8 +910,8 @@ def render_comparison_markdown(
     ]
     lines += _warnings_section(report)
     lines += _repeatability_section(report)
-    lines += _tier_section("主な結果", report, "primary", proportions)
-    lines += _tier_section("参考", report, "reference", proportions)
+    lines += _tier_section("主な結果", report, "primary", sides)
+    lines += _tier_section("参考", report, "reference", sides)
     lines += _excluded_section(report)
     lines += _reading_section()
     return "\n".join(lines).rstrip("\n") + "\n"
@@ -740,7 +972,7 @@ def _repeatability_section(report: ComparisonReport) -> list[str]:
 
 
 def _tier_section(
-    title: str, report: ComparisonReport, tier: Tier, proportions: ProportionPairs | None
+    title: str, report: ComparisonReport, tier: Tier, sides: ProportionSides
 ) -> list[str]:
     """主な結果と参考を、別の節に分けて出す (4.4)。値の種類ごとに表を分ける。"""
     lines = [f"## {title}", ""]
@@ -749,17 +981,31 @@ def _tier_section(
         lines += ["(この比較には、該当する条件がない)", ""]
         return lines
 
-    continuous = [row for row in rows if row.proportion_verdict is None]
-    proportional = [row for row in rows if row.proportion_verdict is not None]
+    proportional = [row for row in rows if _is_proportion_row(row, sides)]
+    continuous = [row for row in rows if not _is_proportion_row(row, sides)]
     if continuous:
         lines += [_CONTINUOUS_HEADER, _CONTINUOUS_RULE]
         lines += [_continuous_row(row) for row in continuous]
         lines.append("")
     if proportional:
         lines += ["### 割合で表す結果", "", _PROPORTION_HEADER, _PROPORTION_RULE]
-        lines += [_proportion_row(row, proportions) for row in proportional]
+        lines += [_proportion_row(row, sides) for row in proportional]
         lines.append("")
     return lines
+
+
+def _is_proportion_row(row: ComparisonRow, sides: ProportionSides) -> bool:
+    """割合の表に出す行か (4.2、5.6)。
+
+    判定が付いた行だけで決めると、片方でしか採点できなかった行が、連続の値の
+    表に落ちる (数える単位も欄も違うのに、速さの行と同じ形で並んでしまう)。
+    値の名前と、どちらかに割合があることでも振り分ける。
+    """
+    return (
+        row.proportion_verdict is not None
+        or row.metric in _PROPORTION_METRICS
+        or (row.condition, row.metric) in sides
+    )
 
 
 def _continuous_row(row: ComparisonRow) -> str:
@@ -781,9 +1027,9 @@ def _continuous_row(row: ComparisonRow) -> str:
     return "| " + " | ".join(cells) + " |"
 
 
-def _proportion_row(row: ComparisonRow, proportions: ProportionPairs | None) -> str:
-    pair = (proportions or {}).get((row.condition, row.metric))
-    stat_a, stat_b = (pair[0], pair[1]) if pair is not None else (None, None)
+def _proportion_row(row: ComparisonRow, sides: ProportionSides) -> str:
+    pair = sides.get((row.condition, row.metric))
+    stat_a, stat_b = pair if pair is not None else (None, None)
     cells = [
         f"`{_cell(row.condition)}`",
         f"`{_cell(row.metric)}`",
@@ -874,15 +1120,28 @@ def _cell(text: str) -> str:
 
 
 def write_comparison(
-    report: ComparisonReport, out_path: Path, *, proportions: ProportionPairs | None = None
+    report: ComparisonReport | ComparisonResult,
+    out_path: Path,
+    *,
+    proportions: ProportionPairs | None = None,
 ) -> Path:
     """比較の結果を、人が読む形でファイルに書く (design.md: 指示があればファイルに)。
+
+    `compare_runs` の返り値 (`ComparisonResult`) をそのまま渡せる。そのときは
+    件数を中から取るので、`proportions=` は要らない (渡しても使わない)。
+    `ComparisonReport` だけを渡すと、割合の行の分子と分母は `proportions=` を
+    渡したぶんしか出ない (注 4.3)。
 
     同じディレクトリに別名で書いて `fsync` し、`os.replace` してから、ディレクトリ
     自体も `fsync` する (`analysis/summarize` と同じ決まり)。途中で落ちても、前の
     ファイルが壊れた中身にならない。
     """
-    data = render_comparison_markdown(report, proportions=proportions).encode("utf-8")
+    text = (
+        report.to_markdown()
+        if isinstance(report, ComparisonResult)
+        else render_comparison_markdown(report, proportions=proportions)
+    )
+    data = text.encode("utf-8")
     directory = out_path.parent
     fd, tmp_name = tempfile.mkstemp(dir=directory, prefix=f".{out_path.name}.", suffix=".tmp")
     tmp_path = Path(tmp_name)
