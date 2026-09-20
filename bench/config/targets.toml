@@ -25,5 +25,9 @@ notes = "比較の基準となる対象サーバー。中身 (量子化や投機
 # notes = "上流の vLLM main、NVFP4、MTP k=1"
 # api_key_env = "BENCH_OWN_API_KEY"
 #
+# metric_map に書くのは、`/metrics` のテキストを解析した**あと**のサンプルの名前である。
+# カウンターは、対象サーバーの出力に `_total` が見えなくても、`_total` を付けて書く
+# (例: "custom:prefix_cache_hits_total")。ヒストグラムは `_sum` と `_count` を書く。
+# ゲージは、そのままの名前でよい。
 # [targets.own-p1.metric_map]
 # kv_usage = "custom:kv_cache_usage_ratio"
