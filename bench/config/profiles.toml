@@ -73,6 +73,8 @@ target_input_tokens = [8000, 32000, 128000]
 
 [profiles.quick.concurrency]
 levels = [1, 2, 4, 8]
+# 5 回は、動くことを素早く確かめるための数。2 つの計測ランの比較に使うなら、
+# `--set concurrency.rounds=20` で増やすこと (5 回では、同じ構成どうしでも「収まらない」が出た)
 rounds = 5
 max_tokens = 256
 input_tokens = 2000
@@ -145,7 +147,9 @@ target_input_tokens = [8000, 32000, 128000]
 
 [profiles.full.concurrency]
 levels = [1, 2, 4, 8]
-rounds = 10
+# 実機 (2026-09-20、投機的デコードのある対象) では、5 回だと同じ構成どうしの比較で同時 2 本が
+# 「収まらない」になり (+10.7%)、20 回で「収まる」になった (+1.2%)。公開する結果は 20 回で測る
+rounds = 20
 max_tokens = 256
 input_tokens = 2000
 
