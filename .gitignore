@@ -1,0 +1,8 @@
+# 生データの置き場所 (リポジトリの直下だけ。`docs/results/` は公開する要約の置き場所なので、無視しない)
+/results/
+bench/.venv/
+bench/data-cache/
+bench/.pytest_cache/
+bench/.mypy_cache/
+bench/.ruff_cache/
+bench/**/__pycache__/

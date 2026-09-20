@@ -1,0 +1,58 @@
+[project]
+name = "bench-harness"
+version = "0.1.0"
+description = "GLM-5.3-Flash 推論サーバーを Anthropic 互換 API 経由で計測するコマンドラインの道具"
+authors = [
+    { name = "Junichi Kato", email = "j5ik2o@gmail.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "httpx~=0.28.1",
+    "httpx-sse~=0.4.3",
+    "pydantic~=2.13.5",
+    "jsonschema~=4.26.0",
+    "prometheus-client~=0.26.0",
+]
+
+[project.scripts]
+bench = "bench_harness.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/bench_harness"]
+
+[dependency-groups]
+dev = [
+    "pytest~=9.1.1",
+    "pytest-asyncio~=1.4.0",
+    "pytest-httpserver~=1.1.5",
+    "ruff~=0.16.8",
+    "mypy~=2.3.1",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.ruff.format]
+quote-style = "double"
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+files = ["src", "tests"]
+# tests/fake_server.py を `import fake_server` で解決する (pytest の pythonpath と揃える)
+mypy_path = "tests"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+# tests/ 直下の助け (fake_server.py) を、どの試験からも import できるようにする
+pythonpath = ["tests"]
