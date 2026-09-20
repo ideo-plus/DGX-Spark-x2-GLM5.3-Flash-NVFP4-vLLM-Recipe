@@ -13,6 +13,8 @@
 
 from __future__ import annotations
 
+import os
+import shutil
 import subprocess
 import time
 import tomllib
@@ -29,7 +31,12 @@ from bench_harness.scoring.code import (
     score_checked,
     score_code,
 )
-from bench_harness.scoring.sandbox import CONTAINER_NAME_PREFIX, ContainerSandbox, SandboxError
+from bench_harness.scoring.sandbox import (
+    CONTAINER_NAME_PREFIX,
+    ContainerSandbox,
+    SandboxError,
+    build_run_argv,
+)
 from bench_harness.types import (
     CodeProblem,
     QualityOutcome,
@@ -440,3 +447,28 @@ def test_image_digest_mismatch_is_unavailable_and_nothing_runs(
     with pytest.raises(SandboxError):
         box.run_python('open("/tmp/should-never-exist", "w")\n', 5.0)
     assert _leftover_containers(settings) == before
+
+
+def test_a_container_ends_by_itself_when_the_host_side_never_kills_it(
+    working_runtime: None, settings: SandboxSettings
+) -> None:
+    """こちらの `kill` が走らなくても (プロセスの強制終了を模して)、コンテナは自分で終わる。"""
+    image_id = settings.image_digest
+    assert image_id is not None
+    runtime = shutil.which("docker") or shutil.which("podman")
+    assert runtime is not None
+    name = f"{CONTAINER_NAME_PREFIX}selfdestruct-{os.getpid()}"
+    argv = build_run_argv(runtime, image_id, name, settings, self_destruct_s=2)
+
+    done = subprocess.run(
+        argv, input=b"while True:\n    pass\n", capture_output=True, timeout=60, check=False
+    )
+
+    assert done.returncode == 137  # 中の timeout が KILL した
+    listed = subprocess.run(
+        [runtime, "ps", "-a", "-q", "--filter", f"name={name}"],
+        capture_output=True,
+        timeout=30,
+        check=True,
+    )
+    assert listed.stdout.strip() == b""

@@ -333,14 +333,37 @@ def _default_start_process(argv: Sequence[str]) -> ProcessLike:
 # --- 起動の引数 --------------------------------------------------------------
 
 
+SELF_DESTRUCT_MARGIN_S: Final[int] = 10
+"""コンテナが自分で終わるまでの、こちらの時間切れへの上乗せ (秒)。
+
+ふつうは、こちらの時間切れが先に働いて `kill` する。コンテナの中の上限は、
+こちらのプロセスが死んだときのための、最後の守りである。
+"""
+
+
 def build_run_argv(
-    runtime: str, image_ref: str, container_name: str, settings: SandboxSettings
+    runtime: str,
+    image_ref: str,
+    container_name: str,
+    settings: SandboxSettings,
+    *,
+    self_destruct_s: int | None = None,
 ) -> list[str]:
     """コンテナを起こす引数を組み立てる (純粋な関数)。
 
     `image_ref` は、ダイジェストが決まっていれば識別子、決まっていなければ
     イメージの名前。`-` で始まる値 (引数に見える値) は断る (fail closed)。
+
+    `self_destruct_s` を渡すと、コンテナの中の `timeout -s KILL <秒>` の下で動かす。
+    こちらのプロセスが強制終了されると、時間切れの `kill` も後始末も走らないので、
+    終わらないコードのコンテナが、いつまでも残る (実際に、試験の中断で残った)。
+    中からも止まるようにしておけば、こちらが死んでも、コンテナは自分で終わる。
     """
+    if self_destruct_s is not None and self_destruct_s < 1:
+        raise SandboxError(f"self_destruct_s は 1 以上である必要がある: {self_destruct_s!r}")
+    command = ["python", "-I", "-"]
+    if self_destruct_s is not None:
+        command = ["timeout", "-s", "KILL", str(self_destruct_s), *command]
     if not _IMAGE_REF_RE.match(image_ref):
         raise SandboxError(f"イメージの指定が使えない値である: {image_ref!r}")
     if not _CONTAINER_NAME_RE.match(container_name):
@@ -375,9 +398,7 @@ def build_run_argv(
         "--user",
         SANDBOX_USER,
         image_ref,
-        "python",
-        "-I",
-        "-",
+        *command,
     ]
 
 
@@ -590,7 +611,13 @@ class ContainerSandbox:
             raise SandboxError(f"隔離の実行環境が使えないので、何も動かさない: {resolved.reason}")
 
         name = self._next_name()
-        argv = build_run_argv(resolved.runtime_path, resolved.image_ref, name, self._settings)
+        argv = build_run_argv(
+            resolved.runtime_path,
+            resolved.image_ref,
+            name,
+            self._settings,
+            self_destruct_s=math.ceil(timeout_s) + SELF_DESTRUCT_MARGIN_S,
+        )
         payload = source.encode("utf-8", errors="replace")
 
         try:

@@ -29,11 +29,13 @@ temperature = 0.0
 thinking = "server_default"
 
 [profiles.quick.chars_per_token]
-# 実機のトークナイザで測り直す前の初期値。タスク 8.2 で校正し直す
-prose_en = 4.0
-prose_ja = 1.5
-code = 3.5
-log = 3.0
+# 2026-09-20 に `bench calibrate` で、実機の GLM-5.3-Flash のトークナイザーに対して測った値
+# (対象: http://10.0.1.60:8001、1 種類につき約 2000 トークン、count_tokens)。要求の包みのぶん、
+# わずかに小さく出る。モデルかトークナイザーを替えたら、測り直すこと
+prose_en = 4.831
+prose_ja = 1.794
+code = 3.505
+log = 2.316
 
 [profiles.quick.timeout]
 connect_s = 10.0
@@ -105,10 +107,11 @@ temperature = 0.0
 thinking = "server_default"
 
 [profiles.full.chars_per_token]
-prose_en = 4.0
-prose_ja = 1.5
-code = 3.5
-log = 3.0
+# quick と同じ (2026-09-20 に実機の GLM-5.3-Flash で測った値)
+prose_en = 4.831
+prose_ja = 1.794
+code = 3.505
+log = 2.316
 
 [profiles.full.timeout]
 connect_s = 10.0

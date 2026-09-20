@@ -15,6 +15,16 @@ model = "glm-5.3-flash"
 max_context_tokens = 1000000
 notes = "比較の基準となる対象サーバー。中身 (量子化や投機的デコードの設定など) は参照しない"
 
+# 2026-09-20 の時点で、head の 8001 番で動いている対象サーバー (コンテナ `exl3-tp2`、
+# `vllm serve /models/glm-5.3-flash-exl3-full`、TP=2)。計測者が、この計測の道具とは別に起動したもの。
+# 上の candidate-d と同じ構成かどうかは確かめていないので、名札を分けてある。道具の確かめ
+# (タスク 8.2、8.3) は、この名前で測る。
+[targets.exl3-tp2]
+base_url = "http://10.0.1.60:8001"
+model = "glm-5.3-flash"
+max_context_tokens = 1000000
+notes = "head の 8001 番の glm-5.3-flash (EXL3、TP=2)。candidate-d と同じ構成かは未確認"
+
 # 自前で立てた対象サーバーの例。認証の情報 (api_key_env) と、対象サーバー固有の
 # 内部指標の名前への上書き (metric_map) の書き方を示す (コメントアウトしてある
 # ので、そのままでは読み込まれない)。

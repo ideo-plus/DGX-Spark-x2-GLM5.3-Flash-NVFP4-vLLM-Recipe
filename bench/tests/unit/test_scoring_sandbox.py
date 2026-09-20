@@ -198,6 +198,22 @@ def test_argv_fixes_the_isolation_flags() -> None:
     assert argv[-4:] == [PINNED_ID, "python", "-I", "-"]
 
 
+def test_argv_can_make_the_container_end_by_itself() -> None:
+    """こちらのプロセスが強制終了されても、コンテナは中の `timeout` で自分から終わる。"""
+    argv = build_run_argv(
+        "/usr/local/bin/docker",
+        PINNED_ID,
+        "bench-sbx-1-1-abcd",
+        make_settings(),
+        self_destruct_s=30,
+    )
+    assert argv[-8:] == [PINNED_ID, "timeout", "-s", "KILL", "30", "python", "-I", "-"]
+    with pytest.raises(SandboxError):
+        build_run_argv(
+            "/usr/local/bin/docker", PINNED_ID, "bench-sbx-1", make_settings(), self_destruct_s=0
+        )
+
+
 def test_argv_has_no_flag_that_would_open_the_box() -> None:
     """マウント、環境変数、特権、デバイスの渡しは、いっさい付けない。"""
     argv = build_run_argv("/usr/local/bin/docker", PINNED_ID, "bench-sbx-1-1-abcd", make_settings())
