@@ -512,7 +512,7 @@ def _build_context(
     入力の長さの上限は、まだ分からない (前提の確認で得る) ので `None` で作り、
     あとで `_with_context_limit` が入れ直す。使えない設定 (thinking) の判定を、
     通信より前に済ませるための順序。判定の決まりは `make_suite_context` が持ち、
-    ここでは写さない (task 8.4 で変わるため)。
+    ここでは写さない (決まりを 2 か所に持たないため)。
     """
     try:
         return make_suite_context(

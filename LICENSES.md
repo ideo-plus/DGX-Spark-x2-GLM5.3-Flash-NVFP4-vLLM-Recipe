@@ -59,6 +59,7 @@
 | 名前 | 版 | 入手先 | ライセンス | 用途 |
 |---|---|---|---|---|
 | uv | 0.12.11 | https://pypi.org/project/uv/ | MIT OR Apache-2.0 | 依存の解決と、仮想環境の管理 (`uv sync`、`uv run`) |
+| hatchling | (版は固定していない。`[build-system] requires`) | https://pypi.org/project/hatchling/ | MIT | パッケージのビルドのバックエンド。`uv.lock` には入らない |
 
 ## 公開の課題
 

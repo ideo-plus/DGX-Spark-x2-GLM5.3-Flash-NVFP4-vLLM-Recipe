@@ -48,3 +48,34 @@ def test_cli_help_via_subprocess_exits_zero() -> None:
 
     assert result.returncode == 0
     assert "usage" in result.stdout.lower()
+
+
+def test_the_duplicated_constants_and_seed_helpers_cannot_drift_apart() -> None:
+    """依存の向きの都合で 2 か所以上に書いてある決まりが、同じ値のままであること。
+
+    片方だけ変えると、印は付くのに集計からは外れない、生成される入力が変わるのに
+    生成器の版が上がらない、といった形で、結果が黙って歪む (全体の検証の指摘)。
+    """
+    from bench_harness.analysis import summarize
+    from bench_harness.corpus import conversation, needle, synth, tools
+    from bench_harness.suites import base
+
+    assert base.MIN_SPEED_OUTPUT_TOKENS == summarize.MIN_SPEED_OUTPUT_TOKENS
+
+    parts = ("purpose", 7, "条件/鍵", 0)
+    encoders = [
+        base._encode_part,
+        synth._encode_part,
+        tools._encode_part,
+        needle._encode_part,
+        conversation._encode_part,
+    ]
+    for part in parts:
+        assert len({encoder(part) for encoder in encoders}) == 1, part
+
+    seeds = {
+        tools._derive_seed(11, 3, "p"),
+        needle._derive_seed(11, 3, "p"),
+        conversation._derive_seed(11, 3, "p"),
+    }
+    assert len(seeds) == 1

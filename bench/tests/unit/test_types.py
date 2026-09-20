@@ -585,6 +585,9 @@ def test_default_tolerances_match_the_design() -> None:
     assert profile.decode.warmup_trials == 2
     assert profile.decode.max_tokens == 1024
     assert profile.prefill.max_tokens == 16
+    # 要件 5.3、4.1 が名指しする既定の条件。黙って変わらないように固定する
+    assert profile.quality.needle_lengths == [8000, 32000, 128000]
+    assert profile.concurrency.levels == [1, 2, 4, 8]
     assert profile.prefill.target_input_tokens == [8000, 32000, 128000]
     assert profile.concurrency.levels == [1, 2, 4, 8]
     assert profile.quality.needle_depths == [0, 25, 50, 75, 100]
