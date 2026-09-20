@@ -394,3 +394,26 @@ def test_real_profiles_file_loads_quick_and_full() -> None:
     assert full.agent.trials_per_stage == 300
     assert quick.quality.code_problem_limit == 40
     assert full.quality.code_problem_limit is None
+
+
+@pytest.mark.parametrize("value", ["on", "off", "enabled"])
+def test_thinking_can_only_be_the_server_default(tmp_path: Path, value: str) -> None:
+    """thinking は、対象サーバーの既定しか選べない (task 8.4)。
+
+    2026-09-20 に実機で、`/v1/messages` からは切り替えられないと確かめた。効かない選択肢を
+    受け付けると、「設定では切り替えたのに、実際には変わっていない」計測が黙って残る。
+    """
+    profiles_path = tmp_path / "profiles.toml"
+    profiles_path.write_text(
+        f'[profiles.tiny]\n\n[profiles.tiny.sampling]\nthinking = "{value}"\n', encoding="utf-8"
+    )
+
+    with pytest.raises(c.ConfigError) as exc_info:
+        c.load_profiles(profiles_path)
+
+    assert "profiles.tiny.sampling.thinking" in str(exc_info.value)
+
+
+def test_the_shipped_profiles_use_the_server_default_thinking() -> None:
+    profiles = c.load_profiles()
+    assert {profile.sampling.thinking for profile in profiles.values()} == {"server_default"}

@@ -421,7 +421,7 @@ class Sampling(BaseModel):
     temperature: float = 0.0
     top_p: float | None = None
     top_k: int | None = None
-    thinking: Literal["server_default", "on", "off"] = "server_default"   # 渡し方を実機で確かめるまでは server_default だけを使う
+    thinking: Literal["server_default"] = "server_default"   # 選べるのは、対象サーバーの既定だけ (2026-09-20 に実機で、/v1/messages からは切り替えられないと確かめた。タスク 8.4)
 
 class Usage(BaseModel):
     input_tokens: int
@@ -544,7 +544,7 @@ class MessagesClient(Protocol):
 | POST | `/v1/messages` | `model`、`max_tokens`、`messages`、`system`、`tools`、`temperature`、`top_p`、`top_k`、`stream: true` | SSE のイベントの列 | 400 (上限の超過など)、401、5xx、`event: error` |
 
 - `tool_choice` は送らない (サーバーが `auto` を付ける)。`stop_sequences` も送らない
-- thinking の切り替えの渡し方 (`chat_template_kwargs` の `enable_thinking`) は、実機で確かめてから固定する。確かめるまでは、サーバーの既定のままにして、その旨を実行の条件に記録する
+- thinking は、対象サーバーの既定のままにして、その旨を実行の条件に記録する。2026-09-20 に実機 (EXL3 の構成) で確かめたところ、`/v1/messages` からは切り替えられなかった (Anthropic の形の `thinking` も、`chat_template_kwargs` の `enable_thinking` も、出力を変えなかった) ので、設定の選択肢を `server_default` だけに絞った (タスク 8.4)。要求の本文には、thinking に関わる項目を 1 つも入れない。切り替えが効く構成が見つかったら、その構成で実測した渡し方と一緒に、選択肢を足し直す
 
 #### client/probe
 
@@ -1037,7 +1037,7 @@ api_key_env = "BENCH_OWN_API_KEY"
 
 - 計測の道具そのものが、測る値を歪めないこと。時刻は、イベントを受け取った直後に、解析の前に打つ。試行のレコードの書き込みと、本文の圧縮は、要求と要求の間に行い、ストリームを読んでいる間には行わない
 - 同時 8 本までを、1 つのプロセスの `asyncio` で扱う
-- 時間の見積もり (比較の基準の実測値から): `quick` の設定で、全部のまとまりを流して 1〜2 時間。`full` の設定の `agent` は数時間。まとまりを選んで流せる (1.2)
+- かかる時間 (2026-09-20 の実測。対象は head の 8001 番の glm-5.3-flash、EXL3、TP=2): `quick` の設定で、速さの 3 つのまとまりが 45 分 (生成速度 23 分を含む)、品質の検査が 20 分半、長い会話の検査が 19 分 (プレフィックスキャッシュの当たり率 0.88〜0.96 のとき)。全部で約 1 時間半。長い会話の検査は、キャッシュが効かない対象では数時間かかりうる。`full` の設定は、試行の数に比例して延びる。まとまりを選んで流せる (1.2)
 - 生データの大きさ: `full` の設定の `agent` で、圧縮後に数百 MB の見込み
 
 ## 対象サーバーに求める前提
@@ -1061,5 +1061,5 @@ api_key_env = "BENCH_OWN_API_KEY"
 
 ### 残っていること
 
-1. **コードの隔離の実行環境**。設計は Podman と Docker のどちらでも動く。Mac に今あるのは Docker Desktop だけで、会社の規模によっては有償契約が要る。当たる場合、または判断を避けたい場合は、コードの課題を実装する前に Podman (Apache-2.0) を入れる
-2. **thinking の切り替えの渡し方**。`/v1/messages` から GLM の thinking を切り替える項目は、実機で確かめてから固定する。それまでは `server_default` だけを使う
+1. ~~コードの隔離の実行環境~~ → 2026-09-20 に、Docker Desktop を使うと計測者が決めた (タスク 6.1)。設計は Podman でも動く
+2. ~~thinking の切り替えの渡し方~~ → 2026-09-20 に実機で確かめ、この対象では切り替えられないとわかったので、選択肢を `server_default` だけに絞った (タスク 8.3、8.4)。切り替えが効く構成が見つかったら、足し直す

@@ -154,8 +154,18 @@ Lang = Literal["en", "ja"]
 Tier = Literal["primary", "reference"]
 """主な結果か、参考か (4.4)。"""
 
-ThinkingMode = Literal["server_default", "on", "off"]
-"""thinking の切り替え。渡し方を実機で確かめるまでは `server_default` だけを使う。"""
+ThinkingMode = Literal["server_default"]
+"""thinking の設定。選べるのは「対象サーバーの既定」だけである (タスク 8.4)。
+
+2026-09-20 に実機 (head の 8001 番の glm-5.3-flash、EXL3 の構成) で確かめたところ、
+`/v1/messages` からは thinking を切り替えられなかった。Anthropic の形の
+`thinking: {type: enabled | disabled}` も、`chat_template_kwargs.enable_thinking` も、
+出力を変えなかった。効かない選択肢を残すと、「設定では切り替えたのに、実際には
+変わっていない」計測が黙って残るので、選択肢から外した。
+
+切り替えが効く構成が見つかったら、その構成で実測した渡し方と一緒に、選択肢を足し直す
+こと (要求の組み立てと、送った本文が変わることを確かめる試験も、そのときに足す)。
+"""
 
 SandboxRuntime = Literal["auto", "podman", "docker"]
 """コードの隔離に使うコンテナの実行環境。`auto` は podman、docker の順に探す。"""

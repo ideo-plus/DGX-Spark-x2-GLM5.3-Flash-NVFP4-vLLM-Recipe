@@ -554,6 +554,29 @@ async def test_thinking_other_than_server_default_fails_without_creating_a_run_d
     assert fake_server.call_count("/v1/messages") == 0
 
 
+async def test_the_server_default_thinking_sends_no_thinking_switch_and_is_recorded(
+    fake_server: FakeServer, tmp_path: Path
+) -> None:
+    """対象サーバーの既定のときは、thinking に関わる項目を 1 つも送らない (task 8.4)。
+
+    使った設定は、実行の条件に残る (1.6)。
+    """
+    fake_server.set_response(text_response("ok"))
+    bed = make_bed(tmp_path, fake_server)
+
+    outcome = await execute(bed, suites=[SuiteName.DECODE])
+
+    store = opened(outcome)
+    assert store.manifest().profile.sampling.thinking == "server_default"
+    records = trials_of(outcome)
+    assert records
+    for record in records:
+        assert record.request_body_ref is not None
+        body = store.get_body(record.request_body_ref)
+        assert "thinking" not in body
+        assert "chat_template_kwargs" not in body
+
+
 async def test_a_suite_that_is_not_in_the_registry_fails(
     fake_server: FakeServer, tmp_path: Path
 ) -> None:

@@ -244,11 +244,12 @@ class SuiteContext:
                 f"SuiteContext: context_limit は 1 以上か None (context_limit={self.context_limit})"
             )
         if self.profile.sampling.thinking != "server_default":
-            # 渡し方は実機で確かめてから固定する (design.md、task 8.4)。それまでに
-            # 切り替えを受け取ると、実行の条件と実際に送る本文が食い違う
+            # 設定の型は `server_default` しか許さない (task 8.4)。ここに来るのは、検証を
+            # 通らない作り方 (`model_copy(update=…)` など) をしたときだけ。実行の条件と、
+            # 実際に送る本文が食い違うので、送る前に止める
             raise ValueError(
-                "SuiteContext: thinking の切り替えは、まだ要求に反映できない "
-                f"(task 8.4 で実装する)。sampling.thinking={self.profile.sampling.thinking!r}"
+                "SuiteContext: thinking は、対象サーバーの既定 (server_default) しか選べない。"
+                f"sampling.thinking={self.profile.sampling.thinking!r}"
             )
 
 

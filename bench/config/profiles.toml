@@ -24,8 +24,8 @@ metrics_interval_s = 1.0
 
 [profiles.quick.sampling]
 temperature = 0.0
-# top_p、top_k は既定の None のまま (省略)。GLM の thinking の渡し方を実機で
-# 確かめるまでは server_default だけを使う
+# top_p、top_k は既定の None のまま (省略)。thinking は、対象サーバーの既定しか選べない
+# (2026-09-20 に実機で確かめたところ、/v1/messages からは切り替えられなかった。タスク 8.4)
 thinking = "server_default"
 
 [profiles.quick.chars_per_token]

@@ -102,6 +102,14 @@ iteration_tokens_sum = "custom:iteration_tokens_sum"  # Histogram は _sum と _
 iteration_tokens_count = "custom:iteration_tokens_count"
 ```
 
+### thinking は、対象サーバーの既定のまま
+
+`sampling.thinking` に書けるのは `"server_default"` だけである。`/v1/messages` から thinking を
+切り替える渡し方を、2026-09-20 に実機で 5 通り試したが、どれも出力を変えなかった (くわしくは
+`docs/decisions/0001-bench-harness-measurement-method.md`)。thinking を切り替えて比べたいときは、
+対象サーバーの側 (起動の引数やチャットテンプレート) で切り替えた構成を、別の名前の対象として
+`targets.toml` に足して測ること。
+
 ## コマンド
 
 以下はすべて `bench/` で実行する。`--help` に、この節より詳しい説明がある。
