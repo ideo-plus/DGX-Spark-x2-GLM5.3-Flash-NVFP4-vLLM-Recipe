@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import tomllib
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -20,12 +21,14 @@ import pytest
 
 from bench_harness import cli
 from bench_harness.analysis.compare import compare_runs
+from bench_harness.corpus import humaneval
 from bench_harness.runner import (
     EXIT_ABORTED,
     EXIT_INTERRUPTED,
     EXIT_OK,
     EXIT_PRECONDITION,
     PreconditionError,
+    default_suite_registry,
 )
 from bench_harness.store import RunStore, list_run_dirs
 from bench_harness.types import RunRequest, SuiteName
@@ -268,10 +271,15 @@ def suites_in(run_dir: Path) -> set[SuiteName]:
     return {record.suite for record in records}
 
 
-def test_run_without_a_suite_option_selects_every_runnable_suite(
+def test_run_without_a_suite_option_selects_the_three_speed_suites(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """`--suite` を省いたときの既定 (実行できるまとまりを、名前の順にすべて)。"""
+    """`--suite` を省いたときの既定 (task 8.1 で決めた: 速さの 3 つだけ)。
+
+    8.1 で品質の検査と長い会話の検査を対応表に足したので、「実行できるまとまり
+    すべて」を既定にすると、`quick` でも何時間もかかる計測ランが、うっかり
+    始まってしまう (注 5.1)。5 つ全部を流すときは `--suite all` と書く。
+    """
     bed = make_bed(tmp_path, base_url=UNREACHABLE_URL)
     seen = spy_on_execute_run(monkeypatch)
 
@@ -280,6 +288,111 @@ def test_run_without_a_suite_option_selects_every_runnable_suite(
     assert code == EXIT_PRECONDITION  # 覗き見の側で止めている
     assert seen[0].suites == [SuiteName.DECODE, SuiteName.PREFILL, SuiteName.CONCURRENCY]
     capsys.readouterr()
+
+
+def test_run_with_suite_all_selects_every_registered_suite(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`--suite all` は、対応表に載っているまとまりを、名前の定義順にすべて選ぶ (1.2)。"""
+    # まとまりの名前と重なると、`all` という名前のまとまりを選べなくなる
+    assert cli.ALL_SUITES not in {name.value for name in SuiteName}
+    bed = make_bed(tmp_path, base_url=UNREACHABLE_URL)
+    seen = spy_on_execute_run(monkeypatch)
+
+    code = bench(
+        "run",
+        "--target",
+        TARGET_NAME,
+        "--profile",
+        PROFILE_NAME,
+        "--suite",
+        "all",
+        *bed.run_options(),
+    )
+
+    assert code == EXIT_PRECONDITION
+    assert seen[0].suites == [
+        SuiteName.DECODE,
+        SuiteName.PREFILL,
+        SuiteName.CONCURRENCY,
+        SuiteName.QUALITY,
+        SuiteName.AGENT,
+    ]
+    capsys.readouterr()
+
+
+def test_run_keeps_the_order_of_the_suite_options(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`--suite` は繰り返せて、書いた順に実行する (1.2)。"""
+    bed = make_bed(tmp_path, base_url=UNREACHABLE_URL)
+    seen = spy_on_execute_run(monkeypatch)
+
+    bench(
+        "run",
+        "--target",
+        TARGET_NAME,
+        "--profile",
+        PROFILE_NAME,
+        "--suite",
+        "agent",
+        "--suite",
+        "decode",
+        *bed.run_options(),
+    )
+
+    assert seen[0].suites == [SuiteName.AGENT, SuiteName.DECODE]
+    capsys.readouterr()
+
+
+def test_the_same_suite_twice_is_a_configuration_error(
+    fake_server: FakeServer, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """同じまとまりを 2 回選ぶと、設定の誤りになる (判定は runner が持つ)。"""
+    bed = make_bed(tmp_path, fake_server)
+
+    code = bench(
+        "run",
+        "--target",
+        TARGET_NAME,
+        "--profile",
+        PROFILE_NAME,
+        "--suite",
+        "decode",
+        "--suite",
+        "decode",
+        *bed.run_options(),
+    )
+
+    assert code == EXIT_PRECONDITION
+    err = capsys.readouterr().err
+    assert "decode" in err
+    assert not bed.results_root.exists()
+
+
+def test_suite_all_cannot_be_mixed_with_other_names(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`all` は「すべて」なので、ほかの名前と混ぜて書けない。"""
+    bed = make_bed(tmp_path, base_url=UNREACHABLE_URL)
+
+    code = bench(
+        "run",
+        "--target",
+        TARGET_NAME,
+        "--profile",
+        PROFILE_NAME,
+        "--suite",
+        "all",
+        "--suite",
+        "decode",
+        *bed.run_options(),
+    )
+
+    assert code == EXIT_PRECONDITION
+    err = capsys.readouterr().err
+    assert "all" in err
+    assert "Traceback" not in err
 
 
 def spy_on_execute_run(monkeypatch: pytest.MonkeyPatch) -> list[RunRequest]:
@@ -292,6 +405,94 @@ def spy_on_execute_run(monkeypatch: pytest.MonkeyPatch) -> list[RunRequest]:
 
     monkeypatch.setattr(cli, "execute_run", fake_execute_run)
     return seen
+
+
+def spy_on_the_registry(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
+    """`default_suite_registry` に渡された引数を覚えておく。
+
+    入口は、使える名前を並べるためにも対応表を作る (引数なし)。計測ランのため
+    に作った 1 回だけを見分けられるよう、引数をそのまま覚えておく。
+    """
+    seen: list[dict[str, Any]] = []
+
+    def spy(**kwargs: Any) -> dict[SuiteName, Any]:
+        seen.append(dict(kwargs))
+        return dict(default_suite_registry(**kwargs))
+
+    monkeypatch.setattr(cli, "default_suite_registry", spy)
+    return seen
+
+
+def loaders_passed(seen: Sequence[dict[str, Any]]) -> list[Any]:
+    """対応表に渡された、公開の課題の読み方 (計測ランごとに 1 つ)。"""
+    return [call["problems_loader"] for call in seen if "problems_loader" in call]
+
+
+def test_run_builds_the_quality_suite_with_the_given_data_cache(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`--data-cache` と `--no-download` が、公開の課題の読み方に届く (6.5)。
+
+    読み方そのものは呼ばない (取得もしない)。入口が組み立てた読み方を、ここで
+    1 回だけ呼んで、どの置き場所を、取得を許さずに読もうとするかを確かめる。
+    """
+    bed = make_bed(tmp_path, base_url=UNREACHABLE_URL)
+    cache_dir = tmp_path / "data-cache"
+    seen = spy_on_the_registry(monkeypatch)
+    spy_on_execute_run(monkeypatch)
+    calls: list[tuple[Path | None, bool | None]] = []
+
+    def spy_load(cache: Path | None = None, **kwargs: Any) -> tuple[Any, list[Any]]:
+        calls.append((cache, kwargs.get("allow_download")))
+        raise humaneval.DatasetUnavailable("試験のために取得しない")
+
+    monkeypatch.setattr(humaneval, "load_humaneval_plus", spy_load)
+
+    bench(
+        "run",
+        "--target",
+        TARGET_NAME,
+        "--profile",
+        PROFILE_NAME,
+        "--suite",
+        "quality",
+        "--data-cache",
+        str(cache_dir),
+        "--no-download",
+        *bed.run_options(),
+    )
+
+    loaders = loaders_passed(seen)
+    assert len(loaders) == 1
+    loader = loaders[0]
+    assert loader is not None
+    with pytest.raises(humaneval.DatasetUnavailable):
+        loader()
+    assert calls == [(cache_dir, False)]
+    capsys.readouterr()
+
+
+def test_run_without_the_data_cache_options_leaves_the_default_loader(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """既定では、まとまり自身の読み方 (git の管理の対象でない既定の置き場所) を使う。"""
+    bed = make_bed(tmp_path, base_url=UNREACHABLE_URL)
+    seen = spy_on_the_registry(monkeypatch)
+    spy_on_execute_run(monkeypatch)
+
+    bench(
+        "run",
+        "--target",
+        TARGET_NAME,
+        "--profile",
+        PROFILE_NAME,
+        "--suite",
+        "quality",
+        *bed.run_options(),
+    )
+
+    assert loaders_passed(seen) == [None]
+    capsys.readouterr()
 
 
 def test_run_passes_the_trial_count_overrides_through(
@@ -431,7 +632,7 @@ def test_run_with_an_unknown_suite_lists_the_valid_names(
     assert code == EXIT_PRECONDITION
     err = capsys.readouterr().err
     assert "はやさ" in err
-    for name in ("decode", "prefill", "concurrency"):
+    for name in ("decode", "prefill", "concurrency", "quality", "agent"):
         assert name in err
     assert not bed.results_root.exists()
 
@@ -939,3 +1140,53 @@ def test_run_help_documents_the_exit_codes(capsys: pytest.CaptureFixture[str]) -
     out = capsys.readouterr().out
     for code in ("0", "1", "2", "130"):
         assert code in out
+
+
+def test_run_help_documents_the_suites_and_the_dataset_cache(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """5 つのまとまり、既定の 3 つ、`all`、課題の置き場所の指定が、使い方に出る (8.1)。"""
+    with pytest.raises(SystemExit):
+        bench("run", "--help")
+
+    out = capsys.readouterr().out
+    for name in ("decode", "prefill", "concurrency", "quality", "agent", "all"):
+        assert name in out
+    assert "--data-cache" in out
+    assert "--no-download" in out
+    # 既定が「速さの 3 つ」であることが、使い方から分かる
+    assert "既定" in out
+
+
+def test_a_data_cache_inside_the_work_tree_is_a_configuration_error_before_anything_runs(
+    fake_server: FakeServer, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """git の管理の対象になり得る置き場所は、計測を始める前に、設定の誤りとして示す。
+
+    あとで気付くと、先に流したまとまりの試行だけが残り、計測ランが `running` のまま
+    要約なしで止まる (実機では、何時間ぶんもの結果が宙に浮く)。
+    """
+    fake_server.set_response(text_response("ok"))
+    bed = make_bed(tmp_path, fake_server)
+    tracked_dir = Path(__file__).resolve().parents[2] / "src"
+
+    code = bench(
+        "run",
+        "--target",
+        TARGET_NAME,
+        "--profile",
+        PROFILE_NAME,
+        "--suite",
+        "all",
+        "--data-cache",
+        str(tracked_dir),
+        "--no-download",
+        *bed.run_options(),
+    )
+
+    assert code == EXIT_PRECONDITION
+    err = capsys.readouterr().err
+    assert "--data-cache" in err
+    assert "Traceback" not in err
+    assert list_run_dirs(bed.results_root) == []
+    assert fake_server.call_count("/v1/messages") == 0

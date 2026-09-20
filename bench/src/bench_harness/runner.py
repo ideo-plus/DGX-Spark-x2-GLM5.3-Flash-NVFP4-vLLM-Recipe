@@ -61,6 +61,15 @@
 - `PreconditionError` は、`exit_code` (1) をそのまま終了の値にし、例外の文を
   そのまま計測者に示すこと (どの前提が満たされていないかが書いてある)
 
+## 使った公開の課題 (5.5、5.7、task 8.1)
+
+まとまりの側からは実行の条件を書けない (`SuiteContext` の口は `put_body` だけ)
+ので、`run_info()` を持つまとまり (`SupportsRunInfo`。いまは品質の検査だけ) に
+ついては、**そのまとまりを流し終えたあとに**進行の側が読み取り、
+`RunManifest.datasets` に足す。止まった計測ランでも、中断した計測ランでも、
+そこまでに使った課題は残す (未完了の要約にも、何で測ったかが要る)。コードの
+条件を飛ばした計測ランでは、使った課題がないので、何も書かない (5.7)。
+
 ## 内部の指標 (7.1、7.4、7.5)
 
 条件ごとに、前後で `/metrics` を読み、その間は `Profile.metrics_interval_s` で
@@ -93,11 +102,14 @@ from bench_harness.client.probe import is_context_limit_error, preflight
 from bench_harness.metrics import HttpxMetricsScraper, MetricsScraper, derive
 from bench_harness.store import RunStore, StoreError, new_run_id
 from bench_harness.suites import ConditionAborted, Suite, SuiteContext, make_suite_context
+from bench_harness.suites.agent import AgentSuite
 from bench_harness.suites.concurrency import SUITE as _CONCURRENCY_SUITE
 from bench_harness.suites.decode import decode_suite as _DECODE_SUITE
 from bench_harness.suites.prefill import SUITE as _PREFILL_SUITE
+from bench_harness.suites.quality import ProblemsLoader, QualitySuite
 from bench_harness.types import (
     ConditionPlan,
+    DatasetRef,
     DerivedMetrics,
     LogicalMetric,
     MetricSnapshot,
@@ -124,6 +136,8 @@ __all__ = [
     "PreconditionError",
     "ProgressSink",
     "StderrProgressSink",
+    "SuiteRunInfo",
+    "SupportsRunInfo",
     "default_suite_registry",
     "execute_run",
     "harness_version",
@@ -206,17 +220,78 @@ class StderrProgressSink:
 # --- まとまりの対応表 --------------------------------------------------------
 
 
-def default_suite_registry() -> dict[SuiteName, Suite]:
-    """名前から、まとまりの実体への対応表。
+def default_suite_registry(
+    *, problems_loader: ProblemsLoader | None = None
+) -> dict[SuiteName, Suite]:
+    """名前から、まとまりの実体への対応表 (計測ランごとに 1 つ作る)。
 
-    まとまりを足すときは、ここに 1 行足す (品質の検査は task 6.7、長い会話の
-    検査は task 7.2 が足す)。対応表にない名前を選ぶと、前提の不足になる。
+    速さの 3 つ (3.2、3.3、3.4) は状態を持たないので、module の実体をそのまま
+    配る。品質の検査 (6.7) と長い会話の検査 (7.2) は、計測ランごとの覚え書き
+    (使った公開の課題、上限に当たった長さ) を持つので、**呼ばれるたびに作り
+    直す**。共有の状態そのものがなくなるので、1 つのプロセスで 2 つの計測ラン
+    を流しても混ざらない (注 7.2 → 8.1、6.7 → 8.1)。
+
+    `problems_loader` は、公開のコードの課題の読み方である。既定 (`None`) は
+    まとまり自身の読み方 (`humaneval.load_humaneval_plus` の既定の置き場所)。
+    置き場所を変える、取得を許さない、といった指定は、入口 (5.1) がここに
+    渡す (`RunRequest` は凍結の型なので、項目を足さない。注 1.2)。
     """
+    quality = (
+        QualitySuite() if problems_loader is None else QualitySuite(problems_loader=problems_loader)
+    )
     return {
         SuiteName.DECODE: _DECODE_SUITE,
         SuiteName.PREFILL: _PREFILL_SUITE,
         SuiteName.CONCURRENCY: _CONCURRENCY_SUITE,
+        SuiteName.QUALITY: quality,
+        SuiteName.AGENT: AgentSuite(),
     }
+
+
+# --- 使った公開の課題 (5.5、注 6.7 → 8.1) ------------------------------------
+
+
+class SuiteRunInfo(Protocol):
+    """まとまりが、その計測ランについて報せるもの。
+
+    いまのところ `QualitySuite.run_info()` だけが返す。読み取り専用の口として
+    書いてあるので、`tuple` を返す実体もそのまま当てはまる。
+    """
+
+    @property
+    def datasets(self) -> Sequence[DatasetRef]: ...
+
+    @property
+    def sandbox_image_ref(self) -> str | None: ...
+
+
+@runtime_checkable
+class SupportsRunInfo(Protocol):
+    """`run_info()` を持つまとまり。
+
+    `run_info()` は `Suite` の約束事 (design.md suites) にない。まとまりの側
+    からは実行の条件を書けない (`SuiteContext` の口は `put_body` だけ) ので、
+    進行の側が、持っているまとまりだけを見分けて書き写す。
+    """
+
+    def run_info(self) -> SuiteRunInfo: ...
+
+
+def _merge_datasets(recorded: Sequence[DatasetRef], used: Sequence[DatasetRef]) -> list[DatasetRef]:
+    """すでに記録した出どころに、新しいものを足す (名前と版で重複を除く)。
+
+    上書きにすると、まとまりが 2 つ以上、課題を報せたときに、先に流したほうの
+    出どころが消える。
+    """
+    merged = list(recorded)
+    seen = {(dataset.name, dataset.version) for dataset in merged}
+    for dataset in used:
+        key = (dataset.name, dataset.version)
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(dataset)
+    return merged
 
 
 # --- 道具の版 (1.6) ----------------------------------------------------------
@@ -571,13 +646,24 @@ class _Run:
         """選ばれたまとまりを、順に実行する (並行にはしない。design.md runner)。"""
         for name in self._suites:
             suite = self._registry[name]
-            for item in suite.plan(self._ctx):
-                if isinstance(item, SkippedCondition):
-                    self._record_skip(item)
-                    continue
-                await self._run_condition(suite, item)
-                if self._abort_reason is not None:
-                    return
+            try:
+                await self._run_suite(suite)
+            finally:
+                # 止まった計測ラン (10.3) も、中断した計測ラン (10.4) も、そこまで
+                # に使った公開の課題を残す。未完了の要約にも、何で測ったかが要る
+                self._record_datasets(suite)
+            if self._abort_reason is not None:
+                return
+
+    async def _run_suite(self, suite: Suite) -> None:
+        """1 つのまとまりの条件を、計画の順に実行する。"""
+        for item in suite.plan(self._ctx):
+            if isinstance(item, SkippedCondition):
+                self._record_skip(item)
+                continue
+            await self._run_condition(suite, item)
+            if self._abort_reason is not None:
+                return
 
     async def _run_condition(self, suite: Suite, cond: ConditionPlan) -> None:
         """1 つの条件を実行し、前後の内部の指標を残す (7.1)。
@@ -766,6 +852,39 @@ class _Run:
         """飛ばした条件を、実行の条件に足す (3.6、6.9)。"""
         self._store.update_manifest(skipped=[*self._store.manifest().skipped, skipped])
         _log(f"条件を飛ばした: {skipped.key} ({skipped.reason})")
+
+    def _record_datasets(self, suite: Suite) -> None:
+        """まとまりが使った公開の課題を、実行の条件に足す (5.5、注 6.7 → 8.1)。
+
+        `run_info()` を持たないまとまり (速さの 3 つ、長い会話の検査) では、
+        何もしない。使った課題が 1 つもない計測ラン (コードの条件を飛ばした
+        場合) には、何も書かない (使っていない課題を載せない。5.7)。
+
+        隔離のイメージの識別子 (`run_info().sandbox_image_ref`) は、`RunManifest`
+        に欄がないので書かない。設定で固定した値 (`sandbox.image_digest`) は
+        `RunManifest.profile` として記録済みで、実際に動かすイメージがそれと
+        違えば、隔離の側 (6.6) が使えないものとして扱う。
+
+        書き込みに失敗しても、計測は止めない (内部の指標 7.4 と同じ扱い)。
+        ここはまとまりの後始末 (`finally`) から呼ばれるので、投げると、元の
+        失敗 (保存の失敗や中断) を覆い隠してしまう。
+        """
+        if not isinstance(suite, SupportsRunInfo):
+            return
+        used = list(suite.run_info().datasets)
+        if not used:
+            return
+        recorded = self._store.manifest().datasets
+        merged = _merge_datasets(recorded, used)
+        if len(merged) == len(recorded):
+            return
+        try:
+            self._store.update_manifest(datasets=merged)
+        except (StoreError, OSError) as exc:
+            self._try_warn(
+                f"まとまり {suite.name.value} が使った公開の課題を記録できなかった: "
+                f"{type(exc).__name__}: {exc}"
+            )
 
     def _warn(self, message: str) -> None:
         """警告を、標準エラーと実行の条件の両方に残す (design.md Monitoring)。"""

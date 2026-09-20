@@ -93,6 +93,7 @@ __all__ = [
     "DatasetVerificationError",
     "DatasetFormatError",
     "default_cache_dir",
+    "check_cache_dir",
     "dataset_ref",
     "ensure_humaneval_plus",
     "read_problems",
@@ -188,6 +189,14 @@ def default_cache_dir() -> Path:
     この module (`bench/src/bench_harness/corpus/humaneval.py`) から辿る。
     """
     return Path(__file__).resolve().parents[3] / "data-cache"
+
+
+def check_cache_dir(cache_dir: Path | None = None) -> Path:
+    """置き場所が使えるかを、何も読まず、何も作らずに確かめる (入口が、計測の前に呼ぶ)。
+
+    使えなければ `DatasetCacheError`。`None` は既定の置き場所。
+    """
+    return _check_cache_dir(cache_dir if cache_dir is not None else default_cache_dir())
 
 
 def _check_cache_dir(cache_dir: Path) -> Path:

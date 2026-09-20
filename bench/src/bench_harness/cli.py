@@ -39,6 +39,18 @@
 想定している失敗で、Python の traceback を計測者に見せることはない。想定して
 いない例外は、直さずにそのまま外へ出す (黙って 0 でない値にしない)。
 
+## 測る項目のまとまりの選び方 (1.2、task 8.1)
+
+`--suite` は繰り返し書けて、**書いた順**に実行する。省いたときの既定は、速さの
+3 つ (`decode`、`prefill`、`concurrency`) だけである。品質の検査と長い会話の
+検査は、実機では 1 回の計測ランが何時間もかかる (注 7.2 → 8.3) ので、名指し
+したときだけ流す。5 つ全部を流すときは `--suite all` と書く。
+
+品質の検査が使う公開のコードの課題は、`--data-cache` で置き場所を変えられ、
+`--no-download` で取得を禁じられる (`--no-download` のときに課題がなければ、
+コードの条件だけが理由つきで飛ぶ)。どちらも、対応表を組み立てて `execute_run`
+に渡す継ぎ目 (`default_suite_registry(problems_loader=…)`) を通る。
+
 コマンドを 1 つも選ばずに `bench` とだけ打ったときは、使い方を標準エラーに
 出して 1 (設定の誤り) で終わる。`bench compare` は、収まらない条件があっても
 0 で終わる (判定は結果であって、この道具の失敗ではない。design.md Monitoring
@@ -60,6 +72,7 @@ import os
 import sys
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 from typing import Final
 
@@ -79,7 +92,7 @@ from bench_harness.analysis.summarize import (
 )
 from bench_harness.client.messages import HttpxMessagesClient
 from bench_harness.client.probe import ProbeError, count_input_tokens
-from bench_harness.corpus import TemplateCorpus
+from bench_harness.corpus import TemplateCorpus, humaneval
 from bench_harness.runner import (
     EXIT_ABORTED,
     EXIT_INTERRUPTED,
@@ -91,6 +104,7 @@ from bench_harness.runner import (
     execute_run,
 )
 from bench_harness.store import StoreError, list_run_dirs
+from bench_harness.suites.quality import ProblemsLoader
 from bench_harness.types import (
     ContentKind,
     InputMessage,
@@ -104,7 +118,26 @@ from bench_harness.types import (
     TextBlockParam,
 )
 
-__all__ = ["build_parser", "main"]
+__all__ = ["ALL_SUITES", "DEFAULT_SUITES", "build_parser", "main"]
+
+DEFAULT_SUITES: Final[tuple[SuiteName, ...]] = (
+    SuiteName.DECODE,
+    SuiteName.PREFILL,
+    SuiteName.CONCURRENCY,
+)
+"""`--suite` を省いたときに流すまとまり (task 8.1 で決めた既定)。
+
+8.1 で品質の検査と長い会話の検査を対応表に足したので、「実行できるものすべて」
+を既定のままにすると、`quick` の設定でも何時間もかかる計測ラン (注 7.2 → 8.3)
+が、うっかり始まってしまう。速さの 3 つ (P0 の終わりの条件に要るもの) だけを
+既定にして、残りは名指し、または `--suite all` で選ぶ。
+"""
+
+ALL_SUITES: Final[str] = "all"
+"""`--suite` に書くと、対応表のまとまりをすべて選ぶ名前。
+
+`SuiteName` の値とは重ならない (重なると、まとまりの名前として読めなくなる)。
+"""
 
 COMPARISON_MD_NAME: Final[str] = "comparison.md"
 """`bench compare --out <ディレクトリ>` が書くファイルの名前。"""
@@ -215,8 +248,10 @@ def _add_run_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentPars
         default=None,
         metavar="NAME",
         help=(
-            "測る項目のまとまり (繰り返して複数選べる)。"
-            f"省くと、実行できるものすべて: {_runnable_suite_names()}"
+            f"測る項目のまとまり (繰り返して複数選べる): {_runnable_suite_names()}。"
+            f"省いたときの既定は、速さの 3 つ ({_default_suite_names()})。"
+            f"'{ALL_SUITES}' と書くと、5 つ全部 (品質の検査と長い会話の検査は、"
+            "実機では何時間もかかるので、名指ししたときだけ流す)"
         ),
     )
     parser.add_argument(
@@ -231,7 +266,28 @@ def _add_run_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentPars
         help=(
             "試行の回数などの整数の項目を上書きする (例: --set decode.trials=20"
             " --set concurrency.rounds=2)。経路は Profile の項目を点でつないだもの。"
-            "繰り返して複数指定でき、同じ経路を 2 回書いたら、あとのものが効く"
+            "繰り返して複数指定でき、同じ経路を 2 回書いたら、あとのものが効く。"
+            "長い会話の検査を 1 段階だけ流すなら --set agent.end_tokens=20000、"
+            "試行を減らすなら --set agent.trials_per_stage=10、"
+            "コードの課題を減らすなら --set quality.code_problem_limit=10"
+        ),
+    )
+    parser.add_argument(
+        "--data-cache",
+        type=Path,
+        default=None,
+        metavar="DIR",
+        help=(
+            "公開のコードの課題 (品質の検査) の置き場所 (既定: bench/data-cache)。"
+            "git の管理の対象になり得る場所は拒む (8.5、11.1)"
+        ),
+    )
+    parser.add_argument(
+        "--no-download",
+        action="store_true",
+        help=(
+            "公開のコードの課題を取得しない。置き場所になければ、コードの条件だけを"
+            "理由つきで飛ばす (ほかの条件は実行する)"
         ),
     )
     _add_common_output_args(parser)
@@ -385,6 +441,16 @@ def _cmd_run(args: argparse.Namespace) -> int:
         profile_name=profile_name,
         trials_override=_parse_overrides(args.overrides),
     )
+    if SuiteName.QUALITY in request.suites:
+        # 使えない置き場所は、計測を始める前に、設定の誤りとして示す。あとで気付くと、
+        # 先に流したまとまりの試行だけが残り、計測ランが `running` のまま止まる
+        try:
+            humaneval.check_cache_dir(args.data_cache)
+        except humaneval.DatasetCacheError as exc:
+            raise PreconditionError(f"設定の誤り: --data-cache: {exc}") from exc
+    registry = default_suite_registry(
+        problems_loader=_problems_loader(args.data_cache, no_download=args.no_download)
+    )
     outcome = asyncio.run(
         execute_run(
             request,
@@ -392,9 +458,22 @@ def _cmd_run(args: argparse.Namespace) -> int:
             targets_path=targets_path,
             profiles_path=profiles_path,
             results_root=results_root,
+            registry=registry,
         )
     )
     return _report_run(outcome)
+
+
+def _problems_loader(data_cache: Path | None, *, no_download: bool) -> ProblemsLoader | None:
+    """公開のコードの課題の読み方 (`--data-cache` と `--no-download` の受け渡し)。
+
+    どちらも指定がなければ `None` を返し、まとまり自身の読み方 (既定の置き場所、
+    なければ取得する) に任せる。`RunRequest` は凍結の型で項目を足せないので、
+    対応表を組み立てて `execute_run` に渡す継ぎ目を使う (注 1.2、6.5)。
+    """
+    if data_cache is None and not no_download:
+        return None
+    return partial(humaneval.load_humaneval_plus, data_cache, allow_download=not no_download)
 
 
 def _report_run(outcome: RunOutcome) -> int:
@@ -424,14 +503,24 @@ def _report_run(outcome: RunOutcome) -> int:
 def _selected_suites(values: list[str] | None) -> list[SuiteName]:
     """`--suite` の並びを `SuiteName` に直す (1.2)。
 
-    省かれたときは、実行できるまとまりをすべて、名前の定義順で選ぶ。知らない
-    名前は、使える名前を添えた設定の誤りにする。名前としては正しいが、まだ
-    実行できないまとまり (task 6.7、7.2 が足す) の判定は、対応表を持っている
+    省かれたときは、**速さの 3 つ**だけを選ぶ (task 8.1 で決めた既定)。品質の
+    検査と長い会話の検査は、実機では 1 回の計測ランが何時間もかかる (注 7.2 →
+    8.3 の見積もり) ので、名指ししたときだけ流す。5 つ全部を流すときは
+    `--suite all` と書く。
+
+    書いた順を保ち、繰り返しも受ける。知らない名前は、使える名前を添えた設定の
+    誤りにする。同じまとまりを 2 回選んだときの判定は、対応表を持っている
     `runner` に任せる (同じ判定を 2 か所に書かない)。
     """
-    runnable = _runnable_suites()
     if not values:
-        return list(runnable)
+        return list(_default_suites())
+    if ALL_SUITES in values:
+        if len(values) > 1:
+            raise PreconditionError(
+                f"設定の誤り: まとまり '{ALL_SUITES}' は、ほかの名前と一緒には書けない"
+                f" (受け取った値: {', '.join(values)})"
+            )
+        return _runnable_suites()
     selected: list[SuiteName] = []
     for value in values:
         try:
@@ -439,9 +528,19 @@ def _selected_suites(values: list[str] | None) -> list[SuiteName]:
         except ValueError:
             raise PreconditionError(
                 f"設定の誤り: まとまり '{value}' は知らない名前"
-                f" (実行できるもの: {_runnable_suite_names()})"
+                f" (実行できるもの: {_runnable_suite_names()}、"
+                f"すべてなら '{ALL_SUITES}')"
             ) from None
     return selected
+
+
+def _default_suites() -> list[SuiteName]:
+    """`--suite` を省いたときに流すまとまり (速さの 3 つ)。"""
+    return [name for name in DEFAULT_SUITES if name in default_suite_registry()]
+
+
+def _default_suite_names() -> str:
+    return ", ".join(name.value for name in _default_suites())
 
 
 def _runnable_suites() -> list[SuiteName]:

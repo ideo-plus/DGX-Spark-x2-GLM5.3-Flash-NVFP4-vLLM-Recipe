@@ -23,6 +23,7 @@ from typing import Any
 import pytest
 from pydantic import JsonValue
 
+from bench_harness import runner as runner_module
 from bench_harness.client.messages import HttpxMessagesClient
 from bench_harness.runner import (
     EXIT_ABORTED,
@@ -32,12 +33,18 @@ from bench_harness.runner import (
     PreconditionError,
     ProgressSink,
     StderrProgressSink,
+    SuiteRunInfo,
+    SupportsRunInfo,
     default_suite_registry,
     execute_run,
     harness_version,
 )
 from bench_harness.store import RunStore, StoreError, list_run_dirs
+from bench_harness.suites import agent as agent_module
+from bench_harness.suites import quality as quality_module
+from bench_harness.suites.agent import AgentSuite
 from bench_harness.suites.base import (
+    Suite,
     SuiteContext,
     abort_if_context_limit,
     condition_key,
@@ -47,13 +54,18 @@ from bench_harness.suites.base import (
     single_user_message,
     skip_condition,
 )
+from bench_harness.suites.quality import QualitySuite
 from bench_harness.types import (
     ConditionPlan,
+    DatasetRef,
     MessagesRequest,
+    QualityOutcome,
+    QualityVerdict,
     RunOutcome,
     RunRequest,
     RunStatus,
     SkippedCondition,
+    StreamResult,
     SuiteName,
     TimeoutPolicy,
     TrialRecord,
@@ -262,12 +274,15 @@ class StubSuite:
         *,
         skipped: Sequence[str] = (),
         name: SuiteName = SuiteName.QUALITY,
+        outcome: QualityOutcome | None = None,
     ) -> None:
         self.name = name
         self.closed_early: list[str] = []
         """途中で閉じられた (`aclose`) 条件の鍵。読み切って終わった条件は入らない。"""
         self._conditions = list(conditions)
         self._skipped = list(skipped)
+        self._outcome = outcome
+        """すべての試行に付ける採点の結果 (`None` なら判定を付けない)。"""
         self._chars = {condition_key(name, c.key): c.text_chars for c in conditions}
         self._per_round = {
             condition_key(name, c.key): (
@@ -316,6 +331,7 @@ class StubSuite:
                         messages=single_user_message(
                             f"{cond.key} {trial_index} {stream_index} {text}"
                         ),
+                        verdict=self._verdict if self._outcome is not None else None,
                     )
                     yield record
                     abort_if_context_limit(cond, record)
@@ -323,6 +339,55 @@ class StubSuite:
             # 進行の側が `aclose()` したときだけ来る (読み切った場合は来ない)
             self.closed_early.append(cond.key)
             raise
+
+    def _verdict(self, result: StreamResult) -> QualityVerdict:
+        """採点の結果 (要求が失敗しても、必ず判定を付ける決まり。注 4.2)。"""
+        outcome = QualityOutcome.NOT_SCORED if result.error is not None else self._outcome
+        assert outcome is not None
+        return QualityVerdict(task="code", outcome=outcome, detail="試験のための判定")
+
+
+@dataclass(frozen=True)
+class StubRunInfo:
+    """`QualityRunInfo` の代わり (計測ランに記録するもの)。"""
+
+    datasets: tuple[DatasetRef, ...] = ()
+    sandbox_image_ref: str | None = None
+
+
+class InfoSuite(StubSuite):
+    """`run_info()` を持つまとまり (品質の検査 6.7 の代わり)。
+
+    `run_info()` は `Suite` の約束事にないので、進行の側 (8.1) は、持っている
+    まとまりだけを見分けて、使った公開の課題を実行の条件に足す。
+    """
+
+    def __init__(
+        self,
+        conditions: Sequence[StubCondition],
+        *,
+        datasets: Sequence[DatasetRef] = (),
+        skipped: Sequence[str] = (),
+        name: SuiteName = SuiteName.QUALITY,
+        outcome: QualityOutcome | None = None,
+    ) -> None:
+        super().__init__(conditions, skipped=skipped, name=name, outcome=outcome)
+        self._info = StubRunInfo(datasets=tuple(datasets))
+
+    def run_info(self) -> StubRunInfo:
+        return self._info
+
+
+def dataset(name: str = "HumanEval+", version: str = "v0.1.10") -> DatasetRef:
+    """公開の課題の出どころ (中身は、名前と版で見分けられれば足りる)。"""
+    return DatasetRef(
+        name=name,
+        version=version,
+        source_url=f"https://example.invalid/{name}/{version}",
+        license="Apache-2.0",
+        scoring_method="検査のプログラムを隔離して動かす",
+        sha256="0" * 64,
+    )
 
 
 def stub_registry(*suites: StubSuite) -> dict[SuiteName, Any]:
@@ -492,12 +557,19 @@ async def test_thinking_other_than_server_default_fails_without_creating_a_run_d
 async def test_a_suite_that_is_not_in_the_registry_fails(
     fake_server: FakeServer, tmp_path: Path
 ) -> None:
+    """対応表にない名前は、前提の不足にする。
+
+    task 8.1 で 5 つすべてが既定の対応表に載ったので、対応表を絞って確かめる
+    (既定の対応表に足りない名前がなくなっても、この判定は残す)。
+    """
     bed = make_bed(tmp_path, fake_server)
+    registry = stub_registry(StubSuite([StubCondition(key="a", trials=1)], name=SuiteName.DECODE))
 
     with pytest.raises(PreconditionError) as exc_info:
-        await execute(bed, suites=[SuiteName.AGENT])
+        await execute(bed, suites=[SuiteName.AGENT], registry=registry)
 
     assert "agent" in str(exc_info.value)
+    assert "decode" in str(exc_info.value)  # 実行できるものを示す
     assert not bed.results_root.exists()
 
 
@@ -616,14 +688,202 @@ async def test_only_the_requested_suites_run_in_the_given_order(
     assert opened(outcome).manifest().suites == [SuiteName.PREFILL, SuiteName.DECODE]
 
 
-async def test_the_default_registry_holds_the_three_speed_suites() -> None:
-    assert set(default_suite_registry()) == {
-        SuiteName.DECODE,
-        SuiteName.PREFILL,
-        SuiteName.CONCURRENCY,
-    }
+async def test_the_default_registry_holds_the_five_suites() -> None:
+    """task 8.1: 品質の検査と長い会話の検査も、対応表に載る (5 つ全部)。"""
+    assert set(default_suite_registry()) == set(SuiteName)
     for name, suite in default_suite_registry().items():
         assert suite.name is name
+
+
+def test_the_registry_hands_out_a_fresh_quality_and_agent_suite_every_time() -> None:
+    """計測ランごとに作り直す (共有の状態そのものをなくす。注 7.2 → 8.1、6.7 → 8.1)。
+
+    module の実体 (`SUITE`) を配ると、1 つのプロセスで 2 つの計測ランを流したとき
+    に、覚え書き (使った公開の課題、上限に当たった長さ) が持ち越されうる。
+    """
+    first = default_suite_registry()
+    second = default_suite_registry()
+
+    assert isinstance(first[SuiteName.QUALITY], QualitySuite)
+    assert isinstance(first[SuiteName.AGENT], AgentSuite)
+    assert first[SuiteName.QUALITY] is not second[SuiteName.QUALITY]
+    assert first[SuiteName.AGENT] is not second[SuiteName.AGENT]
+    assert first[SuiteName.QUALITY] is not quality_module.SUITE
+    assert first[SuiteName.AGENT] is not agent_module.SUITE
+
+
+def test_the_registry_can_be_given_a_problems_loader_for_the_quality_suite() -> None:
+    """公開の課題の読み方 (置き場所、取得の可否) を、入口 (5.1) が差し替えられる。"""
+    calls: list[int] = []
+
+    def loader() -> tuple[DatasetRef, list[Any]]:
+        calls.append(1)
+        return dataset(), []
+
+    registry = default_suite_registry(problems_loader=loader)
+    suite = registry[SuiteName.QUALITY]
+    assert isinstance(suite, QualitySuite)
+    # 差し替えた読み方が、まとまりの中に届いている (呼ぶのはまとまりだけ)
+    assert suite._problems_loader is loader
+    assert calls == []
+
+
+async def test_each_run_builds_its_own_registry(
+    fake_server: FakeServer, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """対応表は、プロセスに 1 つではなく、計測ランごとに 1 つ作る (8.1)。"""
+    bed = make_bed(tmp_path, fake_server)
+    seen: list[Mapping[SuiteName, Suite]] = []
+    real = runner_module.default_suite_registry
+
+    def spy(**kwargs: Any) -> dict[SuiteName, Suite]:
+        registry = real(**kwargs)
+        seen.append(registry)
+        return registry
+
+    monkeypatch.setattr(runner_module, "default_suite_registry", spy)
+
+    for _ in range(2):
+        with pytest.raises(PreconditionError):  # 対応表を作ったあと、設定の誤りで止まる
+            await execute(bed, target_name="いない子")
+
+    assert len(seen) == 2
+    assert seen[0][SuiteName.QUALITY] is not seen[1][SuiteName.QUALITY]
+    assert seen[0][SuiteName.AGENT] is not seen[1][SuiteName.AGENT]
+
+
+# --- 使った公開の課題を、実行の条件に残す (5.5、5.7、注 6.7 → 8.1) -----------
+
+
+async def test_the_datasets_a_suite_used_reach_the_manifest(
+    fake_server: FakeServer, tmp_path: Path
+) -> None:
+    """まとまりを流したあとに `run_info()` を読んで、`datasets` に書き写す。"""
+    fake_server.set_response(text_response("ok"))
+    bed = make_bed(tmp_path, fake_server)
+    used = dataset()
+    suite = InfoSuite([StubCondition(key="a", trials=1)], datasets=(used,))
+
+    outcome = await execute(bed, suites=[SuiteName.QUALITY], registry=stub_registry(suite))
+
+    assert outcome.status is RunStatus.COMPLETED
+    assert opened(outcome).manifest().datasets == [used]
+
+
+async def test_no_datasets_are_recorded_when_the_suite_used_none(
+    fake_server: FakeServer, tmp_path: Path
+) -> None:
+    """コードの条件を飛ばした計測ランに、使っていない課題を載せない (5.7)。"""
+    fake_server.set_response(text_response("ok"))
+    bed = make_bed(tmp_path, fake_server)
+    suite = InfoSuite([StubCondition(key="a", trials=1)], datasets=())
+
+    outcome = await execute(bed, suites=[SuiteName.QUALITY], registry=stub_registry(suite))
+
+    assert opened(outcome).manifest().datasets == []
+
+
+async def test_a_suite_without_run_info_leaves_the_datasets_empty(
+    fake_server: FakeServer, tmp_path: Path
+) -> None:
+    """`run_info()` は `Suite` の約束事にない。持たないまとまりでも、進行は止まらない。"""
+    fake_server.set_response(text_response("ok"))
+    bed = make_bed(tmp_path, fake_server)
+    suite = StubSuite([StubCondition(key="a", trials=1)])
+
+    outcome = await execute(bed, suites=[SuiteName.QUALITY], registry=stub_registry(suite))
+
+    assert not isinstance(suite, SupportsRunInfo)
+    assert opened(outcome).manifest().datasets == []
+
+
+async def test_the_datasets_are_recorded_even_when_the_run_is_aborted(
+    fake_server: FakeServer, tmp_path: Path
+) -> None:
+    """止まった計測ランの要約にも、使った課題が出る (10.4: 未完了でも、それまでを残す)。"""
+    fake_server.set_response_sequence([text_response("ok"), http_error_response(500)])
+    bed = make_bed(tmp_path, fake_server, max_consecutive_failures=1)
+    used = dataset()
+    suite = InfoSuite([StubCondition(key="a", trials=3)], datasets=(used,))
+
+    outcome = await execute(bed, suites=[SuiteName.QUALITY], registry=stub_registry(suite))
+
+    assert outcome.status is RunStatus.ABORTED
+    assert opened(outcome).manifest().datasets == [used]
+
+
+async def test_the_datasets_are_recorded_even_when_the_run_is_interrupted(
+    fake_server: FakeServer, tmp_path: Path
+) -> None:
+    """中断した計測ランでも、そこまでに使った課題は残る (10.4)。"""
+    fake_server.set_response(replace(text_response("ok"), first_delay_s=0.3))
+    bed = make_bed(tmp_path, fake_server)
+    used = dataset()
+    suite = InfoSuite([StubCondition(key="a", trials=5)], datasets=(used,))
+
+    outcome = await execute(
+        bed,
+        suites=[SuiteName.QUALITY],
+        registry=stub_registry(suite),
+        progress=SignalAfterFirstTrial(),
+    )
+
+    assert outcome.status is RunStatus.INTERRUPTED
+    assert opened(outcome).manifest().datasets == [used]
+
+
+async def test_datasets_from_several_suites_are_merged_without_duplicates(
+    fake_server: FakeServer, tmp_path: Path
+) -> None:
+    """2 つのまとまりが課題を報せたら、上書きではなく足し合わせる (名前と版で重複を除く)。"""
+    fake_server.set_response(text_response("ok"))
+    bed = make_bed(tmp_path, fake_server)
+    shared = dataset()
+    other = dataset(name="Another", version="v2")
+    registry = stub_registry(
+        InfoSuite([StubCondition(key="a", trials=1)], datasets=(shared,)),
+        InfoSuite(
+            [StubCondition(key="a", trials=1)],
+            datasets=(shared, other),
+            name=SuiteName.AGENT,
+        ),
+    )
+
+    outcome = await execute(bed, suites=[SuiteName.QUALITY, SuiteName.AGENT], registry=registry)
+
+    assert opened(outcome).manifest().datasets == [shared, other]
+
+
+async def test_a_later_suite_adds_its_datasets_instead_of_replacing_the_earlier_ones(
+    fake_server: FakeServer, tmp_path: Path
+) -> None:
+    """2 つ目のまとまりが自分の課題だけを報せても、1 つ目の課題は消えない (上書きしない)。"""
+    fake_server.set_response(text_response("ok"))
+    bed = make_bed(tmp_path, fake_server)
+    first = dataset()
+    second = dataset(name="Another", version="v2")
+    registry = stub_registry(
+        InfoSuite([StubCondition(key="a", trials=1)], datasets=(first,)),
+        InfoSuite([StubCondition(key="a", trials=1)], datasets=(second,), name=SuiteName.AGENT),
+    )
+
+    outcome = await execute(bed, suites=[SuiteName.QUALITY, SuiteName.AGENT], registry=registry)
+
+    assert opened(outcome).manifest().datasets == [first, second]
+
+
+def test_the_run_info_protocol_matches_the_quality_suite() -> None:
+    """進行の側の約束事 (`SupportsRunInfo`) を、品質の検査がそのまま満たす。"""
+    quality: SupportsRunInfo = QualitySuite()
+    info: SuiteRunInfo = quality.run_info()
+    stub: SupportsRunInfo = InfoSuite([])
+
+    assert isinstance(quality, SupportsRunInfo)
+    assert isinstance(stub, SupportsRunInfo)
+    assert list(info.datasets) == []
+    assert info.sandbox_image_ref is None
+    # 長い会話の検査は、公開の課題を使わないので `run_info()` を持たない
+    assert not isinstance(AgentSuite(), SupportsRunInfo)
 
 
 async def test_a_trials_override_reaches_the_suite_and_the_manifest(
@@ -788,6 +1048,31 @@ async def test_a_success_between_failures_resets_the_counter(
         False,
         False,
     ]
+
+
+async def test_scorer_outcomes_are_not_counted_as_request_failures(
+    fake_server: FakeServer, tmp_path: Path
+) -> None:
+    """不正解が続いても止めない (10.3 が数えるのは、要求そのものの失敗だけ)。
+
+    品質の検査と長い会話の検査は、成功した要求に採点の結果を付ける (6.7、7.2)。
+    その結果を失敗として数えると、モデルの出来が悪いだけの計測ランが、対象
+    サーバーの不調として止められてしまう。
+    """
+    fake_server.set_response(text_response("まちがった答え"))
+    bed = make_bed(tmp_path, fake_server, max_consecutive_failures=2)
+    suite = StubSuite([StubCondition(key="a", trials=5)], outcome=QualityOutcome.INCORRECT)
+
+    outcome = await execute(bed, suites=[SuiteName.QUALITY], registry=stub_registry(suite))
+
+    assert outcome.status is RunStatus.COMPLETED
+    assert outcome.exit_code == EXIT_OK
+    records = trials_of(outcome)
+    assert len(records) == 5
+    assert all(record.result.error is None for record in records)
+    assert [
+        record.verdict.outcome for record in records if isinstance(record.verdict, QualityVerdict)
+    ] == [QualityOutcome.INCORRECT] * 5
 
 
 async def test_a_decode_run_that_starts_failing_keeps_the_earlier_trials(
@@ -962,6 +1247,27 @@ def test_the_stderr_progress_sink_writes_one_line(capsys: pytest.CaptureFixture[
     assert len(captured.err.strip().splitlines()) == 1
     for part in ("decode", "decode/code/en", "3", "10", "1"):
         assert part in captured.err
+
+
+@pytest.mark.parametrize(
+    ("suite", "condition"),
+    [
+        (SuiteName.QUALITY, "quality/needle/128k/d100"),
+        (SuiteName.QUALITY, "quality/code/humaneval+"),
+        (SuiteName.AGENT, "agent/stage/120k"),
+    ],
+)
+def test_the_stderr_progress_sink_shows_long_condition_keys_whole(
+    suite: SuiteName, condition: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """8.1 で足したまとまりの、長い条件の鍵も、切り詰めずに 1 行で出す (1.7)。"""
+    StderrProgressSink().update(suite, condition, 7, 50, 2)
+
+    err = capsys.readouterr().err
+    assert len(err.strip().splitlines()) == 1
+    assert condition in err
+    assert "…" not in err
+    assert err.strip() == f"[{suite.value}] {condition} 7/50 失敗 2"
 
 
 # --- 中断 (10.4) ---------------------------------------------------------------
