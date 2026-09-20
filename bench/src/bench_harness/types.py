@@ -344,8 +344,11 @@ class Profile(_Frozen):
         missing = [kind.value for kind in ContentKind if kind not in self.chars_per_token]
         if missing:
             raise ValueError(f"chars_per_token に足りない種類がある: {', '.join(missing)}")
-        if any(value <= 0.0 for value in self.chars_per_token.values()):
-            raise ValueError("chars_per_token の値は 0 より大きい必要がある")
+        # nan と inf は `<= 0.0` をすり抜け、文章の組み立てが終わらなくなる
+        values = self.chars_per_token.values()
+        # `0 < 値 < inf` は、nan でも偽になる (nan との比較は、どれも偽)
+        if not all(0.0 < value < float("inf") for value in values):
+            raise ValueError("chars_per_token の値は、0 より大きい有限の数である必要がある")
         return self
 
 

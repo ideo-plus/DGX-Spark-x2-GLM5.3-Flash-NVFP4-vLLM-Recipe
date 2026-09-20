@@ -790,3 +790,12 @@ def test_types_module_imports_nothing_from_bench_harness() -> None:
 
     assert "bench_harness" not in roots
     assert roots <= ALLOWED_IMPORT_ROOTS, f"許していない読み込み: {roots - ALLOWED_IMPORT_ROOTS}"
+
+
+@pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf"), 0.0, -1.0])
+def test_profile_rejects_a_chars_per_token_that_is_not_a_finite_positive_number(bad: float) -> None:
+    """nan と inf は `<= 0` の判定をすり抜け、合成の文章の組み立てが終わらなくなる。"""
+    ratios = dict(t.Profile(name="p").chars_per_token)
+    ratios[t.ContentKind.CODE] = bad
+    with pytest.raises(ValueError, match="chars_per_token"):
+        t.Profile(name="p", chars_per_token=ratios)

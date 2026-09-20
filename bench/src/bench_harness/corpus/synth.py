@@ -87,6 +87,7 @@ golden な sha256 の試験が、意図しない変更を検出する。
 from __future__ import annotations
 
 import hashlib
+import math
 import random
 import re
 from collections.abc import Callable, Iterable, Iterator, Mapping
@@ -744,8 +745,9 @@ class TemplateCorpus:
         missing = [kind.value for kind in ContentKind if kind not in chars_per_token]
         if missing:
             raise ValueError(f"chars_per_token に足りない種類がある: {', '.join(missing)}")
-        if any(value <= 0.0 for value in chars_per_token.values()):
-            raise ValueError("chars_per_token の値は 0 より大きい必要がある")
+        # nan と inf は `<= 0.0` をすり抜け、文章の組み立てが終わらなくなる
+        if any(not math.isfinite(value) or value <= 0.0 for value in chars_per_token.values()):
+            raise ValueError("chars_per_token の値は、0 より大きい有限の数である必要がある")
         self._chars_per_token: dict[ContentKind, float] = dict(chars_per_token)
 
     def prose(self, lang: Lang, target_tokens: int, seed: int) -> str:

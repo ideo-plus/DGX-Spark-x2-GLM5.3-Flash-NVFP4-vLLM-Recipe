@@ -346,3 +346,12 @@ def test_golden_hashes_pin_generator_output() -> None:
         "log": hashlib.sha256(corpus.log(_GOLDEN_TARGET, _GOLDEN_SEED).encode()).hexdigest(),
     }
     assert actual == _GOLDEN_HASHES
+
+
+@pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf"), 0.0, -1.0])
+def test_corpus_rejects_a_ratio_that_is_not_a_finite_positive_number(bad: float) -> None:
+    """nan と inf を通すと、狙いの文字数が決まらず、組み立てが終わらない。"""
+    ratios = dict.fromkeys(ContentKind, 4.0)
+    ratios[ContentKind.LOG] = bad
+    with pytest.raises(ValueError, match="chars_per_token"):
+        TemplateCorpus(ratios)
