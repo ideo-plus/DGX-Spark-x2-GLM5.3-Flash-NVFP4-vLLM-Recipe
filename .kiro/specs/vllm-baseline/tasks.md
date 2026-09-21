@@ -100,7 +100,7 @@
   - 完了の状態: 偽の API の応答から、名前の順のマニフェストができる。モデルカードを取得する要求が 1 つも出ないことを、試験で確かめる。同じ入力から、同じファイルができる
   - _Requirements: 3.4, 8.8, 11.3_
   - _Boundary: weights_
-- [ ] 3.3 重みの取得と、2 台での照合を作る
+- [x] 3.3 重みの取得と、2 台での照合を作る
   - 関門 (空き) → 了承 → 2 台で並行に、取得の種類の構成から組み立てたコンテナで、固定した版を取得する。ホストに何も入れない。トークンを渡さない
   - 取得の構成も、ほかの種類と同じ形で書く (動かすプログラムは docker の設定、リポジトリの名前は位置の引数、設定の 1 つ 1 つに根拠)。名前とラベルを付けて、切り離して起こし、終わりは、コンテナの状態と終了コードで見る。ssh が途中で切れても取得は続き、もう一度打つと、動いている取得を見つけて待つ (二重に取得しない)。状態の確認と停止から、取得のコンテナが見える
   - 縮小の確認に使う、設定とトークナイザだけの取得と照合もできる (取得元は、縮小の確認の構成が指す重みの参照。マニフェストのうち、safetensors を除いたファイルを対象にする)
@@ -367,3 +367,8 @@
 - 3.2: `weights.build_manifest(repo, revision, *, generated_at, client=…)` は `ManifestResult` (マニフェストと、除いた道筋の名前の一覧) を返す。作った時刻は、呼ぶ側が渡す (中で `datetime.now()` を呼ばない。同じ入力から、同じバイトの列)。**6.1 で作り直すときは、中身が同じなら、前の `generated_at` を保つ** (時刻だけの差分を出さない)。`write_manifest` / `load_manifest` / `manifest_path` (`serving/weights/<slug>.manifest.json`。`slug` は `guards.weights_slug`)
 - 3.2: Hub の公開の API の形は、2026-09-22 に、実物を匿名で読んで確かめた: `GET /api/models/<repo>/tree/<40 桁の版>?recursive=true` → 1 行は `type` / `path` / `size` / `oid`、LFS のファイルには `lfs.oid` (64 桁の sha256) と `lfs.size` (= `size`)、`pointerSize`、`xetHash`。ページ送りは、応答のヘッダ `link: <絶対の URL>; rel="next"`。**Hub の応答は、信頼できない入力として扱う**: 次のページは、`https`、ホストが `huggingface.co` と完全に一致、道筋が同じ一覧の API のときだけたどる。一覧の `path` は、どの中身の取得よりも前に確かめる (`..`、先頭の `/`、`\`、空の部分、制御文字、重複を断る)。中身の取得の転送は、自分でたどり (5 回まで)、`https` で、`huggingface.co` か `.huggingface.co` / `.hf.co` のホストだけ
 - 3.2: モデルカードと、その写しでありうるもの (名前が、大文字と小文字を区別せずに `readme` / `model_card` / `modelcard` / `model-card` で始まるもの) と `.gitattributes` は、取得もしないし、マニフェストにも載せない (要件 8.8 / 11.3。取らない側に倒した)。**3.3 への申し送り**: Spark の上での取得 (`hf download`) は、これらのファイルも落とすが、この道具は、それを読まない (照合は、マニフェストにあるファイルだけを見る)。取得の時点で除けるなら、除く
+- 3.3: `weights.fetch_weights(...) -> FetchOutcome` と `weights.verify_weights(...) -> VerifyOutcome`。例外は `WeightsError` の系列 (`WeightsFetchError`、`WeightsMismatchError` = 終了コード 2)、`ApprovalError` / `ConfigError` / `ValueError` = 1。module の docstring に、終了コードの表がある。記録の全量の回収 (`logs.collect_logs`) は、ここでは呼ばない (5.1 の仕事)。`record_dir` は、絶対の道筋で渡す (`serving/var/` の下。配る元 `<record_dir>/verified/<役割>/` を、配る前に空にするため)
+- 3.3: **やり直しは、台ごとに判定する** (design の「もう一度流すと、足りないものだけが対象になる」)。(a) この構成と一致する取得が動いている台は、起こさずに待つ。(b) 自分のコンテナがない台は、起こす。(c) それ以外 (別の構成が動いている、終了したものが残っている、名前は同じで中身が違う) は、違う項目を示して断る。1 台でも (c) なら、どの台でも起こさない。了承を得る計画には、(b) の台の `docker run` だけが入る (巻き戻しの権限は、全部の台のぶん)
+- 3.3: **待ちの途中の `RemoteError`、時間切れ、中断、起こす途中の失敗では、取得のコンテナを止めない** (184 GiB の取得を、誤って捨てない。3.1 の `inspect` の片付けとは、意図して違える)。止めるのは `serve stop`。終了した取得のコンテナだけを、`guards.rollback_commands` で片付ける。取得が動いている間の `serve verify` は、照合を始めずに断る
+- 3.3: 照合は、Spark の上の `sha256sum` の出力を、Mac の側でマニフェストと突き合わせる。読めない行か、渡していない道筋の行が 1 つでもあれば、その回 (1 回の `sha256sum` に渡した 8 つまで) のファイルを、全部「確かめられなかった」に倒す。合わなかった結果も、記録に残して `state/` に配る (古い「合っていた」記録を残さない。`gate_weights_verified` は `mismatched` のある記録を断る)。合わなくても、取り直さない。時間切れは 120 秒 + 60 秒/GiB (見積もり。8.1 で実機の所要を確かめる)
+- 3.3 → **6.2 への申し送り**: `fetch` の構成は、`serve push` が作る置き場所そのものを結び付ける (重みの本体は `type=bind,source={remote_root}/models,target=/models`、`mount_at = /models/<slug>`、`--local-dir {weights.mount_at}`。縮小の確認用は `{remote_root}/probe` → `/probe`、`*.safetensors` を除く指定、`nodes` は 1 台)。`models/<slug>/` を直に結び付けると、最初の取得の前に、置き場所の関門 (`test -d`) で断られる。推論サーバーと縮小の確認の構成は、取得のあとにできている `models/<slug>/` / `probe/<slug>/` を、読み取り専用で結び付ける。`slug` は `guards.weights_slug` (リポジトリの名前の `/` を `__` に)。`--probe-files` は、照合の範囲を選ぶだけで、コンテナの引数は変えない (縮小の確認用の取得は、専用の `fetch` の構成を選ぶ)
