@@ -97,7 +97,33 @@ _ALLOWED_PLACEHOLDERS: Final[frozenset[str]] = frozenset(
 
 _PLACEHOLDER_RE: Final[re.Pattern[str]] = re.compile(r"\{[^{}]*\}")
 
+_ALLOWED_DOCKER_FLAGS: Final[frozenset[str]] = frozenset(
+    {
+        "--gpus",
+        "--network",
+        "--ipc",
+        "--shm-size",
+        "--ulimit",
+        "--mount",
+        "--entrypoint",
+        "--device",
+        "--cap-add",
+    }
+)
+"""検査 8: docker の節に書けるフラグの、長い形だけの許可の一覧 (design.md 「types /
+config」の検査 8。research.md §c が使うものに限る)。一覧を広げるのは、設計の変更として扱う。
+"""
+
+_HOST_ONLY_DOCKER_FLAGS: Final[Mapping[str, str]] = {
+    "--network": "container:<名前> は別のコンテナの名前空間に入り、"
+    "ラベルで絞れない相手と同じネットワークになる",
+    "--ipc": "container:<名前> は別のコンテナの名前空間に入り、"
+    "ラベルで絞れない相手とメモリを共有する",
+}
+"""検査 8: 値を host だけに絞るフラグと、host 以外を断る理由。"""
+
 _FORBIDDEN_DOCKER_FLAGS: Final[Mapping[str, str]] = {
+    # もとから禁じていた 7 つ (特権、名前空間、--mount だけを使う、記録が消える)
     "--privileged": "特権でコンテナを動かす",
     "--pid": "ホストのプロセスの名前空間を共有する",
     "--userns": "ユーザーの名前空間の切り離しを外す",
@@ -105,8 +131,32 @@ _FORBIDDEN_DOCKER_FLAGS: Final[Mapping[str, str]] = {
     "--volume": "元の場所を検査できない (--mount だけを使う)",
     "-v": "元の場所を検査できない (--mount だけを使う)",
     "--rm": "終了したコンテナが消えて、記録が読めなくなる",
+    # 別の構成やコンテナを巻き込む経路
+    "--volumes-from": "別のコンテナのボリュームを見せる (別の構成を巻き込む経路になる)",
+    "--cidfile": "Spark の任意の場所にファイルを書く",
+    # 道具 (plan.py) が必ず付けるので、構成に書くと二重になる
+    "--restart": "道具が必ず付ける (--restart no。構成に書くと二重になる)",
+    "-d": "道具が必ず付ける (-d で切り離して起こす。構成に書くと二重になる)",
+    "--detach": "道具が必ず付ける (-d で切り離して起こす。構成に書くと二重になる)",
+    "--pull": "道具が必ず付ける (--pull never。構成に書くと二重になる)",
+    "--name": "道具が必ず付ける (コンテナの名前。構成に書くと二重になる)",
+    "--label": "道具が必ず付ける (所有のラベル。構成に書くと二重になる)",
+    "-l": "道具が必ず付ける (所有のラベル。構成に書くと二重になる)",
+    "--label-file": "道具が必ず付ける (所有のラベル。構成に書くと二重になる)",
+    # 環境変数は env の節に書く
+    "-e": "環境変数は env の節に書く",
+    "--env": "環境変数は env の節に書く",
+    "--env-file": "環境変数は env の節に書く",
+    # 前面で動かす指定 (切り離して起こすので使えない)
+    "-i": "前面の指定は使えない (切り離して起こす)",
+    "-t": "前面の指定は使えない (切り離して起こす)",
+    "-a": "前面の指定は使えない (切り離して起こす)",
 }
-"""検査 8: 禁じる docker のフラグと、その理由。"""
+"""検査 8: 理由が分かっている、断る docker のフラグとその理由。
+
+一覧にない、というだけの文より親切なので、わかっている危ないフラグには理由を持たせる。
+どれにも当たらないフラグは、`_ALLOWED_DOCKER_FLAGS` を示す一般の文で断る。
+"""
 
 _REMOTE_ROOT_MARKER: Final[str] = "{remote_root}"
 
@@ -430,32 +480,59 @@ def _check_mount(item: str, value: str | None, errors: list[str]) -> None:
 
 
 def _check_docker_setting(item: str, setting: Setting, errors: list[str]) -> None:
-    """docker の設定を確かめる (検査 8、9、10)。"""
+    """docker の設定を確かめる (検査 8、9、10)。
+
+    検査 8 は、許可の一覧 (`_ALLOWED_DOCKER_FLAGS`) にあるフラグだけを通す。
+    理由が分かっているフラグ (`_FORBIDDEN_DOCKER_FLAGS`) は理由つきで断り、`--network` /
+    `--ipc` は値を `host` だけに絞り (`_HOST_ONLY_DOCKER_FLAGS`)、どれにも当たらない
+    フラグは、許可の一覧を示す一般の文で断る。`flag` を書かない位置の引数で、`-` で始まら
+    ない値 (ただの語) も誤りにする (docker の節に位置の引数は要らない。イメージの参照の前に
+    語が入ると、それがイメージの参照として読まれる)。
+    """
     flag, value = _flag_and_value(setting)
+    if setting.flag is None and not flag.startswith("-"):
+        errors.append(
+            f"{item}: docker の節に位置の引数は書けない"
+            f" (イメージの参照の前に語が入ると、それがイメージの参照として読まれる): {_shown(flag)}"
+        )
+        return
     reason = _FORBIDDEN_DOCKER_FLAGS.get(flag)
     if reason is not None:
         errors.append(f"{item}: {flag} は使えない ({reason})")
         return
-    if flag == "--restart":
-        if value != "no":
+    host_only_reason = _HOST_ONLY_DOCKER_FLAGS.get(flag)
+    if host_only_reason is not None:
+        if value != "host":
             errors.append(
-                f"{item}: --restart は no だけを使う (自動で起こし直さない): {_shown(value)}"
+                f"{item}: {flag} は host だけを使う ({host_only_reason}): {_shown(value)}"
             )
         return
     if flag == "--mount":
         _check_mount(item, value, errors)
         return
-    if flag == "--device" and value not in _ALLOWED_DEVICES:
-        errors.append(
-            f"{item}: --device に書けるのは {', '.join(sorted(_ALLOWED_DEVICES))} だけ"
-            f" (根拠があっても、一覧にないものは断る): {_shown(value)}"
-        )
+    if flag == "--device":
+        if value not in _ALLOWED_DEVICES:
+            errors.append(
+                f"{item}: --device に書けるのは {', '.join(sorted(_ALLOWED_DEVICES))} だけ"
+                f" (根拠があっても、一覧にないものは断る): {_shown(value)}"
+            )
         return
-    if flag == "--cap-add" and value not in _ALLOWED_CAPABILITIES:
-        errors.append(
-            f"{item}: --cap-add に書けるのは {', '.join(sorted(_ALLOWED_CAPABILITIES))} だけ"
-            f" (根拠があっても、一覧にないものは断る): {_shown(value)}"
-        )
+    if flag == "--cap-add":
+        if value not in _ALLOWED_CAPABILITIES:
+            errors.append(
+                f"{item}: --cap-add に書けるのは {', '.join(sorted(_ALLOWED_CAPABILITIES))} だけ"
+                f" (根拠があっても、一覧にないものは断る): {_shown(value)}"
+            )
+        return
+    if flag in _ALLOWED_DOCKER_FLAGS:
+        # 許可の一覧のフラグは、どれも値を取る。値がないと、docker は次の語 (イメージの参照)
+        # を値として食い、`args` の先頭がイメージの参照として読まれる
+        if not (value or "").strip():
+            errors.append(f"{item}: {flag} には値が要る (値がないと、次の語が値として読まれる)")
+        return
+    errors.append(
+        f"{item}: docker の節に書けるのは {', '.join(sorted(_ALLOWED_DOCKER_FLAGS))} だけ: {flag}"
+    )
 
 
 def _check_setting(

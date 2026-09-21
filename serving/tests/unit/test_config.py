@@ -740,22 +740,25 @@ def test_a_probe_config_with_hf_overrides_loads(repo: Path) -> None:
     assert configs[PROBE].args["load-format"].value == "dummy"
 
 
-# --- 検査 8: 禁じる docker のフラグ -------------------------------------
+# --- 検査 8: docker のフラグの許可の一覧 ---------------------------------
 
 
 @pytest.mark.parametrize(
-    ("flag", "value"),
+    ("flag", "value", "reason_fragment"),
     [
-        ("--privileged", None),
-        ("--pid", "host"),
-        ("--userns", "host"),
-        ("--security-opt", "seccomp=unconfined"),
-        ("--volume", "/etc:/etc"),
-        ("-v", "/etc:/etc"),
-        ("--rm", None),
+        ("--privileged", None, "特権"),
+        ("--pid", "host", "名前空間"),
+        ("--userns", "host", "名前空間"),
+        ("--security-opt", "seccomp=unconfined", "セキュリティ"),
+        ("--volume", "/etc:/etc", "--mount だけ"),
+        ("-v", "/etc:/etc", "--mount だけ"),
+        ("--rm", None, "記録が読めなくなる"),
     ],
 )
-def test_each_forbidden_docker_flag_is_refused(repo: Path, flag: str, value: str | None) -> None:
+def test_each_previously_forbidden_docker_flag_keeps_its_reason(
+    repo: Path, flag: str, value: str | None, reason_fragment: str
+) -> None:
+    """これまで禁止の一覧にあった 7 つは、許可の一覧に切り替えたあとも理由つきで断られる。"""
     extra = _setting(
         f"configs.{SERVE}.docker.forbidden", flag=flag, value=value, why="根拠はあっても断る"
     )
@@ -763,65 +766,305 @@ def test_each_forbidden_docker_flag_is_refused(repo: Path, flag: str, value: str
 
     assert f"configs.{SERVE}.docker.forbidden" in message
     assert flag in message
+    assert reason_fragment in message
 
 
-@pytest.mark.parametrize("value", ["always", "unless-stopped", "on-failure"])
-def test_an_automatic_restart_is_refused(repo: Path, value: str) -> None:
+@pytest.mark.parametrize("value", ["no", "always", "unless-stopped", "on-failure"])
+def test_restart_is_always_refused(repo: Path, value: str) -> None:
+    """`--restart` は、道具 (`plan.py`) が必ず `--restart no` を付けるので、値を問わず断る。"""
     extra = _setting(
         f"configs.{SERVE}.docker.restart", flag="--restart", value=value, why="試しに足す"
     )
     message = _refuse(repo, _toml(_config(docker_extra=extra)))
 
     assert f"configs.{SERVE}.docker.restart" in message
+    assert "道具が必ず付ける" in message
 
 
-def test_restart_no_is_allowed(repo: Path) -> None:
+@pytest.mark.parametrize(
+    "flag", ["--pid=host", "--volumes-from=other", "--network=container:other"]
+)
+def test_a_docker_flag_written_with_an_equals_sign_is_refused(repo: Path, flag: str) -> None:
+    extra = _setting(f"configs.{SERVE}.docker.forbidden", flag=flag, why="= の書き方でも断る")
+    message = _refuse(repo, _toml(_config(docker_extra=extra)))
+
+    assert f"configs.{SERVE}.docker.forbidden" in message
+
+
+@pytest.mark.parametrize("flag", [" --privileged ", " --user "])
+def test_a_docker_flag_with_surrounding_spaces_is_refused(repo: Path, flag: str) -> None:
+    extra = _setting(f"configs.{SERVE}.docker.forbidden", flag=flag, why="前後の空白でも断る")
+    message = _refuse(repo, _toml(_config(docker_extra=extra)))
+
+    assert f"configs.{SERVE}.docker.forbidden" in message
+    assert flag.strip() in message
+
+
+@pytest.mark.parametrize("value", ["--privileged", "--volumes-from=other"])
+def test_a_docker_flag_written_as_a_positional_argument_is_refused(repo: Path, value: str) -> None:
+    extra = _setting(f"configs.{SERVE}.docker.forbidden", value=value, why="抜け道を試す")
+    message = _refuse(repo, _toml(_config(docker_extra=extra)))
+
+    assert f"configs.{SERVE}.docker.forbidden" in message
+
+
+def test_a_bare_word_positional_docker_argument_is_refused(repo: Path) -> None:
+    """`flag` のない、`-` で始まらない値は、docker の節では位置の引数として誤り。
+
+    イメージの参照の前に語を置くと、その語がイメージの参照として読まれてしまうため。
+    """
+    extra = _setting(f"configs.{SERVE}.docker.positional", value="ubuntu", why="抜け道を試す")
+    message = _refuse(repo, _toml(_config(docker_extra=extra)))
+
+    assert f"configs.{SERVE}.docker.positional" in message
+    assert "位置の引数は書けない" in message
+
+
+@pytest.mark.parametrize(
+    ("flag", "value"),
+    [
+        ("--volumes-from", "other"),
+        ("--network", "container:other"),
+        ("--network", "bridge"),
+        ("--network", None),
+        ("--ipc", "container:other"),
+        ("--ipc", "shareable"),
+        ("--cidfile", "/tmp/x"),
+        ("--user", "root"),
+        ("--uts", "host"),
+        ("--cgroupns", "host"),
+        ("--link", "other"),
+        ("--device-cgroup-rule", "c 1:3 rwm"),
+        ("--log-driver", "none"),
+        ("--publish", "8000:8000"),
+        ("-p", "8000:8000"),
+        ("--workdir", "/x"),
+        ("--name", "x"),
+        ("--label", "a=b"),
+        ("-l", "a=b"),
+        ("-d", None),
+        ("--env", "A=b"),
+        ("-e", "A=b"),
+        ("--env-file", "/x"),
+        ("-it", None),
+    ],
+)
+def test_each_disallowed_docker_setting_is_refused(
+    repo: Path, flag: str, value: str | None
+) -> None:
+    """許可の一覧にないフラグは、根拠があっても、どう書いても誤りになる。"""
     extra = _setting(
-        f"configs.{SERVE}.docker.restart",
-        flag="--restart",
-        value="no",
-        why="自動で起こし直さないことを明示する",
+        f"configs.{SERVE}.docker.bad", flag=flag, value=value, why="根拠はあっても断る"
+    )
+    message = _refuse(repo, _toml(_config(docker_extra=extra)))
+
+    assert f"configs.{SERVE}.docker.bad" in message
+
+
+@pytest.mark.parametrize(
+    ("flag", "value", "reason_fragment"),
+    [
+        ("--volumes-from", "other", "別のコンテナ"),
+        ("--cidfile", "/tmp/x", "Spark の任意の場所"),
+        ("--restart", "no", "道具が必ず付ける"),
+        ("-d", None, "道具が必ず付ける"),
+        ("--detach", None, "道具が必ず付ける"),
+        ("--pull", "never", "道具が必ず付ける"),
+        ("--name", "x", "道具が必ず付ける"),
+        ("--label", "a=b", "道具が必ず付ける"),
+        ("-l", "a=b", "道具が必ず付ける"),
+        ("--label-file", "/x", "道具が必ず付ける"),
+        ("-e", "A=b", "env の節"),
+        ("--env", "A=b", "env の節"),
+        ("--env-file", "/x", "env の節"),
+        ("-i", None, "前面の指定は使えない"),
+        ("-t", None, "前面の指定は使えない"),
+        ("-a", None, "前面の指定は使えない"),
+    ],
+)
+def test_the_new_forbidden_docker_flags_carry_a_reason(
+    repo: Path, flag: str, value: str | None, reason_fragment: str
+) -> None:
+    """一覧にない、というだけの文より親切な、わかっている危ないフラグの理由つきの文。"""
+    extra = _setting(
+        f"configs.{SERVE}.docker.bad", flag=flag, value=value, why="理由つきの文を確かめる"
+    )
+    message = _refuse(repo, _toml(_config(docker_extra=extra)))
+
+    assert reason_fragment in message
+
+
+@pytest.mark.parametrize("flag", ["--user", "--uts", "--cgroupns", "--link", "-p"])
+def test_a_flag_outside_every_list_gets_the_generic_allow_list_message(
+    repo: Path, flag: str
+) -> None:
+    """わかっている理由がないフラグは「書けるのは <許可の一覧> だけ」の一般の文になる。"""
+    extra = _setting(f"configs.{SERVE}.docker.bad", flag=flag, value="x", why="一覧にない")
+    message = _refuse(repo, _toml(_config(docker_extra=extra)))
+
+    assert "docker の節に書けるのは" in message
+    assert flag in message
+
+
+@pytest.mark.parametrize(
+    ("flag", "value"),
+    [
+        ("--network", "bridge"),
+        ("--network", None),
+        ("--ipc", "container:other"),
+        ("--ipc", "shareable"),
+    ],
+)
+def test_network_and_ipc_refuse_values_other_than_host(
+    repo: Path, flag: str, value: str | None
+) -> None:
+    extra = _setting(f"configs.{SERVE}.docker.bad", flag=flag, value=value, why="host 以外を試す")
+    message = _refuse(repo, _toml(_config(docker_extra=extra)))
+
+    assert f"configs.{SERVE}.docker.bad" in message
+    assert "host" in message
+
+
+@pytest.mark.parametrize("flag", ["--gpus", "--shm-size", "--ulimit", "--entrypoint"])
+@pytest.mark.parametrize("value", [None, "", "  "])
+def test_an_allowed_docker_flag_needs_a_value(repo: Path, flag: str, value: str | None) -> None:
+    """値がないと、docker は次の語 (イメージの参照) を値として食う。"""
+    extra = _setting(f"configs.{SERVE}.docker.bare", flag=flag, value=value, why="値を書き忘れた")
+    message = _refuse(repo, _toml(_config(docker_extra=extra)))
+
+    assert f"configs.{SERVE}.docker.bare: {flag} には値が要る" in message
+
+
+def test_two_docker_errors_are_both_listed(repo: Path) -> None:
+    """誤りが 2 つ以上あるとき、すべて並ぶ (design.md 「早く断る」)。"""
+    extra = _setting(
+        f"configs.{SERVE}.docker.bad-user", flag="--user", value="root", why="1 つ目"
+    ) + _setting(f"configs.{SERVE}.docker.bad-uts", flag="--uts", value="host", why="2 つ目")
+    message = _refuse(repo, _toml(_config(docker_extra=extra)))
+
+    assert f"configs.{SERVE}.docker.bad-user" in message
+    assert f"configs.{SERVE}.docker.bad-uts" in message
+
+
+def test_a_disallowed_docker_flag_is_refused_even_with_measured_evidence(repo: Path) -> None:
+    extra = _setting(
+        f"configs.{SERVE}.docker.bad",
+        flag="--user",
+        value="root",
+        why="根拠があっても断る",
+        evidence="measured",
+    )
+    message = _refuse(repo, _toml(_config(docker_extra=extra)))
+
+    assert f"configs.{SERVE}.docker.bad" in message
+
+
+def test_args_section_settings_are_not_checked_against_the_docker_allow_list(repo: Path) -> None:
+    """docker が読まない `args` の節には、検査 8 の許可の一覧を掛けない。"""
+    extra = _setting(
+        f"configs.{SERVE}.args.extra",
+        flag="--volumes-from",
+        value="other",
+        why="args には docker の検査が掛からない",
+    )
+    configs = _load(repo, _toml(_config(args_extra=extra)))
+
+    assert "extra" in configs[SERVE].args
+
+
+def test_every_allowed_docker_setting_in_the_design_sample_passes(repo: Path) -> None:
+    """design.md Data Models の見本にある docker の設定が、検査 8 の許可の一覧をすべて通る。"""
+    extra = (
+        _setting(f"configs.{SERVE}.docker.gpus", flag="--gpus", value="all", why="GPU を見せる")
+        + _setting(
+            f"configs.{SERVE}.docker.ipc", flag="--ipc", value="host", why="共有メモリを広く取る"
+        )
+        + _setting(
+            f"configs.{SERVE}.docker.network",
+            flag="--network",
+            value="host",
+            why="直結の側やほかのインターフェースで待ち受けない",
+        )
+        + _setting(
+            f"configs.{SERVE}.docker.network-eq",
+            flag="--network=host",
+            why="= つなぎでも host は通る",
+        )
+        + _setting(
+            f"configs.{SERVE}.docker.shm-size",
+            flag="--shm-size",
+            value="16g",
+            why="共有メモリの上限を広げる",
+        )
+        + _setting(
+            f"configs.{SERVE}.docker.ulimit-memlock",
+            flag="--ulimit",
+            value="memlock=-1",
+            why="RoCE のメモリの登録が mlock を使う",
+        )
+        + _setting(
+            f"configs.{SERVE}.docker.ulimit-stack",
+            flag="--ulimit",
+            value="stack=67108864",
+            why="推奨のスタックの大きさ",
+        )
+        + _setting(
+            f"configs.{SERVE}.docker.mount-models",
+            flag="--mount",
+            value="type=bind,source={remote_root}/models/nvfp4,target=/models/nvfp4,readonly",
+            why="重みを読み取り専用で見せる",
+        )
+        + _setting(
+            f"configs.{SERVE}.docker.mount-logs",
+            flag="--mount",
+            value="type=bind,source={remote_root}/logs,target=/var/log/vllm",
+            why="記録を Spark の外から回収できるようにする",
+        )
+        + _setting(
+            f"configs.{SERVE}.docker.entrypoint",
+            flag="--entrypoint",
+            value="torchrun",
+            why="分散の起動に torchrun を使う",
+        )
+        + _setting(
+            f"configs.{SERVE}.docker.device",
+            flag="--device",
+            value="/dev/infiniband",
+            why="コンテナから RoCE のデバイスを見せる",
+            evidence="measured",
+        )
+        + _setting(
+            f"configs.{SERVE}.docker.cap-sys-nice",
+            flag="--cap-add",
+            value="SYS_NICE",
+            why="NCCL の推奨",
+        )
+        + _setting(
+            f"configs.{SERVE}.docker.cap-ipc-lock",
+            flag="--cap-add",
+            value="IPC_LOCK",
+            why="メモリの登録に要る",
+        )
     )
     configs = _load(repo, _toml(_config(docker_extra=extra)))
 
-    assert configs[SERVE].docker["restart"].value == "no"
-
-
-def test_a_forbidden_flag_written_with_an_equals_sign_is_refused(repo: Path) -> None:
-    extra = _setting(
-        f"configs.{SERVE}.docker.forbidden", flag="--pid=host", why="= の書き方でも断る"
-    )
-    message = _refuse(repo, _toml(_config(docker_extra=extra)))
-
-    assert f"configs.{SERVE}.docker.forbidden" in message
-
-
-def test_a_forbidden_flag_with_surrounding_spaces_is_refused(repo: Path) -> None:
-    extra = _setting(
-        f"configs.{SERVE}.docker.forbidden", flag=" --privileged ", why="前後の空白でも断る"
-    )
-    message = _refuse(repo, _toml(_config(docker_extra=extra)))
-
-    assert f"configs.{SERVE}.docker.forbidden" in message
-    assert "--privileged" in message
-
-
-def test_a_forbidden_flag_written_as_a_positional_argument_is_refused(repo: Path) -> None:
-    extra = _setting(f"configs.{SERVE}.docker.forbidden", value="--privileged", why="抜け道を試す")
-    message = _refuse(repo, _toml(_config(docker_extra=extra)))
-
-    assert f"configs.{SERVE}.docker.forbidden" in message
-
-
-def test_the_allowed_docker_settings_pass(repo: Path) -> None:
-    extra = _setting(
-        f"configs.{SERVE}.docker.gpus", flag="--gpus", value="all", why="GPU を見せる"
-    ) + _setting(
-        f"configs.{SERVE}.docker.ipc", flag="--ipc", value="host", why="共有メモリを広く取る"
-    )
-    configs = _load(repo, _toml(_config(docker_extra=extra)))
-
-    assert set(configs[SERVE].docker) == {"mount-cache", "gpus", "ipc"}
+    expected = {
+        "mount-cache",
+        "gpus",
+        "ipc",
+        "network",
+        "network-eq",
+        "shm-size",
+        "ulimit-memlock",
+        "ulimit-stack",
+        "mount-models",
+        "mount-logs",
+        "entrypoint",
+        "device",
+        "cap-sys-nice",
+        "cap-ipc-lock",
+    }
+    assert expected == set(configs[SERVE].docker)
 
 
 # --- 検査 9: --mount -----------------------------------------------------

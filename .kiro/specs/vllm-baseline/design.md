@@ -496,7 +496,7 @@ def select_config(configs: dict[str, ConfigDef], name: str,
   5. 投機的デコード: `--speculative-config`、`--spec-method`、`--spec-model`、`--spec-tokens` のどれかを持つ構成は誤り (6.7。P3 で、この検査を構成ごとの許可に変える)
   6. 置き換えの印: 値に書けるのは、`{node.fabric_addr}`、`{node.fabric_ifname}`、`{node.rank}`、`{head.fabric_addr}`、`{head.lan_addr}`、`{weights.mount_at}`、`{remote_root}` だけ。ほかの `{…}` は誤り
   7. 直結の値: `kind` が `serve` か `job` で、ノードが 2 つの構成は、2 台の `fabric_addr`、`fabric_ifname`、`fabric_measured` が揃っていなければ誤り (4.7)。`fetch`、`inspect`、`probe` には掛からない (取得とライセンスの読み取りと縮小の確認は、直結の値を実測する前に流すため)。**この検査だけは、読み込みのときではなく、構成を選んだとき (`select_config`) に、選んだ構成について行う**
-  8. 禁じる docker のフラグ: `--privileged`、`--pid`、`--userns`、`--security-opt`、`--volume` / `-v` (`--mount` だけを使う)、`--restart` の `no` 以外、`--rm` (記録が消える) は誤り
+  8. docker のフラグは、許可の一覧にあるものだけ (長い形で書く): `--gpus`、`--network` (値は `host` だけ)、`--ipc` (値は `host` だけ)、`--shm-size`、`--ulimit`、`--mount` (検査 9)、`--entrypoint`、`--device` と `--cap-add` (検査 10)。research.md §c と、この設計の job / fetch / inspect (`--entrypoint`) が使うものに限り、どれも値が要る。それ以外 (`--privileged`、`--pid`、`--userns`、`--security-opt`、`--volume` / `-v`、`--volumes-from`、`--cidfile`、`--rm`、`container:<名前>` を値に取る名前空間の共有、道具が必ず付けるフラグ) は、根拠があっても誤り。禁止の一覧では、別の構成を巻き込む経路 (`--volumes-from <よそのコンテナ>` など) を塞ぎ切れないため。一覧を広げるのは、設計の変更として扱う
   9. `--mount`: `type=bind` だけ。`source` は、`{remote_root}` で始まるものだけ (Spark のほかの場所を、コンテナに見せない)
   10. `--device` と `--cap-add`: 名前の一覧にあるものだけ (`--device` は `/dev/infiniband`。`--cap-add` は `SYS_NICE` と `IPC_LOCK`)。research.md が A/B の候補として挙げた 3 つで、それ以外は、根拠があっても誤り。一覧を広げるのは、設計の変更として扱う
 
