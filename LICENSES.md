@@ -102,6 +102,27 @@
   `ssh` / `rsync` を引数のリストで呼ぶ) そのものが、これらの部品を要らなくして
   いる。両方が揃わないと採用を見送った、という話ではない
 
+## serving-kit が配るスクリプト (`serving/payload/`、task 4.2)
+
+Spark に配り、コンテナの中で `torchrun` で動かす 2 つのスクリプト。片方は自前のコード、
+もう片方は上流の文書のコードブロックをそのまま置いたものである。
+
+| 名前 | 出典 | commit | ライセンス | 用途 | 変更の有無 |
+|---|---|---|---|---|---|
+| `vllm_sanity_check.py` (vLLM のトラブルシュートの文書の `test.py`) | https://github.com/vllm-project/vllm/blob/385dce36bcee42309924a5ece951a96db3dce7f2/docs/usage/troubleshooting.md | `385dce36bcee42309924a5ece951a96db3dce7f2` | Apache-2.0 | 2 台の間の PyTorch NCCL / GLOO / vLLM NCCL / CUDA グラフの中の NCCL の事前の確認 (`serve netcheck sanity`) | なし |
+
+- `vllm_sanity_check.py` は、2026-09-22 に、上の commit を指す生のファイルの URL
+  (`raw.githubusercontent.com`) から `curl` で取得した (要約する道具では取っていない)。
+  取り直しの手順は `serving/payload/UPSTREAM.md` に書く
+- 本文 (ファイルの先頭のコメントより下) の SHA-256 をファイルの先頭に記録し、直っていない
+  ことを試験 (`serving/tests/unit/test_payload.py`) で固定している
+- `allreduce_bench.py` (all-reduce の帯域の計測) は、このリポジトリの一部として自分たちで
+  書いたコード (Apache-2.0) であり、第三者の部品ではないので、この表には載せない。
+  `algbw` / `busbw` の**定義**だけを、NCCL の公式の Performance の文書
+  (nccl-tests、BSD ライセンス、`doc/PERFORMANCE.md`) から引用しており (research.md
+  §e-5 が一次資料として引用したものを孫引き)、nccl-tests のソースコードそのものは
+  参照も複製もしていない (要件 11.2、11.3)
+
 ## 公開の課題
 
 計測に使う公開の課題は、HumanEval+ だけである。**リポジトリには同梱せず**、
