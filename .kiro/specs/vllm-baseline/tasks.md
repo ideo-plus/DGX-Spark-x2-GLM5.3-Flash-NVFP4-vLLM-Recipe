@@ -127,7 +127,7 @@
   - _Requirements: 1.6, 1.7, 1.8, 6.5, 10.5_
 
 - [ ] 4. 確認の道具
-- [ ] 4.1 (P) 1 台の縮小の確認を作る
+- [x] 4.1 (P) 1 台の縮小の確認を作る
   - 確認の種類の構成を、1 つのノードで起こし、結果を 3 つ (起動した、失敗した、判定できない) に分ける
   - 起動した場合は、短い要求を 1 つ送り、返り切ったかだけを記録する
   - どの結果でも、記録を回収してから、必ず止めて消す
@@ -379,3 +379,5 @@
 - 3.5: `lifecycle.status(runner, configs, nodes, ...) -> ServiceStatus` は、読み取りだけ。HTTP の宛先は、動いている head のコンテナの**ラベルの構成の名前**から、渡した構成の定義を引いて決める (5.1 は、読み込んだ構成の辞書を、そのまま渡す)。読めなかった項目は `None`。**一覧を読めなかった台は、`container_state="absent"` として返り、理由は `report` (stderr) にだけ出る** (`types.NodeStatus` に「わからない」がないため)。**5.1 への申し送り**: 計測の前の確認で「何も動いていない」と読み違えないように、`lifecycle` に、`SmokeShown` と同じ形の `StatusShown(service, unreadable)` と `read_status(...)` を足して、読めなかった台の行に印を付ける (`status` の型は、design のまま)
 - 3.5: `lifecycle.stop(runner, nodes, ...) -> StopOutcome` は、2 台の、**すべての自分のコンテナ** (`kind` を問わない。推論サーバーも、取得も、確認も) を止める。計画は `guards.build_stop_plan(一覧の行)` で作る (一覧の行からしか作れず、所有のラベルを確かめ直し、フラグとして読まれうる名前を断る。巻き戻しは空)。順序は head → worker の `docker stop -t 90`、そのあと `docker rm`。終了したコンテナにも `stop` → `rm`。**記録は回収しない** (了承の前に「先に `serve logs` で回収する」と見せる)。2 台とも空なら、了承を求めずに `already_stopped`。一覧を読めなかった台には触れず、読めた台を止めてから、`LifecycleError` (2) で、読めなかった台を名指す。止めたあと、GPU のプロセスが 0 件になるまで、最大 60 秒 (5 秒ごと) 待ち、空かなければ `gpu_not_released` (名前とメモリの量を示す。止めには行かない)。`nvidia-smi` が読めないときは、`stopped` で、`detail` に「確かめられなかった」と書く (5.1 は、`detail` を必ず画面に出す)
 - 3.5: `lifecycle.smoke(config, nodes, ...) -> SmokeOutcome` と `send_smoke(...) -> SmokeShown`。本文を返す口 (`SmokeShown.text`。画面に出すだけ) と、保存してよい記録の口 (`SmokeOutcome`: HTTP の状態、終わりの理由、トークンの数、置き換え文字の有無) を、型で分けた。HTTP の失敗のときも、応答の本文の断片を、`detail` や誤りの文に入れない。`nvidia-smi` の問い合わせの列は、`lifecycle.GPU_APPS_ARGV` と `guards` の中とで、二重に持っている (実機の出力の形が変わったら、2 か所を直す)。公開の助け `read_gpu_apps` / `read_fabric_link` / `parse_link_state` は、4.1 / 4.3 が使える
+- 4.1: `probe.run_probe(...) -> ProbeOutcome` は、`kind = "probe"` の 1 台の構成を、`lifecycle` の公開の口だけで起こす。結果は 3 つ: `ready` (受け付けの開始まで届いた。短い要求を 1 つだけ送り、返り切ったかだけを記録。本文は、画面にも、どこにも出さない)、`failed` (コンテナが終了した。知っている失敗の種類と、前後の行。知らなければ `UNCLASSIFIED`)、`inconclusive` (終了せずに時間切れ / 関門で断られた / 了承されなかった / 起こす途中で届かなかった / 待っても直らない食い違い)。どの結果でも、記録を回収してから、必ず止めて消す (`lifecycle.wrap_up`)
+- 4.1 → **5.1 / 6.3 / 7.2 への申し送り**: (a) 終了コードは `ready` = 0、`failed` = 2、**`inconclusive` = 1** (`serve start` は時間切れを 2 にするが、`probe` だけは、判定が出たか (2)、出ていないか (1) で分ける。7.2 の分岐「失敗した → 段 1」「確かめられなかった → 計測者が決める」を、終了コードで分けるため)。(b) **`inconclusive` を、一律に「段 2 へ進む」と読まない**。関門で断られた (GPU が塞がっている、置き場所がない、照合の記録がない) 場合も `inconclusive` になるので、手順書は「終了コード 1 のときは、`detail` の先頭を読み、関門の断りなら、直してやり直す」と書く。(c) 5.1 は、`failed` のときも `detail` を必ず画面に出す (片付けが終わらなかったことが、`detail` の末尾にだけ出る)。`ready` / `inconclusive` で片付けが終わらなかったときは `ProbeError` (2)。(d) 記録の回収の置き場所は `serving/var/<日時>-start-<構成>/` になる (`lifecycle.wrap_up` が、コマンドの名前を受けないため。構成の名前 `probe-*` で見分ける)。(e) `/version` の読み取りは、`lifecycle` と `probe` に二重にある (形が変わったら、2 か所を直す)
