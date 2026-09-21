@@ -84,6 +84,15 @@
    直に書けない** (起こす道を 1 つにして、この検査を必ず通す)。2 語の形の
    `docker container stop` / `rm` は、`remote.CallGuard` が、許可の一覧にないサブコマンド
    として断る (層の受け持ち。どちらも試験で固定)
+11. **巻き戻しを実際に流す前に、もう一度、一覧で相手を確かめる** (`rollback_commands`。
+   task 3.1 のレビューで足した)。了承を得た計画の巻き戻しは、起動の**前**に、計画が起こす
+   名前で書く。ところが `docker stop <名前>` / `docker rm <名前>` は、その名前のコンテナが
+   **誰のものでも**止めて消すので、`docker run` が名前の衝突で失敗した場合 (その名前は、
+   よそのコンテナのもの) に、計画のとおり流すと、よそのものを止めてしまう。`docker run` の
+   標準エラーの文面で衝突を見分けるのは、版で変わりうるので歯止めにならない。そこで、流す
+   直前に `list_own_containers` を読み、**その台の一覧に、その名前の行があるときだけ**流す
+   (名前は 1 台の中で一意なので、自分の一覧にあれば、それは自分のコンテナである)。3.1 の
+   `image` と、3.4 以降の `lifecycle`、4.x は、この関数で巻き戻しを決める
 """
 
 from __future__ import annotations
@@ -167,6 +176,7 @@ __all__ = [
     "remove_argv",
     "request_approval",
     "required_free_bytes",
+    "rollback_commands",
     "run_gates",
     "stop_argv",
     "verification_record_path",
@@ -1371,6 +1381,90 @@ def _check_extra_forward(commands: Sequence[PlannedCommand], names: Sequence[str
                 "この計画が起こさないコンテナを、前に進むコマンドに入れられない"
                 f" (自分のものでないコンテナを、名前で止めないため): {', '.join(outside)}"
             )
+
+
+def rollback_commands(
+    runner: RemoteRunner,
+    nodes: Mapping[NodeRole, NodeDef],
+    plans: Sequence[ContainerPlan],
+    *,
+    timeout_s: float = READ_TIMEOUT_S,
+) -> tuple[tuple[PlannedRun, ...], tuple[str, ...]]:
+    """**実際に流してよい巻き戻しだけ**を、自分のラベルで絞った一覧から決める。
+
+    `build_approved_plan` は、起動の**前**に、計画が起こす名前の `docker stop` / `docker rm` を
+    書く (そうしないと、片付けが了承のない呼び出しとして断られる)。しかし、**`docker stop
+    <名前>` と `docker rm <名前>` は、その名前のコンテナが誰のものでも、止めて消す**。
+    `docker run` が名前の衝突で失敗した場合、その名前は、この道具のものではないコンテナを
+    指しているので、計画に書いてあるからといって、そのまま流してはならない
+    (requirements 2.3、design.md 「remote」の不変条件)。
+
+    衝突かどうかを、`docker run` の標準エラーの文面で見分けるのは、歯止めにならない (文面は
+    docker の版で変わりうるし、実機で確かめていない)。そこで、**流す直前に
+    `list_own_containers` (自分のラベルで絞り、行の所有のラベルも確かめる、ただ 1 つの入口)
+    を読み、その台の一覧に、その計画の名前の行があるときだけ流す**。docker の名前は、1 台の
+    中で一意なので、自分の一覧にその名前があれば、その名前はこの道具のコンテナを指している。
+
+    一覧にその名前がなければ、その台には止めるものがない (コンテナができなかった、または、
+    その名前はよそのもの) ので、`stop` / `rm` を 1 つも返さない。一覧そのものを読めなかった台
+    (入れない、所有のラベルのない行が紛れた、出力が読めない) でも、確かめられないので流さず、
+    理由を返す (呼ぶ側は、その文を見せて終わる)。理由には、よそのコンテナの名前も識別子も
+    入らない (`list_own_containers` が、そもそも出さない)。
+
+    **これは読み取りだけの関数である**。返した列を実際に流すのは、呼ぶ側 (`image`、あとで
+    `lifecycle`) で、列は `stop_argv` / `remove_argv` で作るので、了承を得た計画の巻き戻しと
+    完全に一致する (`remote.CallGuard` は、完全な一致で見る)。並び (2 台ぶんの `stop` の
+    あとに `rm`) も `build_approved_plan` と同じにしてあり、試験が、その一致を固定する。
+
+    引数:
+        runner: 遠隔の実行役。ここからは、コンテナの一覧の読み取りしか出さない。
+        nodes: 役割ごとのノードの定義。
+        plans: 起こした (起こそうとした) コンテナの計画。
+        timeout_s: 一覧の読み取りの時間切れ。
+
+    返り値:
+        流してよい巻き戻しの列と、確かめられなかった台の理由の列。
+
+    例外:
+        ValueError: `plans` が使う役割のノードの定義が `nodes` にないとき。
+    """
+    present: list[ContainerPlan] = []
+    unchecked: list[str] = []
+    for plan in plans:
+        node = nodes.get(plan.node)
+        if node is None:
+            raise ValueError(f"nodes.{plan.node} の定義がない ({plan.container_name} の片付け)")
+        try:
+            containers = list_own_containers(runner, node, timeout_s=timeout_s)
+        except (RemoteError, ValueError) as exc:
+            unchecked.append(
+                f"{plan.node}: 自分のコンテナの一覧を読めないので、{plan.container_name} の"
+                f" 片付けに行かない (名前だけで止めると、よそのコンテナを止めうる): {exc}。"
+                "コンテナが残っているかもしれないので、入れるようになってから `serve stop` で"
+                "片付ける"
+            )
+            continue
+        if any(container.name == plan.container_name for container in containers):
+            present.append(plan)
+    commands = [
+        PlannedRun(
+            node=plan.node,
+            argv=stop_argv(plan.container_name),
+            container=plan.container_name,
+            purpose=f"{plan.node} の {plan.container_name} を止める (片付け)",
+        )
+        for plan in present
+    ]
+    commands.extend(
+        PlannedRun(
+            node=plan.node,
+            argv=remove_argv(plan.container_name),
+            container=plan.container_name,
+            purpose=f"{plan.node} の {plan.container_name} を消す (片付け)",
+        )
+        for plan in present
+    )
+    return tuple(commands), tuple(unchecked)
 
 
 def format_plan(plan: ApprovedPlan, nodes: Mapping[NodeRole, NodeDef]) -> str:

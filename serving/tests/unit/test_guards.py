@@ -1432,3 +1432,92 @@ def test_guards_imports_only_the_modules_the_design_allows() -> None:
                 if alias.name.startswith("serving_kit."):
                     imported.add(alias.name.split(".")[-1])
     assert imported <= ALLOWED_SERVING_MODULES, imported
+
+
+# --- 巻き戻しの相手を、一覧で確かめる (tasks.md 3.1 のレビューでの補強) ---
+
+
+def test_the_rollback_commands_come_from_our_listing(tmp_path: Path) -> None:
+    # 2 台とも、自分の一覧にその名前がある → 了承済みの計画の巻き戻しと、完全に同じ列が返る
+    plans = plans_of(serve_config())
+    ps = {plan.node: ps_line(plan, state="exited") + "\n" for plan in plans}
+    runner = runner_of(tmp_path, Script(ps=ps))
+    commands, unchecked = g.rollback_commands(runner, NODES, plans)
+    assert unchecked == ()
+    assert commands == g.build_approved_plan(plans).rollback
+
+
+def test_no_rollback_command_for_a_name_that_is_not_in_our_listing(tmp_path: Path) -> None:
+    # 名前の衝突 (その名前は、よそのコンテナのもの) と、コンテナができなかった場合。
+    # `docker stop <名前>` は、誰のものでも止めてしまうので、一覧にない名前には行かない
+    plans = plans_of(serve_config())
+    ps: dict[NodeRole, str] = {"head": ps_line(plans[0], state="exited") + "\n", "worker": ""}
+    runner = runner_of(tmp_path, Script(ps=ps))
+    commands, unchecked = g.rollback_commands(runner, NODES, plans)
+    assert unchecked == ()
+    assert [command.node for command in commands] == ["head", "head"]
+    assert plans[1].container_name not in " ".join(" ".join(command.argv) for command in commands)
+
+
+def test_a_listing_that_cannot_be_read_stops_the_rollback_with_a_reason(tmp_path: Path) -> None:
+    # worker に入れない (一覧を読めない) ので、その台では、名前に向けて止めも消しもしない
+    plans = plans_of(serve_config())
+    unreachable = Rule(
+        prefix=("docker", "ps"),
+        node="worker",
+        replies=(Reply(exit_code=255, stderr="ssh: connect to host port 22: No route to host"),),
+    )
+    runner = FakeRunner(
+        var_root=tmp_path, script=(unreachable, *Script(ps={"head": "", "worker": ""}).rules())
+    )
+    commands, unchecked = g.rollback_commands(runner, NODES, plans)
+    assert commands == ()
+    assert len(unchecked) == 1
+    assert "worker" in unchecked[0] and "serve stop" in unchecked[0]
+
+
+def test_the_reason_does_not_show_anything_about_foreign_containers(tmp_path: Path) -> None:
+    # 所有のラベルのない行が紛れた一覧は、使わずに断る。理由に、その行の名前も識別子も出さない
+    plans = plans_of(serve_config())
+    foreign = json.dumps(
+        {
+            "ID": "deadbeefdead",
+            "Names": "exl3-tp2",
+            "State": "running",
+            "Image": OTHER_REF,
+            "Labels": "com.example.owner=someone-else",
+        }
+    )
+    runner = runner_of(tmp_path, Script(ps={"head": foreign + "\n", "worker": ""}))
+    commands, unchecked = g.rollback_commands(runner, NODES, plans)
+    assert commands == ()
+    assert len(unchecked) == 1
+    assert "exl3-tp2" not in unchecked[0] and "deadbeefdead" not in unchecked[0]
+
+
+def test_deciding_the_rollback_does_not_change_the_state(tmp_path: Path) -> None:
+    plans = plans_of(serve_config())
+    ps = {plan.node: ps_line(plan, state="exited") + "\n" for plan in plans}
+    runner = runner_of(tmp_path, Script(ps=ps))
+    g.rollback_commands(runner, NODES, plans)
+    assert [call for call in runner.calls if call.mutating] == []
+    for argv in runner.argvs:
+        assert argv[:2] == ("docker", "ps"), f"一覧の読み取り以外を出した: {argv}"
+        assert f"label={OWNER_FILTER}" in argv
+
+
+def test_the_rollback_commands_work_for_an_ab_run_name(tmp_path: Path) -> None:
+    # A/B の回は、名前に `-r<回>` が付く (design.md 「netcheck」)。一覧の突き合わせも、
+    # その名前で行う (4.4 が、同じ関数で片付けを決める)
+    config = serve_config()
+    plans = build_plans(config, NODES, STARTED_AT, arm="baseline", repeat_index=2)
+    assert [plan.container_name for plan in plans] == [
+        "vb-p1-nvfp4-tp2-head-r2",
+        "vb-p1-nvfp4-tp2-worker-r2",
+    ]
+    ps = {plan.node: ps_line(plan, state="exited") + "\n" for plan in plans}
+    runner = runner_of(tmp_path, Script(ps=ps))
+    commands, unchecked = g.rollback_commands(runner, NODES, plans)
+    assert unchecked == ()
+    assert commands == g.build_approved_plan(plans).rollback
+    assert all(command.argv[-1].endswith("-r2") for command in commands)
