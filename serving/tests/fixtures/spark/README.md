@@ -22,6 +22,13 @@
 | `ss-ltnH.txt` | `ss -ltnH` | 0 |
 | `ethtool-<if>.txt`、`ethtool-<if>.stderr.txt` | `ethtool <if>` | 0 |
 
+| `mtu-<if>.txt` | `cat /sys/class/net/<if>/mtu` | 0 |
+| `ip-link-show-enp1s0f0np0.txt` | `ip link show dev enp1s0f0np0` | 0 |
+| `ibdev2netdev.txt` | `ibdev2netdev` | 0 |
+| `ibv_devinfo.txt` | `ibv_devinfo` | 0 |
+
+下の 4 つは、2026-09-22 に足した (4.3 の `netcheck links` が、MTU と、RoCE のデバイスとの対応を読む形を、推測で書かないため)。`ibdev2netdev` と `ibv_devinfo` は、2 台とも入っている。
+
 `ethtool` は、`enP7s7` (管理の側、10 GbE)、`enp1s0f0np0` と `enP2p1s0f0np0` (直結の側、つながっている)、`enp1s0f1np1` (直結の側、つながっていない) の 4 つについて採った。
 
 ## 読むときの注意
@@ -45,6 +52,7 @@
 
 | もとの値 | 置き換えたあと |
 |---|---|
+| `ibv_devinfo` の GUID (MAC から作られる) | `0200:0003:0000:00xx` (置き換えた MAC から作った値) |
 | MAC アドレス (16 個) | `02:00:00:00:00:01`〜 (ローカル管理のアドレス) |
 | グローバルの IPv6 アドレス (6 個) | `2001:db8::1`〜 (文書用の範囲) |
 | Tailscale の IPv4 アドレス (2 個) | `100.64.0.1`、`100.64.0.2` |
@@ -56,4 +64,6 @@
 - LAN のアドレス (10.0.1.60、10.0.1.61)、直結の側のアドレス (192.168.100.x、192.168.101.x)、docker の既定のブリッジのアドレス (172.17.0.1、172.18.0.1)、ホストの名前は、そのまま (LAN のアドレスとホストの名前は、CLAUDE.md にすでにある)
 - 認証の情報、送った内容、応答の本文は、もともと含まれていない
 - `ss-ltnH.txt` の待ち受けのポート (22、53、631 のほか、8080、5555、5556、11000 など) は、この道具のものではない。何が待ち受けているかは、調べていない (ポートの番号だけを、`gate_ports_free` の見本として採った)
-- `ip -br link` は MTU を出さない。`netcheck links` (4.3) が MTU を読む形を決めたら、その形の見本を足す
+- `ip -br link` は MTU を出さない。MTU は、`cat /sys/class/net/<if>/mtu` (数だけの 1 行) か、`ip link show dev <if>` の `mtu <数>` で読む (どちらも、`remote` の許可の形を通る)。直結の側 (`enp1s0f0np0`、`enP2p1s0f0np0`) は 9000、管理の側と、つながっていないものは 1500
+- `ibdev2netdev` の 1 行は `<RoCE のデバイス> port <番号> ==> <インターフェース> (Up|Down)`。つながっている直結のインターフェース 2 つが、別々の RoCE のデバイス (`rocep1s0f0`、`roceP2p1s0f0`) に対応している
+- `ibv_devinfo` の `node_guid` / `sys_image_guid` は、MAC から作られる (`aa:bb:cc:dd:ee:ff` → `aabb:cc03:00dd:eeff`) ので、置き換えた MAC から作った値に置き換えた。`link/ether` の MAC も、`ip-br-link.txt` と同じ対応で置き換えた (`brd ff:ff:ff:ff:ff:ff` は、そのまま)

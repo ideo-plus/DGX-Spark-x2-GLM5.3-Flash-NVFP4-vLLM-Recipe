@@ -29,11 +29,16 @@ REQUIRED = (
 )
 
 _MAC_RE = re.compile(r"\b(?:[0-9a-f]{2}:){5}[0-9a-f]{2}\b", re.IGNORECASE)
-_ALLOWED_MAC_RE = re.compile(r"^(00:00:00:00:00:00|02:00:00:00:00:[0-9a-f]{2})$")
+# 0 だけ (lo)、ブロードキャスト (`brd ff:ff:ff:ff:ff:ff`)、置き換えに使ったローカル管理のアドレス
+_ALLOWED_MAC_RE = re.compile(r"^(00:00:00:00:00:00|ff:ff:ff:ff:ff:ff|02:00:00:00:00:[0-9a-f]{2})$")
 # `::` の省略 (空の群) を含む形も拾う。MAC や時刻も当たるが、あとで ipaddress に通してふるう
 _IPV6_RE = re.compile(
     r"(?<![0-9a-f:.])[0-9a-f]{0,4}(?::[0-9a-f]{0,4}){2,7}(?![0-9a-f:.])", re.IGNORECASE
 )
+# `ibv_devinfo` の GUID (`aabb:cc03:00dd:eeff`) は、MAC から作られる。
+# 置き換えた MAC から作った形だけを通す
+_GUID_RE = re.compile(r"\b[0-9a-f]{4}:[0-9a-f]{4}:[0-9a-f]{4}:[0-9a-f]{4}\b", re.IGNORECASE)
+_ALLOWED_GUID_RE = re.compile(r"^0200:0003:0000:00[0-9a-f]{2}$")
 _TAILSCALE_V4_RE = re.compile(r"\b100\.(?:6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d+\.\d+\b")
 
 # 見本に現れてよい IPv6 の範囲 (置き換えに使った文書用の範囲、ループバック、`[::]` の待ち受け)
@@ -88,6 +93,8 @@ def test_a_sample_has_no_machine_identifiers(path: Path) -> None:
             assert host <= _SYNTHETIC_LINK_LOCAL_MAX, f"置き換えていないリンクローカル: {found}"
             continue
         assert any(addr in net for net in _ALLOWED_V6), f"置き換えていない IPv6 アドレス: {found}"
+    for guid in _GUID_RE.findall(text):
+        assert _ALLOWED_GUID_RE.match(guid.lower()), f"置き換えていない GUID: {guid}"
     for found in _TAILSCALE_V4_RE.findall(text):
         assert found.startswith("100.64.0."), f"置き換えていない Tailscale のアドレス: {found}"
     assert not re.search(r"br-(?!0{12})[0-9a-f]{12}", text), "置き換えていないブリッジの名前"
@@ -125,6 +132,7 @@ def test_the_port_list_keeps_its_columns() -> None:
         "fe80::a931:dd36:3b08:9a33",  # stable-privacy (機械に固有)
         "240f:71:e460:3133:eef0:71f5:1bb7:c421",  # グローバル
         "4c:bb:47:e9:15:3d",  # MAC
+        "4cbb:4703:00e9:153e",  # ibv_devinfo の GUID (MAC から作られる)
         "100.109.104.27",  # Tailscale
     ],
 )
