@@ -6,3 +6,9 @@ bench/.pytest_cache/
 bench/.mypy_cache/
 bench/.ruff_cache/
 bench/**/__pycache__/
+serving/.venv/
+serving/var/
+serving/.pytest_cache/
+serving/.mypy_cache/
+serving/.ruff_cache/
+serving/**/__pycache__/

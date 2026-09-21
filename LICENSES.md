@@ -1,7 +1,7 @@
 # LICENSES
 
-`bench-harness` が同梱する、または依存する部品・データ・コンテナイメージの、
-名前、版、入手先、ライセンス、用途を記録する。
+`bench-harness` と `serving-kit` が同梱する、または依存する部品・データ・
+コンテナイメージの、名前、版、入手先、ライセンス、用途を記録する。
 
 ## 方針
 
@@ -15,7 +15,7 @@
   記録する。どちらもリポジトリには同梱せず、版とハッシュ (またはダイジェスト)
   を固定して取得する
 
-## 依存する部品
+## bench-harness の依存する部品
 
 版は `bench/uv.lock` で解決された値。ライセンスは、PyPI の申告
 (`license_expression`) と、公式リポジトリの `LICENSE` で確かめた (2026-09-20)。
@@ -60,6 +60,47 @@
 |---|---|---|---|---|
 | uv | 0.12.11 | https://pypi.org/project/uv/ | MIT OR Apache-2.0 | 依存の解決と、仮想環境の管理 (`uv sync`、`uv run`) |
 | hatchling | (版は固定していない。`[build-system] requires`) | https://pypi.org/project/hatchling/ | MIT | パッケージのビルドのバックエンド。`uv.lock` には入らない |
+
+## serving-kit の依存する部品
+
+版は `serving/uv.lock` で解決された値。ライセンスは、PyPI の申告
+(`license_expression`) と、公式リポジトリの `LICENSE` で確かめた (2026-09-21)。
+`bench-harness` と同じ版で解決されたので、確かめた結果も同じである。
+
+### 実行時の依存
+
+| 名前 | 版 | 入手先 | ライセンス | 用途 |
+|---|---|---|---|---|
+| httpx | 0.28.1 | https://pypi.org/project/httpx/ | BSD-3-Clause | `/health`、`/v1/models`、`/metrics`、`/version`、`/v1/messages`、Hugging Face Hub の公開 API を呼ぶ HTTP クライアント |
+| pydantic | 2.13.5 | https://pypi.org/project/pydantic/ | MIT | 構成、ノード、根拠、記録などの型と検証 (`frozen` + `extra="forbid"`) |
+
+### 開発時の依存
+
+| 名前 | 版 | 入手先 | ライセンス | 用途 |
+|---|---|---|---|---|
+| pytest | 9.1.1 | https://pypi.org/project/pytest/ | MIT | 試験 |
+| ruff | 0.16.8 | https://pypi.org/project/ruff/ | MIT | 整形と静的検査 |
+| mypy | 2.3.1 | https://pypi.org/project/mypy/ | MIT | 型の検査 (strict) |
+
+- `uv` と `hatchling` (依存の解決、仮想環境の管理、パッケージのビルド) は、
+  上の「bench-harness の依存する部品」の「開発に使う外部の道具」と同じもの
+  (バージョンは固定していない) を、`serving/` でも使う
+
+### 検討したが採用しなかった部品
+
+タスク 1.1 (`serving/` の骨組み) で、Spark への遠隔の実行 (ssh / rsync) に
+使う候補として検討したが、採用しなかったもの。
+
+| 名前 | ライセンス | 採用しなかった理由 |
+|---|---|---|
+| ansible | GPL-3.0-or-later | 「方針」が許すライセンス (MIT、Apache-2.0、BSD 系、PSF) のいずれでもない。design.md の Technology Stack も、遠隔の実行は「システムの `ssh` / `rsync` を `subprocess` で」と決めており、構成管理の道具そのものが要らない |
+| paramiko | LGPL-2.1 | 同じく「方針」が許すライセンスのいずれでもない。システムの `ssh` を `subprocess` で呼ぶ設計 (design.md `remote`) のため、SSH クライアントライブラリも要らない |
+
+- どちらも、PyPI の申告 (`license` または `license_expression`、2026-09-21 に確認)
+  で上記のライセンスを確かめた
+- ライセンスの理由に加えて、design.md の「遠隔の実行」の技術選定 (システムの
+  `ssh` / `rsync` を引数のリストで呼ぶ) そのものが、これらの部品を要らなくして
+  いる。両方が揃わないと採用を見送った、という話ではない
 
 ## 公開の課題
 
