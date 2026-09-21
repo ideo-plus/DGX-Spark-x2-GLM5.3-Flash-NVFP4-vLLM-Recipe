@@ -27,7 +27,7 @@
   - 名前のない構成を選ぶと、使える名前を添えて断る
   - 完了の状態: 根拠のない設定を 2 つ含む構成が、2 つの項目の名前を並べて断られる。直結の値が空でも、縮小の確認と取得の構成は選べて、推論サーバーの 2 台の構成は選べない
   - _Requirements: 3.1, 3.6, 3.7, 4.7, 6.2, 6.7, 11.5_
-- [ ] 1.4 遠隔の実行の部品と、試験用の偽の実行役を作る
+- [x] 1.4 遠隔の実行の部品と、試験用の偽の実行役を作る
   - ssh と rsync を、引数のリストで呼ぶ。遠隔のシェルに渡る文字列は、引用の事故が起きない方法で作る。非対話の指定と、接続の時間切れを付ける
   - 実行できるコマンドを、許可の一覧で絞る (`sudo`、`apt`、`pip`、`systemctl` は呼べない)。`docker` は、サブコマンドも許可の一覧で絞る (`exec`、`build`、`rmi`、`system` などは呼べない)
   - 状態を変える呼び出しは、了承を得た計画に含まれていなければ、実行せずに誤りにする。計画は、前に進むコマンドと、それを巻き戻すコマンドの組で持ち、巻き戻しのコマンドは、前に進むコマンドが途中で失敗したあとでも実行できる
@@ -338,3 +338,6 @@
 - 1.3: 検査 6 (置き換えの印) は、波かっこの組のうち、中身が空か `"` で始まるものを、JSON の値として文字のまま通す (縮小の確認の `--hf-overrides` のため。design の検査 6 の文言と probe の節の食い違いを、検査の目的を保って両立させた)。TOML では、JSON の値はリテラル文字列 (`'…'`) で書く。**2.1 の置き換えは、`str.format` ではなく、決まった 7 つの印の文字列の置換で行う** (JSON の波かっこを壊さない)
 - 1.3: `--mount` の元は、`{remote_root}` そのものか、`{remote_root}/` で始まり、残りの道筋に `..` を含まないものだけ。plan (2.1) には元の道筋の検査がないので、config が唯一の歯止め。`--device` と `--cap-add` は完全一致 (`/dev/infiniband:rwm` は断る)
 - 1.3: `schema_version` は configs.toml で必須、nodes.toml では書いてあれば確かめる。入れていない検査: `kind` ごとの weights の有無、nodes.toml の直結の 3 項目の「全部か全部なし」(検査 7 で `serve` と `job` のときに現れる)。pydantic の緩い型変換 (`"1800"` → 1800) は残っている
+- 1.4: `remote` は、design より厳しい歯止めを 3 つ持つ (module の docstring の「意図した違い」)。(a) rsync の遠隔の道筋、`remote_root`、`ssh_host` は、使える文字を絞る (`[A-Za-z0-9._/-]`。この Mac の rsync は openrsync で `--protect-args` がない)。(b) `ip` は `link` / `addr` の読み取りの形、`ethtool` は `<if>` / `-i` / `-S` だけ (要件 2.7)。(c) `cat` は `remote_root`、`/sys/class/net/`、`/sys/class/infiniband/` の下だけ (要件 2.4、2.6)。4.3 がほかの読み取りの形を要るなら、`remote.py` の一覧を広げる変更を、1 つの作業として先に行う
+- 1.4: ssh の `--` は宛先の前に置く (2026-09-21 に、読み取りのコマンドで、宛先の前と後のどちらも実機で通ることを確かめた)。`mutating=False` と申告されても、`docker run` / `stop` / `rm` / `pull` と `mkdir` は、了承の検査に掛かる。了承は `SshRunner.approve(plan)` で、関門のあとに 1 度だけ渡す
+- 1.4: `FakeRunner` は、分類では Stub + Spy (Fake でも Mock でもない。名前は `bench` と design に合わせた)。検査は `remote.CallGuard` を実物と共有する。台本に合わない呼び出しは、既定で `AssertionError` (広く流す試験は `default=Reply()`)。ssh の失敗と時間切れは、`Reply(exit_code=255)` か `Reply(raises=RemoteError(...))` で書く (`subprocess.TimeoutExpired` を台本に書かない)。`Reply.writes` の「宛先の外に書かない」検査には、まだ試験がない
