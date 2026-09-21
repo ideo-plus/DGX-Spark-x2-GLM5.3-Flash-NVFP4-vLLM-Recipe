@@ -190,6 +190,7 @@ serving/
 │   ├── conftest.py
 │   ├── fake_runner.py             # RemoteRunner の偽物。呼ばれた引数の列を記録し、台本どおりに返す
 │   ├── fake_vllm.py               # /health、/v1/models、/metrics、/version、/v1/messages に応える偽のサーバー
+│   ├── fixtures/spark/            # 2 台の Spark から、読み取りだけで採った実物の出力 (偽の実行役の台本の見本)
 │   ├── unit/test_<モジュール>.py
 │   └── integration/test_e2e_<流れ>.py
 └── var/                           # 記録の置き場所 (git の管理の外)
@@ -491,7 +492,9 @@ def select_config(configs: dict[str, ConfigDef], name: str,
   5. 投機的デコード: `--speculative-config`、`--spec-method`、`--spec-model`、`--spec-tokens` のどれかを持つ構成は誤り (6.7。P3 で、この検査を構成ごとの許可に変える)
   6. 置き換えの印: 値に書けるのは、`{node.fabric_addr}`、`{node.fabric_ifname}`、`{node.rank}`、`{head.fabric_addr}`、`{head.lan_addr}`、`{weights.mount_at}`、`{remote_root}` だけ。ほかの `{…}` は誤り
   7. 直結の値: `kind` が `serve` か `job` で、ノードが 2 つの構成は、2 台の `fabric_addr`、`fabric_ifname`、`fabric_measured` が揃っていなければ誤り (4.7)。**この検査だけは、読み込みのときではなく、構成を選んだとき (`select_config`) に、選んだ構成について行う**。直結の値を埋める前でも、1 台の構成 (`probe-pinned`) と `serve netcheck links` は使えるようにするため
-  8. 禁じる docker のフラグ: `--privileged`、`--restart` の `no` 以外、`--rm` (記録が消える) は誤り
+  8. 禁じる docker のフラグ: `--privileged`、`--pid`、`--userns`、`--security-opt`、`--volume` / `-v` (`--mount` だけを使う)、`--restart` の `no` 以外、`--rm` (記録が消える) は誤り
+  9. `--mount`: `type=bind` だけ。`source` は、`{remote_root}` で始まるものだけ (Spark のほかの場所を、コンテナに見せない)
+  10. `--device` と `--cap-add`: 名前の一覧にあるものだけ (`--device` は `/dev/infiniband`。`--cap-add` は `SYS_NICE` と `IPC_LOCK`)。research.md が A/B の候補として挙げた 3 つで、それ以外は、根拠があっても誤り。一覧を広げるのは、設計の変更として扱う
 
 **Implementation Notes**
 
@@ -524,11 +527,14 @@ class RemoteRunner(Protocol):
 ```
 
 - Spark の上のファイルに書く道は、`push` だけ (コンテナが自分で書く記録と、取得した重みを除く)。起動の記録と、照合の結果の記録は、Mac で作った小さなファイルを `state/` に `push(delete=False)` で置く。`payload/` は `push(delete=True)` で、Mac の側と同じにする
-- `ApprovedPlan` (了承を得た計画。状態を変える呼び出しの引数の列の一覧) の型は `types` に置く。`guards` が作り、`SshRunner` が受け取る
+- `ApprovedPlan` (了承を得た計画) の型は `types` に置く。`guards` が作り、`SshRunner` が受け取る
+- **計画は、前に進むコマンドと、それを巻き戻すコマンドの組で作る**。前に進むコマンド (`docker run`、`docker pull`、記録の `push`、A/B の繰り返しのすべての回) と、巻き戻すコマンド (自分のコンテナの `docker stop` と `docker rm`) を、了承の前にすべて並べ、計測者は、その全体を了承する。コンテナの名前は `vb-<構成>-<役割>` で決まっているので、起動の前に、巻き戻すコマンドまで書ける。これで、失敗や中断のときの片付けが、了承のない呼び出しとして断られることがない (1.5)
+- 巻き戻すコマンドが対象にできるのは、その計画が起こす名前のコンテナだけ。計画を作る関数は、ほかの名前を巻き戻しに入れられない (試験で固定)
 
 - 実装は `SshRunner` の 1 つだけ。`ssh -o BatchMode=yes -o ConnectTimeout=5 <ssh_host> -- <shlex.join(argv)>`。遠隔のシェルに渡る文字列は、必ず `shlex.join` で作る (引用の事故を防ぐ)
 - `mutating=True` の呼び出しは、その前に了承を得た計画に含まれていなければ、`RuntimeError` にする (`ApprovedPlan` を渡して作る)。了承なしに状態を変える経路を、構造でなくす (2.1)
 - `argv[0]` の許可の一覧: `docker`、`nvidia-smi`、`df`、`sha256sum`、`ip`、`ethtool`、`ibv_devinfo`、`ibdev2netdev`、`cat`、`mkdir`、`test`、`uname`。`sudo`、`apt`、`pip`、`systemctl` は、一覧にないので呼べない (2.7)
+- `docker` は、サブコマンドも許可の一覧で絞る: `run`、`ps`、`stop`、`rm`、`logs`、`pull`、`image inspect`、`container inspect`、`version`。`build`、`exec`、`rmi`、`system`、`volume`、`network`、`cp`、`commit` は呼べない (2.3、8.6)。`docker` を通すだけでは、許可の一覧が歯止めにならないため
 - `push` は `rsync -a` (`delete=True` のときは `--delete` つき)。宛先は `remote_root` の下だけ。`pull` は `serving/var/` の下だけ
 - 時間切れ、接続の失敗は、`RemoteError` (どのノードの、どのコマンドかを持つ)
 
@@ -803,6 +809,7 @@ def smoke(config: ConfigDef, ...) -> SmokeOutcome: ...     # 英語と日本語�
 | `serve netcheck links` / `bandwidth` / `sanity` | 通信の確認 | `links` は変えない。ほかは変える |
 | `serve watch` / `serve thinking` | 見張り、thinking の深さの確かめ | 変えない |
 
+- `serve start` と `serve probe` は、`--timeout <秒>` で、構成の `ready_timeout_s` を、その回だけ上書きできる。初回の起動は、約 92 GiB のロードと JIT で、既定の 1800 秒を超える恐れがあり、時間切れは片付けを伴う (1.5) ので、初回だけ長くできるようにする
 - すべてのコマンドに共通: `--configs`、`--nodes` (既定は `serving/config/` の下)、`--yes`。標準出力は、後の処理が読める決まった形 (`key=value` の行と、表)。進捗、警告、誤りは stderr
 - 状態を変えるコマンドは、計画 (打つコマンドの列と、対象の機械) を表示してから、了承を待つ
 
@@ -910,13 +917,15 @@ P1 では、常時の監視は作らない (P6)。見るのは、`serve status`�
 
 Spark なしで、Mac の上で流す。`RemoteRunner` は `FakeRunner` に、推論サーバーは `fake_vllm.py` に差し替える。実機での確かめは、試験ではなく、手順書の段として行う。
 
+**偽の実行役の台本は、実物の出力から作る。** 読み取りのコマンド (`docker version`、`docker ps -a --format json`、`nvidia-smi` の 2 つの問い合わせ、`df -B1 --output=avail`、`ip -br link`、`ip -br addr`、`uname -n`) の出力の形は、公式の文書に定義がないものが多く、GB10 ではユニファイドメモリのために `[N/A]` になる列もありうる。そこで、土台の段階で、2 台の Spark から、読み取りだけで実物の出力を採り、`serving/tests/fixtures/spark/` にコミットして、読み取りの部品 (`guards`、`lifecycle` の状態、`netcheck` の `links`) の試験の見本にする。採取は状態を変えない (CLAUDE.md が認める、ssh での確認の範囲)。ラベルのないコンテナの行が `docker ps` の出力に含まれる場合は、コミットの前に、その行を除く (別の構成の中身を残さない)。自分のコンテナがあるときの出力、イメージを取得したあとの `RepoDigests` は、タスク 7 で採って、見本を足す。
+
 ### Unit Tests
 
-- `test_config.py`: 根拠のない設定を 2 つ含む構成が、2 つの項目の名前を並べて断られる (3.7)。`source` だけで `quote` がない、`measured` のファイルがない、タグだけのイメージの参照、短い revision、`/` を含むモデルの名前、投機的デコードの指定、知らない置き換えの印、`--privileged`、直結の値のない 2 台の構成、のそれぞれが断られる。リポジトリにコミットした `configs.toml` と `nodes.toml` が、そのまま読み込める (drift の見張り)
+- `test_config.py`: 根拠のない設定を 2 つ含む構成が、2 つの項目の名前を並べて断られる (3.7)。`source` だけで `quote` がない、`measured` のファイルがない、タグだけのイメージの参照、短い revision、`/` を含むモデルの名前、投機的デコードの指定、知らない置き換えの印、`--privileged`、`--pid host`、`-v`、`{remote_root}` の外を指す `--mount`、一覧にない `--device` と `--cap-add` (根拠があっても)、直結の値のない 2 台の構成、のそれぞれが断られる。リポジトリにコミットした `configs.toml` と `nodes.toml` が、そのまま読み込める (drift の見張り)
 - `test_plan.py`: `p1-nvfp4-tp2` から作った head と worker の引数の列が、固定した列と一致する。差が `--node-rank`、`--headless`、`VLLM_HOST_IP` と置き換えの印だけである。ラベルが 7 つ付く。Mac の側の環境変数 (`HF_TOKEN` を置いて試す) が、どの引数にも現れない (2.6)。`docker build` を含む列を作る経路がない (8.6)
 - `test_observe.py`: `pe_dim must be 64` を含む記録が `pe_dim_assert` になる。バックエンドの行、MoE の行、KV の大きさの行、ロードの所要の行から、値が読める。どれもない記録は、すべて `None` で返る (断らない)。NCCL の記録で、`Using network Socket` + `No device found` が `network="Socket"` に、`Made vNic` が `merged_nic=True` に、`ndevs=1` だけの記録が `merged_nic=False` になる
 - `test_guards.py`: 自分のコンテナがなく GPU のプロセスがあるときに、名前とメモリの量を示して断る (2.2)。空きが足りないときに、要る量と空いている量を示す (2.5)。ダイジェストが `RepoDigests` の 2 番目にあっても通る。`FakeRunner` に記録された、すべての `docker inspect` / `logs` / `stop` / `rm` の対象が、ラベルで絞った一覧から来た ID だけである (2.3、2.4)
-- `test_remote.py`: 空白と引用符を含む引数が、`shlex.join` で 1 つの引数のまま遠隔に渡る。許可の一覧にない `argv[0]` (`sudo`、`apt`) が断られる (2.7)。了承した計画にない `mutating=True` の呼び出しが `RuntimeError` になる (2.1)
+- `test_remote.py`: 空白と引用符を含む引数が、`shlex.join` で 1 つの引数のまま遠隔に渡る。許可の一覧にない `argv[0]` (`sudo`、`apt`) と、許可の一覧にない docker のサブコマンド (`exec`、`build`、`rmi`、`system prune`) が断られる (2.7、8.6)。了承した計画にない `mutating=True` の呼び出しが `RuntimeError` になる (2.1)。了承した計画の巻き戻しのコマンドは、前に進むコマンドが途中で失敗したあとでも、断られずに実行できる (1.5)
 - `test_weights.py`: `tree` API の偽の応答から、`path` の順のマニフェストができる。`README.md` を取得する要求が、1 つも出ない (8.8)。`sha256sum` の出力の 1 行が違うと、そのファイルの名前を示して失敗し、取り直しの呼び出しが出ない (3.5)
 
 ### Integration Tests
