@@ -94,7 +94,7 @@
   - _Requirements: 2.1, 2.5, 3.2, 3.3, 3.8_
   - _Boundary: image_
   - _Depends: 2.3_
-- [ ] 3.2 (P) 重みのマニフェストを Mac で作る
+- [x] 3.2 (P) 重みのマニフェストを Mac で作る
   - Hub の公開の API から、固定した版のファイルの一覧、大きさ、sha256 を取る。LFS でない小さなファイルは、取得して sha256 を計算する。認証の情報を使わない
   - モデルカード (`README.md`) と `.gitattributes` は、取得も記載もしない
   - 完了の状態: 偽の API の応答から、名前の順のマニフェストができる。モデルカードを取得する要求が 1 つも出ないことを、試験で確かめる。同じ入力から、同じファイルができる
@@ -364,3 +364,6 @@
 - 3.1: **巻き戻しの決まり (3.4、4.1、4.4 も、これに従う)**: `docker stop` / `docker rm` を計画の名前に向けるのは、流す直前に、その台の自分のラベルで絞った一覧に、その名前の行があるときだけ (`guards.rollback_commands(runner, nodes, plans)` が、流してよい列と、確かめられなかった台の理由を返す。列は、了承済みの計画の巻き戻しと完全に一致する)。`docker stop <名前>` は、その名前のコンテナが誰のものでも止めるので、名前の衝突の見分けに、`docker run` の標準エラーの文面 (実機で未確認) を使わない。一覧を読めなかった台では流さず、`serve stop` での片付けを促す
 - 3.1: **片付けの道の形 (3.4 が写す)**: `docker run` の呼び出しも `try` の中に入れる (ssh が切れても、遠隔の `docker run -d` は完了しうる)。`RemoteError` → 片付け → 実行しての失敗の例外 (終了コード 2)。`BaseException` (中断) → 片付け → そのまま伝える (130)。片付けの途中の中断でも、`rm` まで試みる。何も読めなかった / 自分のコンテナが見つからなかった、は、正常として返さない。コンテナの中のプログラムの失敗 (`cat` が 1) は、結果として返す。`except` の経路で、片付けの最中に中断が来た場合の終了コード (いまは 2 か、元の例外) は、3.4 で決める
 - 3.1: `image.pull_image` は、関門 (`gate_reachable`、`gate_disk_space`) → 了承 → 2 台で、ダイジェストでの `docker pull` (時間切れ 3,600 秒。1 台目が失敗したら、2 台目に進まない) → `gate_image_digest`。取得の前には照合を流さない (取得を飛ばす分岐はない)。取得のあとの照合の不一致は、終了コード 2。`image.read_image_licenses` は、`inspect` の構成を `plan.build_plans` で起こし、`docker container inspect --format '{{.State.Status}} {{.State.ExitCode}}' <一覧の ID>` で終了を待つ (この出力と、名前の衝突のときの `docker run` の文面と終了コードの実物は、7.1 で採る)。例外は `ImageError` (2) と `ApprovalError` (1) だけで、`RemoteError` は包まれる
+- 3.2: `weights.build_manifest(repo, revision, *, generated_at, client=…)` は `ManifestResult` (マニフェストと、除いた道筋の名前の一覧) を返す。作った時刻は、呼ぶ側が渡す (中で `datetime.now()` を呼ばない。同じ入力から、同じバイトの列)。**6.1 で作り直すときは、中身が同じなら、前の `generated_at` を保つ** (時刻だけの差分を出さない)。`write_manifest` / `load_manifest` / `manifest_path` (`serving/weights/<slug>.manifest.json`。`slug` は `guards.weights_slug`)
+- 3.2: Hub の公開の API の形は、2026-09-22 に、実物を匿名で読んで確かめた: `GET /api/models/<repo>/tree/<40 桁の版>?recursive=true` → 1 行は `type` / `path` / `size` / `oid`、LFS のファイルには `lfs.oid` (64 桁の sha256) と `lfs.size` (= `size`)、`pointerSize`、`xetHash`。ページ送りは、応答のヘッダ `link: <絶対の URL>; rel="next"`。**Hub の応答は、信頼できない入力として扱う**: 次のページは、`https`、ホストが `huggingface.co` と完全に一致、道筋が同じ一覧の API のときだけたどる。一覧の `path` は、どの中身の取得よりも前に確かめる (`..`、先頭の `/`、`\`、空の部分、制御文字、重複を断る)。中身の取得の転送は、自分でたどり (5 回まで)、`https` で、`huggingface.co` か `.huggingface.co` / `.hf.co` のホストだけ
+- 3.2: モデルカードと、その写しでありうるもの (名前が、大文字と小文字を区別せずに `readme` / `model_card` / `modelcard` / `model-card` で始まるもの) と `.gitattributes` は、取得もしないし、マニフェストにも載せない (要件 8.8 / 11.3。取らない側に倒した)。**3.3 への申し送り**: Spark の上での取得 (`hf download`) は、これらのファイルも落とすが、この道具は、それを読まない (照合は、マニフェストにあるファイルだけを見る)。取得の時点で除けるなら、除く
