@@ -35,7 +35,7 @@
   - 偽の実行役は、呼ばれた引数の列と順序を記録し、台本どおりの結果を返す
   - 完了の状態: 空白と引用符を含む引数が 1 つの引数のまま渡る、許可の一覧にないコマンドと docker のサブコマンドが断られる、了承のない状態の変更が誤りになる、了承した計画の巻き戻しが失敗のあとでも実行できる、の 4 つの試験が通る
   - _Requirements: 1.2, 1.5, 2.1, 2.3, 2.7, 8.6_
-- [ ] 1.5 試験用の偽の推論サーバーを作る
+- [x] 1.5 試験用の偽の推論サーバーを作る
   - 標準ライブラリだけで、`/health`、`/v1/models`、`/metrics`、`/version`、`/v1/messages` に応える。HTTP のモックのライブラリは使わない
   - 応答を台本で切り替えられる (何回目から 200 を返すか、応答の確認がいつから失敗するか、生成のトークンの数がいつ止まるか、投機的デコードの指標を出すか、`/v1/messages` の応答の thinking のブロックの長さ、本文、トークンの数、終わりの理由)。受け取った要求の本文を記録して、試験から読める。あとの並行のタスク (4.1、4.5、4.6) は、この偽物を書き換えずに、台本だけで使う
   - 完了の状態: 試験の中で、空きポートに立ち、台本どおりに応え、終わると止まる
@@ -341,3 +341,6 @@
 - 1.4: `remote` は、design より厳しい歯止めを 3 つ持つ (module の docstring の「意図した違い」)。(a) rsync の遠隔の道筋、`remote_root`、`ssh_host` は、使える文字を絞る (`[A-Za-z0-9._/-]`。この Mac の rsync は openrsync で `--protect-args` がない)。(b) `ip` は `link` / `addr` の読み取りの形、`ethtool` は `<if>` / `-i` / `-S` だけ (要件 2.7)。(c) `cat` は `remote_root`、`/sys/class/net/`、`/sys/class/infiniband/` の下だけ (要件 2.4、2.6)。4.3 がほかの読み取りの形を要るなら、`remote.py` の一覧を広げる変更を、1 つの作業として先に行う
 - 1.4: ssh の `--` は宛先の前に置く (2026-09-21 に、読み取りのコマンドで、宛先の前と後のどちらも実機で通ることを確かめた)。`mutating=False` と申告されても、`docker run` / `stop` / `rm` / `pull` と `mkdir` は、了承の検査に掛かる。了承は `SshRunner.approve(plan)` で、関門のあとに 1 度だけ渡す
 - 1.4: `FakeRunner` は、分類では Stub + Spy (Fake でも Mock でもない。名前は `bench` と design に合わせた)。検査は `remote.CallGuard` を実物と共有する。台本に合わない呼び出しは、既定で `AssertionError` (広く流す試験は `default=Reply()`)。ssh の失敗と時間切れは、`Reply(exit_code=255)` か `Reply(raises=RemoteError(...))` で書く (`subprocess.TimeoutExpired` を台本に書かない)。`Reply.writes` の「宛先の外に書かない」検査には、まだ試験がない
+- 1.5: `fake_vllm.py` は、分類では Stub + Spy。5 つの道筋のどれでも、`set_X_fault` / `set_X_fault_sequence` に `Fault(status, body)` を渡して、200 以外の状態、応答しない (`status=None`)、壊れた本文を作れる (列が尽きたら最後を繰り返す)。`/metrics` の値は完全に台本任せで、`/v1/messages` の呼び出しと連動しない (「固まった」は、`set_metrics_sequence` で値を据え置いて作る)。`/v1/messages` の応答は、`set_messages_factory` で要求の本文に応じて選べる
+- 1.5: 投機的デコードの指標の名前の接尾辞 (`_total`) は未確認。受け付けの判定は接頭辞 `vllm:spec_decode_` で見るので効かないが、8.2 で実物の `/metrics` を読んだときに確かめる
+- 1.5: 実装担当の RED の記述 (実行時の失敗で `16 passed, 7 failed`) は、コミットした形の試験 (module の先頭で import) では再現せず、収集の誤りになる。レビュー担当が、分岐を壊す変異で試験が落ちることを確かめて補った。以後、RED の出力は、コミットする形の試験で再現できるものを採る
