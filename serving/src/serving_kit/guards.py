@@ -93,6 +93,14 @@
    直前に `list_own_containers` を読み、**その台の一覧に、その名前の行があるときだけ**流す
    (名前は 1 台の中で一意なので、自分の一覧にあれば、それは自分のコンテナである)。3.1 の
    `image` と、3.4 以降の `lifecycle`、4.x は、この関数で巻き戻しを決める
+12. **`serve stop` の計画は `build_stop_plan` が、一覧の行から作る** (task 3.5 で足した)。
+   `build_approved_plan` は、コンテナを**起こす**計画 (`ContainerPlan`) の巻き戻しとして
+   `stop` / `rm` を作るので、何も起こさない `serve stop` には使えない (`extra_forward` に
+   書けるのも、その計画が起こす名前だけである)。そこで、`list_own_containers` が返した
+   `OwnContainer` の列だけを受ける口を足した。**呼ぶ側が、名前を文字列で自由に渡せる口は、
+   ここにも作らない** (requirements 2.3)。受けた行の所有のラベルと、コンテナの名前の形
+   (英数字とハイフン。`docker stop <名前>` でフラグと読み違えられないため) を、ここでも
+   確かめる
 """
 
 from __future__ import annotations
@@ -156,6 +164,7 @@ __all__ = [
     "RunningMatch",
     "TerminalConfirmer",
     "build_approved_plan",
+    "build_stop_plan",
     "config_ports",
     "format_plan",
     "gate_disk_space",
@@ -252,6 +261,20 @@ _IDENTITY_LABELS: Final[tuple[str, ...]] = (
 一致するときだけ、「すでに動いている」として扱う。所有のラベルも見るのは、`match_running`
 に、一覧を通らずに組み立てたものが渡ったときの、二重の歯止めである
 (一覧の入口では、`list_own_containers` が断る)。
+"""
+
+_STOP_ORDER: Final[tuple[NodeRole, ...]] = ("head", "worker")
+"""止める順序 (design.md 「lifecycle」の停止: head に `docker stop` → worker に同じ)。
+
+`build_stop_plan` は、渡された辞書の並びではなく、この順序で計画を作る (呼ぶ側の辞書の
+作り方で、止める順序が変わらないようにする)。
+"""
+
+_CONTAINER_NAME_RE: Final[re.Pattern[str]] = re.compile(r"^[A-Za-z0-9][A-Za-z0-9-]*$")
+"""この道具が付けるコンテナの名前の形 (`types.ContainerPlan.container_name` と同じ)。
+
+一覧から来た名前を `docker stop <名前>` に置くので、`-` で始まる名前をフラグと読み違え
+られないように、ここで形を確かめる。
 """
 
 _SLUG_RE: Final[re.Pattern[str]] = re.compile(r"[A-Za-z0-9._-]+")
@@ -1265,6 +1288,71 @@ def build_approved_plan(
         for plan in plans
     )
     return ApprovedPlan(forward=tuple(forward), rollback=tuple(rollback), own_container_names=names)
+
+
+def build_stop_plan(containers: Mapping[NodeRole, Sequence[OwnContainer]]) -> ApprovedPlan:
+    """自分の一覧の行から、止めて消す計画を作る (`serve stop` の、ただ 1 つの入口)。
+
+    `build_approved_plan` は、コンテナを**起こす**計画 (`ContainerPlan`) から、その巻き戻しを
+    作る。`serve stop` は何も起こさないので、この関数が、**一覧の行から**、前に進むコマンドと
+    して `docker stop` → `docker rm` の列を作る (巻き戻すものはないので `rollback` は空)。
+
+    **対象にできるのは、`list_own_containers` が返した行だけである** (requirements 2.3)。
+    呼ぶ側が名前を文字列で自由に渡せる口を作らないために、引数は `OwnContainer` で受ける。
+    受けた行についても、所有のラベルが自分の値かを、ここでもう一度確かめる (一覧の入口の
+    `list_own_containers` と二重に守る)。
+
+    列の順序は、`docker stop` を head → worker の順に並べ、そのあとに `docker rm` を同じ順で
+    並べる (design.md 「lifecycle」の停止)。渡された辞書の並びは見ない。列そのものは
+    `stop_argv` / `remove_argv` で作るので、実際に流す側が作る列と完全に一致する
+    (`remote.CallGuard` は完全な一致で見る)。
+
+    引数:
+        containers: 台ごとの、自分のラベルで絞った一覧の行 (`list_own_containers` の返り値)。
+
+    例外:
+        ValueError: 所有のラベルのない行が混じっている、コンテナの名前が、この道具が付ける
+            形 (英数字とハイフン) でない、または対象が 1 つもないとき。
+    """
+    named: list[tuple[NodeRole, str]] = []
+    for role in _STOP_ORDER:
+        for container in containers.get(role, ()):
+            if container.labels.get(LABEL_OWNER) != OWNER:
+                raise ValueError(
+                    f"所有のラベル ({LABEL_OWNER}={OWNER}) のない行は、止める計画に入れられない"
+                    " (自分のものでないコンテナを、名前で止めないため)"
+                )
+            if _CONTAINER_NAME_RE.fullmatch(container.name) is None:
+                raise ValueError(
+                    "コンテナの名前が、この道具が付ける形 (英数字とハイフン) でないので、"
+                    f"止める計画に入れられない (対象として読めない): {container.name}"
+                )
+            if (role, container.name) not in named:
+                named.append((role, container.name))
+    if not named:
+        raise ValueError("止める対象が 1 つもない (空の計画は作らない。呼ぶ側が、先に判定する)")
+    forward: list[PlannedCommand] = [
+        PlannedRun(
+            node=role,
+            argv=stop_argv(name),
+            container=name,
+            purpose=f"{role} の {name} を止める (実行中の要求の完了を {STOP_TIMEOUT_S} 秒待つ)",
+        )
+        for role, name in named
+    ]
+    forward.extend(
+        PlannedRun(
+            node=role,
+            argv=remove_argv(name),
+            container=name,
+            purpose=f"{role} の {name} を消す",
+        )
+        for role, name in named
+    )
+    return ApprovedPlan(
+        forward=tuple(forward),
+        own_container_names=tuple(dict.fromkeys(name for _, name in named)),
+    )
 
 
 def _check_plans(plans: Sequence[ContainerPlan]) -> None:

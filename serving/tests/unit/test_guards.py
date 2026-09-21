@@ -51,6 +51,7 @@ from serving_kit.plan import (
 )
 from serving_kit.remote import CallGuard
 from serving_kit.types import (
+    ApprovedPlan,
     ConfigDef,
     ContainerPlan,
     GateResult,
@@ -924,6 +925,105 @@ def test_the_plan_text_shows_the_commands_and_the_target_machines() -> None:
     for plan in plans:
         assert plan.container_name in text
     assert "docker stop" in text and "docker rm" in text
+
+
+# --- 止めるだけの計画 (`serve stop`。tasks.md 3.5 で足した) ---------------
+
+
+def own_containers(
+    *plans: ContainerPlan, state: str = "running"
+) -> dict[NodeRole, tuple[g.OwnContainer, ...]]:
+    """一覧の行を通して作った、自分のコンテナ (名前を文字列で直に渡す道を通らない)。"""
+    return {plan.node: g.parse_own_containers(ps_line(plan, state=state)) for plan in plans}
+
+
+def foreign_row(name: str, *, owner: str = OWNER) -> tuple[g.OwnContainer, ...]:
+    """一覧の 1 行を、名前と所有のラベルだけ決めて作る (計画の口の歯止めを試すため)。"""
+    return g.parse_own_containers(
+        json.dumps(
+            {
+                "ID": "0123456789ab",
+                "Names": name,
+                "State": "running",
+                "Image": IMAGE_REF,
+                "Labels": f"{LABEL_OWNER}={owner}",
+            }
+        )
+    )
+
+
+def forward_runs(plan: ApprovedPlan) -> tuple[PlannedRun, ...]:
+    """計画の、前に進むコマンドのうち、遠隔のコマンドだけ (配布は入らない)。"""
+    return tuple(command for command in plan.forward if isinstance(command, PlannedRun))
+
+
+def test_the_stop_plan_holds_stop_then_remove_for_the_listed_containers() -> None:
+    """`serve stop` の計画は、一覧の行の名前の `stop` → `rm` だけを持つ (requirements 1.7)。"""
+    plans = plans_of(serve_config())
+    names = tuple(plan.container_name for plan in plans)
+
+    approved = g.build_stop_plan(own_containers(*plans))
+
+    assert approved.own_container_names == names
+    assert approved.rollback == ()
+    assert len(forward_runs(approved)) == len(approved.forward)
+    assert tuple(command.argv for command in forward_runs(approved)) == (
+        g.stop_argv(names[0]),
+        g.stop_argv(names[1]),
+        g.remove_argv(names[0]),
+        g.remove_argv(names[1]),
+    )
+
+
+def test_the_stop_plan_puts_the_head_before_the_worker() -> None:
+    """止める順序は head → worker (渡した辞書の順に引きずられない)。"""
+    plans = plans_of(serve_config())
+    found = own_containers(*plans)
+    reversed_order: dict[NodeRole, tuple[g.OwnContainer, ...]] = {
+        "worker": found["worker"],
+        "head": found["head"],
+    }
+
+    approved = g.build_stop_plan(reversed_order)
+
+    assert [command.node for command in approved.forward] == ["head", "worker", "head", "worker"]
+
+
+def test_the_stop_plan_works_for_an_exited_container() -> None:
+    """終了した自分のコンテナも、同じ `stop` → `rm` の列で片付ける。"""
+    plans = plans_of(serve_config())
+
+    approved = g.build_stop_plan(own_containers(*plans, state="exited"))
+
+    assert [command.argv[1] for command in forward_runs(approved)] == ["stop", "stop", "rm", "rm"]
+
+
+def test_the_stop_plan_refuses_a_row_that_is_not_ours() -> None:
+    """所有のラベルのない行は、止める計画に入れられない (requirements 2.3)。"""
+    with pytest.raises(ValueError, match=LABEL_OWNER):
+        g.build_stop_plan({"head": foreign_row("exl3-tp2", owner="someone-else")})
+
+
+def test_the_stop_plan_refuses_a_name_that_could_be_read_as_a_flag() -> None:
+    """`docker stop` の対象と読めない名前は断る (フラグに化けさせない)。"""
+    with pytest.raises(ValueError):
+        g.build_stop_plan({"head": foreign_row("--force")})
+
+
+def test_the_stop_plan_refuses_an_empty_listing() -> None:
+    """止める対象が 1 つもなければ、空の計画を作らない (呼ぶ側が、先に判定する)。"""
+    with pytest.raises(ValueError):
+        g.build_stop_plan({"head": (), "worker": ()})
+
+
+def test_the_stop_plan_passes_the_check_of_the_remote_runner(tmp_path: Path) -> None:
+    """止める列が、そのまま `remote` の了承の検査を通る (完全な一致で見るため)。"""
+    plans = plans_of(serve_config())
+    approved = g.build_stop_plan(own_containers(*plans))
+    guard = CallGuard(var_root=tmp_path, plan=approved)
+
+    for command in forward_runs(approved):
+        guard.check_run(NODES[command.node], command.argv, mutating=True)
 
 
 # --- コンテナを対象にする操作の不変条件 ----------------------------------

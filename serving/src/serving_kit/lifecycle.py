@@ -1,7 +1,9 @@
-"""起動と、その待ちと、失敗のときの片付け (design.md 「運転 › lifecycle」)。
+"""起こす、待つ、確かめる、止める (design.md 「運転 › lifecycle」)。
 
-受け持つのは、`serve start <構成>` の中身である (tasks.md 3.4)。`serve status` / `serve stop` /
-`serve smoke` は、task 3.5 が、この module に足す。
+受け持つのは、`serve start <構成>` (tasks.md 3.4) と、`serve status` / `serve stop` /
+`serve smoke` (tasks.md 3.5) の中身である。
+
+## 起動 (`serve start <構成>`)
 
 進む順 (design.md 「System Flows › 起動」):
 
@@ -21,7 +23,7 @@
    始まる行がない、を見る。上限は構成の `ready_timeout_s` で、`timeout_s` でその回だけ
    上書きできる。待っている間、毎回、2 台のコンテナの状態も見る
 
-**結果と例外の、終了コードへの写し方** (5.1 が、この表のとおりに写す。design.md
+**`start` の、結果と例外の、終了コードへの写し方** (5.1 が、この表のとおりに写す。design.md
 「Error Handling」):
 
 - **0**: `StartOutcome.status` が `ready`、`already_running`
@@ -36,7 +38,86 @@
 `GateResult` (`passed=False`) に変えるので `refused` になり、了承の**あと**に届かなかったこと
 は `LifecycleError` に包む (task 3.1 の `image` と同じ流儀)。
 
-守る決まり:
+## 状態の確認 (`serve status`)
+
+**読み取りだけである**。状態を変える呼び出し (`docker run` / `stop` / `rm` / `pull`、`mkdir`、
+配布) を 1 つも出さないので、了承も求めない (design.md 「cli」の表)。台ごとに読むのは、
+自分のラベルで絞った一覧、(終了しているときだけ) その識別子への `docker container inspect`、
+`nvidia-smi` の 3 つの列、(ノードの定義に直結のインターフェースの名前があるときだけ)
+`ip -br link show dev <名前>` である。よそのものについて読むのは、`nvidia-smi` の 3 つの列
+だけである (requirements 2.4)。
+
+`serve status` は構成の名前を受けない (design.md 「cli」の表は `<構成>` を `start` にだけ
+付けている)。HTTP の宛先は、**動いている head のコンテナのラベル** (`vllm-baseline.config`)
+から構成の定義を引いて、その `--port` で決める。
+
+**終了コードは、つねに 0 である**。何も動いていない、片方の台に入れない、`nvidia-smi` が
+読めない、推論サーバーが応答しない、のどれでも、断らずに「読めなかった」として示す
+(requirements 1.6)。例外になるのは、`nodes` に見る台が 1 つもないという、呼ぶ側の誤り
+(`ValueError`。終了コード 1) だけである。
+
+**`ServiceStatus` が `None` を許さない項目の扱い**: `NodeStatus.container_state` は
+`absent` / `running` / `exited` の 3 つしかないので、**その台の一覧そのものを読めなかった
+ときも `absent` になる** (ほかの項目は空、`gpu_apps` は空の列)。読めなかったことは、
+`report` (既定は stderr) に警告として出すので、5.1 は、標準出力の表と一緒に、その警告を
+計測者に見せる。`serve status` の 0 は「確かめられた」ではなく「確かめに行けた」である。
+
+## 停止 (`serve stop`)
+
+対象は、**2 台の、自分のラベルで絞った一覧に出たコンテナのすべて**である (`kind` を問わない。
+推論サーバーも、重みの取得も、確認も、`serve stop` で止める。design.md 「weights」の
+「止めるのは `serve stop`」、task 3.1 / 3.4 の「一覧を読めなかった台は `serve stop` で
+片付ける」が、そのとおりになる)。構成の名前は受けない。
+
+進む順: 台ごとに一覧を 1 度読む → 対象がなければ `already_stopped` → 対象と種類を見せて、
+`guards.build_stop_plan` の計画で了承を得る → head → worker の順に `docker stop -t 90` →
+2 台で `docker rm` → GPU を使っているプロセスが 0 件になるまで、最大
+`GPU_RELEASE_TIMEOUT_S` 秒待つ。
+
+**記録は回収しない** (design.md 「cli」の表の `serve stop` は停止だけで、回収は
+`serve logs` の仕事である。`gate_own_state` も「`serve logs` で回収してから `serve stop` で
+消す」と促す)。消すと読めなくなるので、その旨を、了承を求める前に見せる。
+
+**`start` の片付け (`clean_up`) は使い回さない**。`clean_up` は `ContainerPlan` の列 (起こす
+計画) を受けて `guards.rollback_commands` で相手を決めるが、`serve stop` は構成を受けないので
+計画を作れない。代わりに、同じ決まり (中断が来ても、台のすべてで `stop` → `rm` を 1 回ずつ
+試みてから中断を伝える。`docker rm` (強制なし) は動いているコンテナを消せないので、`stop` を
+飛ばさない) を、この module の `_run_stop_plan` が守る。相手を流す直前に一覧で確かめ直さない
+のは、**計画そのものが、その 1 回の一覧から作られている**からである。
+
+**終了した自分のコンテナ (`exited`) も、`stop` → `rm` の列で片付ける** (`docker stop` は、
+止まっているコンテナに対して成功する)。`rm` だけの道を作らないのは、片付けの筋道を 1 つに
+保つためと、一覧を読んだあとに状態が変わりうるためである。
+
+**GPU が空かないときは、止めには行かない** (requirements 2.3)。残っているプロセスは、よその
+ものかもしれない。名前とメモリの量を示して `gpu_not_released` で返す。
+
+**`stop` の、結果と例外の、終了コードへの写し方**:
+
+- **0**: `StopOutcome.status` が `stopped`、`already_stopped`
+- **1**: `guards.ApprovalError` (了承されなかった)、`ValueError` (見る台の定義がない)
+- **2**: `StopOutcome.status` が `gpu_not_released`。`LifecycleError` (止められなかった、
+  消せなかった、一覧を読めなかった台がある)
+- **130**: `KeyboardInterrupt` (台のすべてで `stop` → `rm` を試みてから伝える)
+
+## 短い要求での確かめ (`serve smoke <構成>`)
+
+head の `/v1/messages` に、英語と日本語を 1 つずつ送る (Anthropic の Messages API の形。
+ストリームでない応答。`SMOKE_PROMPTS` の、短くて害のない文)。**応答が意味の通る文かどうかは、
+この module は判定しない** (人が画面で読む。requirements 6.5)。
+
+**応答の本文は、画面に出すためだけのものである** (requirements 10.5)。本文を持つのは
+`SmokeShown.text` (返り値の型。ファイルに書かない) だけで、保存してよい `types.SmokeReply` /
+`SmokeOutcome` には、HTTP の状態、終わりの理由、入力と出力のトークンの数、置き換え文字
+(U+FFFD) の有無しか入らない。**本文を返す口 (`send_smoke`) と、保存する記録の口 (`smoke` が
+返す `SmokeOutcome`) を分けてある**。`SmokeOutcome.detail` にも本文を入れない。
+
+HTTP の失敗 (つながらない、500、400、時間切れ、JSON が壊れている、`content` に `text` の
+ブロックがない) は、落ちずに結果に入れる。**終了コードは、5.1 が `replies` から決める**:
+すべての `http_status` が 200 なら 0、1 つでも違えば 2 (実行しての失敗)。例外は
+`config.ConfigError` / `ValueError` (1) と `KeyboardInterrupt` (130) だけである。
+
+## 守る決まり
 
 - **1 つの起動の仕組み** (design.md 「Architecture Integration」): 推論サーバーも、ほかの 4 つの
   `kind` と同じ道を通る。`plan.build_plans` が組み立てた引数の列を、名前とラベルを付けて `-d` で
@@ -80,7 +161,12 @@
 あとにも呼べる** (`probe` は、どの結果でも記録を回収して、コンテナを残さない)。起こす途中の
 失敗は `RunFailed` で上がるので、`probe` は、それを捕まえて片付け、自分の結果の型に写す。
 
-design の文からの、意図した決めごと (design が明示しない細部を、ここで決めて残す):
+**3.5 が足した口も、`probe` から使える**: 短い要求は `send_smoke` (本文を返す、下の 1 つの
+口)、GPU のプロセスと直結のリンクは `read_gpu_apps` / `read_fabric_link` である。
+
+## design の文からの、意図した決めごと
+
+design が明示しない細部を、ここで決めて残す。
 
 1. **`kind = "serve"` の構成だけを受ける**。`serve start` は推論サーバーを起こすコマンドである
    (design.md 「cli」)。縮小の確認 (`kind = "probe"`) は、結果の分け方 (`inconclusive`) も、
@@ -124,6 +210,31 @@ design の文からの、意図した決めごと (design が明示しない細�
    ので空にする (`serve status` (task 3.5) が読む)
 10. **回収の置き場所の時刻は、`started_at` (起こす時刻) を使う**。1 回の `start` で回収は
    高々 1 度なので、同じ秒に 2 度書く心配がない (tasks.md の Implementation Notes 2.4)
+11. **`status` は、1 台に 1 つのコンテナを選んで示す** (`types.NodeStatus` が 1 台ぶんの型で
+   あるため)。自分の一覧に複数の行があるときは、**動いている行を先に**、なければ一覧の 1 つ目を
+   選ぶ (関門の `gate_own_state` は「1 つの構成ぶんだけ」を通すので、ふつうは 1 台に 1 つで
+   ある)。終了コードは、選んだ行が動いていないときだけ、その識別子への
+   `docker container inspect` で読む (動いているものの終了コードは意味がない)
+12. **`status` の HTTP は、受け付けの判定 (`check_ready`) を使い回す**。読む 3 つの道筋
+   (`/health`、`/v1/models`、`/metrics`) と、その読み方を 2 か所に持たないためである。その
+   ため、`health_ok` は「200 だった」ときだけ真で、それ以外 (200 でない、つながらない) は
+   `None` になり (requirements 1.6 の「読めないことは空で示す」)、**名乗る名前が構成と違う
+   ときと、投機的デコードの指標が出ているときは、処理中と待ちの要求の数を読まない**
+   (`check_ready` が、そこで判定を打ち切る)。どちらも、構成を直さなければ直らない食い違いで、
+   `served_model` には読めた名前が入るので、計測者は食い違いに気づける
+13. **`status` は、`kind = "serve"` の動いているコンテナがあるときだけ HTTP に行く**。取得
+   (`fetch`) や読み取り (`inspect`) のコンテナには、待ち受ける口がない。構成の名前が手元の
+   定義にない、`--port` を 1 つに決められない、のときも、警告を出して HTTP を飛ばす
+   (`serve status` は、断らない)
+14. **`smoke` は、本文を返す口と、保存する記録の口を分ける** (requirements 10.5)。1 つの要求は
+   `send_smoke` が `SmokeShown` (保存してよい `SmokeReply` と、画面に出すためだけの `text`) を
+   返し、`smoke` は `SmokeReply` だけを `SmokeOutcome` に入れて、本文は `report` に出す。
+   `SmokeShown` は `dataclass` で、`types` には置かない (`types` の型は、記録として書き出せる
+   ものだけにする)
+15. **`smoke` は、意味の通る文かどうかを判定しない** (requirements 6.5 は、人が確かめると
+   定める)。ただし、**本文が空であること**と**置き換え文字があること**は、機械で分かるので
+   `SmokeOutcome.detail` と `SmokeReply.replacement_char` に出す (`SmokeReply` に「空」の項目は
+   ないので、空は `detail` の文で示す)
 """
 
 from __future__ import annotations
@@ -136,7 +247,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
-from typing import Final, TextIO
+from typing import Final, TextIO, cast, get_args
 
 import httpx
 
@@ -147,8 +258,10 @@ from serving_kit.guards import (
     Confirmer,
     OwnContainer,
     build_approved_plan,
+    build_stop_plan,
     list_own_containers,
     match_running,
+    parse_gpu_apps,
     request_approval,
     rollback_commands,
     run_gates,
@@ -166,6 +279,7 @@ from serving_kit.plan import (
     LABEL_CONFIG,
     LABEL_CONFIG_SHA256,
     LABEL_IMAGE,
+    LABEL_KIND,
     LABEL_STARTED_AT,
     build_plans,
 )
@@ -173,35 +287,49 @@ from serving_kit.remote import RemoteError, RemoteRunner
 from serving_kit.types import (
     CommandResult,
     ConfigDef,
+    ConfigKind,
     ContainerPlan,
     ContainerState,
     GateResult,
+    GpuApp,
     KnownFailure,
+    Lang,
     LaunchObservation,
     LaunchRecord,
     NodeDef,
     NodeRole,
     NodeStatus,
     PlannedPush,
+    PlannedRun,
     ServiceStatus,
+    SmokeOutcome,
+    SmokeReply,
     StartOutcome,
+    StopOutcome,
     WeightsManifest,
 )
 
 __all__ = [
     "CLEANUP_TIMEOUT_S",
     "COMMAND_NAME",
+    "GPU_APPS_ARGV",
+    "GPU_POLL_INTERVAL_S",
+    "GPU_RELEASE_TIMEOUT_S",
     "HTTP_PORT_FLAG",
     "HTTP_TIMEOUT_S",
     "LAUNCH_RECORD_SUBDIR",
     "OBSERVE_TAIL_LINES",
     "READY_POLL_INTERVAL_S",
+    "SMOKE_MAX_TOKENS",
+    "SMOKE_PROMPTS",
+    "SMOKE_TIMEOUT_S",
     "SPEC_DECODE_METRIC_PREFIX",
     "START_TIMEOUT_S",
     "Controls",
     "LifecycleError",
     "Readiness",
     "RunFailed",
+    "SmokeShown",
     "Target",
     "Waited",
     "WrapUp",
@@ -212,11 +340,18 @@ __all__ = [
     "launch_record",
     "new_client",
     "observation",
+    "parse_link_state",
     "push_launch_records",
+    "read_fabric_link",
+    "read_gpu_apps",
     "record_pushes",
+    "send_smoke",
+    "smoke",
     "start",
     "start_all",
     "started_targets",
+    "status",
+    "stop",
     "wait_ready",
     "wrap_up",
 ]
@@ -235,6 +370,31 @@ HTTP_TIMEOUT_S: Final[float] = 10.0
 
 CLEANUP_TIMEOUT_S: Final[float] = float(STOP_TIMEOUT_S) + 30.0
 """片付け (`docker stop -t 90` と `docker rm`) の時間切れ。停止の猶予より長くする。"""
+
+GPU_RELEASE_TIMEOUT_S: Final[float] = 60.0
+"""止めたあと、GPU を使っているプロセスが 0 件になるのを待つ上限 (design.md 「lifecycle」の
+停止: 「最大 60 秒待つ」)。"""
+
+GPU_POLL_INTERVAL_S: Final[float] = 5.0
+"""GPU を使っているプロセスを見に行く間隔 (design は定めていない。上限の 60 秒を 12 回に
+分ける。受け付けの開始を待つ間隔 (10 秒) より短くしたのは、止まるのは速いからである)。"""
+
+SMOKE_TIMEOUT_S: Final[float] = 120.0
+"""短い要求 1 つの時間切れ。生成があるので、読み取りの問い合わせ (10 秒) より長くする。"""
+
+SMOKE_MAX_TOKENS: Final[int] = 64
+"""短い要求の `max_tokens` (確かめるのは、返り切ることと文字の壊れだけなので、小さくする)。"""
+
+SMOKE_PROMPTS: Final[Mapping[Lang, str]] = {
+    "en": "Reply in one short sentence: what is the capital of France?",
+    "ja": "一文で短く答えてください。日本の首都はどこですか。",
+}
+"""英語と日本語の、短くて害のない要求 (requirements 6.5)。
+
+日本語を送るのは、同時の要求での文字化けの報告 (#57087) を、人が目で見て確かめられるように
+するためである (置き換え文字の有無は、この module が機械で見る)。文をここに定数として置くの
+は、送った内容を、構成にも記録にも残さないためである (requirements 10.5)。
+"""
 
 OBSERVE_TAIL_LINES: Final[int] = 2000
 """記録から事実を読むために見る行数 (成功のときの観察と、失敗の種類の分類。決めごとの 5、6)。
@@ -318,6 +478,37 @@ _SERVE_STOP_HINT: Final[str] = (
 
 _INTERRUPTED_TAIL: Final[str] = "(中断されたので、記録の末尾を読めなかった)"
 """中断で読めなかった末尾の代わりに入れる文 (呼ぶ側が、つねに台のぶんを受け取れるように)。"""
+
+_ROLE_ORDER: Final[tuple[NodeRole, ...]] = ("head", "worker")
+"""台を見る順序 (head → worker。design.md 「lifecycle」の停止の順序と同じ)。
+
+`serve status` と `serve stop` は構成を受けないので、構成の `nodes` ではなく、この順序で
+`nodes` にある台を見る (渡された辞書の並びで、止める順序が変わらないようにする)。
+"""
+
+GPU_APPS_ARGV: Final[tuple[str, ...]] = (
+    "nvidia-smi",
+    "--query-compute-apps=pid,process_name,used_memory",
+    "--format=csv,noheader",
+)
+"""GPU を使っているプロセスを読む、ただ 1 つの問い合わせ。
+
+よそのものについて読むのは、この 3 つの列だけである (requirements 2.2、2.4)。`guards` の
+`gate_gpu_idle` が起動の前に読むのと、同じ問い合わせである。
+"""
+
+_CONFIG_KINDS: Final[frozenset[str]] = frozenset(get_args(ConfigKind))
+"""ラベル `vllm-baseline.kind` として読める値 (`types.ConfigKind` の 5 つ)。"""
+
+_LINK_UP: Final[str] = "UP"
+_LINK_DOWN: Final[str] = "DOWN"
+"""`ip -br link` の 2 列目 (実際の状態)。ほかの値 (`UNKNOWN` など) は、判断しない。"""
+
+_REPLACEMENT_CHAR: Final[str] = "�"
+"""置き換え文字 (日本語の文字化けの印。requirements 7.6、10.5)。"""
+
+_TEXT_BLOCK: Final[str] = "text"
+"""Anthropic の Messages API の応答で、本文を持つブロックの種類。"""
 
 
 class LifecycleError(Exception):
@@ -416,6 +607,26 @@ class WrapUp:
     log_dir: Path | None
     problems: tuple[str, ...]
     interrupted: KeyboardInterrupt | None
+
+
+@dataclass(frozen=True)
+class SmokeShown:
+    """短い要求 1 つの結果 (公開の口。`send_smoke` が返す。決めごとの 14)。
+
+    - `reply`: **保存してよい部分** (`types.SmokeReply`。HTTP の状態、終わりの理由、トークンの
+      数、置き換え文字の有無だけ)
+    - `text`: **画面に出すためだけの本文**。どのファイルにも書かない (requirements 10.5)。
+      読めなかったときは空の文字列
+    - `problem`: 読めなかった理由 (つながらない、200 でない、JSON が壊れている、`text` の
+      ブロックがない)。**応答の本文を入れない**
+
+    この型を `types` に置かないのは、`types` の型が、記録として書き出せるものだけであるべき
+    だからである (本文を持つ型が `types` にあると、うっかり書き出せてしまう)。
+    """
+
+    reply: SmokeReply
+    text: str = ""
+    problem: str = ""
 
 
 class RunFailed(Exception):
@@ -877,16 +1088,16 @@ def started_targets(
 # --- 待つ -----------------------------------------------------------------
 
 
-def _container_state(
-    runner: RemoteRunner, target: Target, timeout_s: float
+def _inspect_container(
+    runner: RemoteRunner, node: NodeDef, container_id: str, timeout_s: float
 ) -> tuple[str, int | None]:
-    """コンテナの状態と終了コードを読む (対象は、一覧から来た識別子だけ)。
+    """1 つのコンテナの状態と終了コードを読む (対象は、一覧から来た識別子だけ)。
 
-    読み取りが届かなかったこと (`RemoteError`) は、そのまま外に出す (呼ぶ側が、片付けてから
-    実行しての失敗にする)。**読めなかったことを「まだ動いている」に倒さない**。
+    読み取りが届かなかったこと (`RemoteError`) は、そのまま外に出す (呼ぶ側が決める)。
+    **読めなかったことを「まだ動いている」に倒さない**。
     """
-    argv = ("docker", "container", "inspect", "--format", _STATE_FORMAT, target.container.id)
-    result = runner.run(target.node, argv, timeout_s=timeout_s, mutating=False)
+    argv = ("docker", "container", "inspect", "--format", _STATE_FORMAT, container_id)
+    result = runner.run(node, argv, timeout_s=timeout_s, mutating=False)
     if result.exit_code != 0:
         return _STATE_ABSENT, None
     fields = result.stdout.split()
@@ -894,6 +1105,17 @@ def _container_state(
         return _STATE_ABSENT, None
     code = fields[1] if len(fields) > 1 else ""
     return fields[0], int(code) if code.lstrip("-").isdecimal() else None
+
+
+def _container_state(
+    runner: RemoteRunner, target: Target, timeout_s: float
+) -> tuple[str, int | None]:
+    """待っている間に見る、起こしたコンテナの状態と終了コード。
+
+    読み取りが届かなかったこと (`RemoteError`) は、そのまま外に出す (呼ぶ側が、片付けてから
+    実行しての失敗にする)。
+    """
+    return _inspect_container(runner, target.node, target.container.id, timeout_s)
 
 
 def _exited_detail(target: Target, status: str, exit_code: int | None) -> str:
@@ -1580,3 +1802,769 @@ def _ready_outcome(
         service=_service_status(config, plans, containers, waited.readiness),
         observation=found,
     )
+
+
+# --- 台ごとの読み取り (`serve status` と、停止のあとの確かめで使う) --------
+
+
+def read_gpu_apps(
+    runner: RemoteRunner, node: NodeDef, *, timeout_s: float = READ_TIMEOUT_S
+) -> tuple[GpuApp, ...] | None:
+    """GPU を使っているプロセスを読む (読めなければ空を返す。断らない)。
+
+    **よそのものについて読むのは、この 3 つの列 (pid、名前、メモリの量) だけである**
+    (requirements 2.2、2.4)。関門 (`guards.gate_gpu_idle`) と同じ問い合わせだが、こちらは
+    判定をせずに、読み取りをそのまま返す (`serve status` は示すだけ、`serve stop` は 0 件に
+    なるのを待つだけで、どちらも断らない)。
+
+    返り値:
+        読めたプロセスの列。**読めなかったときは `None`** (「0 件」と区別する)。
+    """
+    try:
+        result = runner.run(node, GPU_APPS_ARGV, timeout_s=timeout_s, mutating=False)
+    except RemoteError:
+        return None
+    if result.exit_code != 0:
+        return None
+    try:
+        return parse_gpu_apps(result.stdout)
+    except ValueError:
+        return None
+
+
+def parse_link_state(text: str, ifname: str) -> bool | None:
+    """`ip -br link` の出力から、1 つのインターフェースがつながっているかを読む。
+
+    見るのは 2 列目 (実際の状態) である。見本 (`tests/fixtures/spark/*/ip-br-link.txt`) では、
+    つながっている側が `UP`、ケーブルのない側が `DOWN` になる。仮想のインターフェースに出る
+    `UNKNOWN` などは、つながっているとも切れているとも言えないので、空で返す。名前に `@if2`
+    のような対の印が付くことがあるので、`@` の前までで見る。
+    """
+    for line in text.splitlines():
+        fields = line.split()
+        if len(fields) < 2 or fields[0].split("@", 1)[0] != ifname:
+            continue
+        if fields[1] == _LINK_UP:
+            return True
+        if fields[1] == _LINK_DOWN:
+            return False
+        return None
+    return None
+
+
+def read_fabric_link(
+    runner: RemoteRunner, node: NodeDef, *, timeout_s: float = READ_TIMEOUT_S
+) -> bool | None:
+    """直結のリンクがつながっているかを読む (ノードの定義に名前がなければ、読みに行かない)。
+
+    `remote` が通す読み取りの形 (`ip [限られたオプション] (link|addr) [show [dev] <名前>]`) の
+    うち、1 つのインターフェースだけを見る形を使う。読めなかったことは、断らずに空で返す。
+    """
+    ifname = node.fabric_ifname
+    if ifname is None:
+        return None
+    argv = ("ip", "-br", "link", "show", "dev", ifname)
+    try:
+        result = runner.run(node, argv, timeout_s=timeout_s, mutating=False)
+    except RemoteError:
+        return None
+    if result.exit_code != 0:
+        return None
+    return parse_link_state(result.stdout, ifname)
+
+
+def _ordered_roles(nodes: Mapping[NodeRole, NodeDef]) -> tuple[NodeRole, ...]:
+    """見る台の順序 (head → worker)。`nodes` にない役割は飛ばす。"""
+    return tuple(role for role in _ROLE_ORDER if role in nodes)
+
+
+def _current_container(containers: Sequence[OwnContainer]) -> OwnContainer | None:
+    """1 台の状態として示す 1 つの行を選ぶ (動いている行を先に。決めごとの 11)。"""
+    return next(
+        (item for item in containers if item.state == _STATE_RUNNING),
+        containers[0] if containers else None,
+    )
+
+
+def _label_kind(raw: str | None) -> ConfigKind | None:
+    """ラベル `vllm-baseline.kind` を読む (知らない値は、空にする)。"""
+    if raw is None or raw not in _CONFIG_KINDS:
+        return None
+    return cast(ConfigKind, raw)
+
+
+def _shown_gpu_apps(apps: Sequence[GpuApp]) -> str:
+    """GPU を使っているプロセスを、名前とメモリの量で並べる (出すのは、この 3 つだけ)。"""
+    shown: list[str] = []
+    for app in apps:
+        pid = "pid 不明" if app.pid is None else f"pid {app.pid}"
+        memory = (
+            "メモリの量は読めない ([N/A])"
+            if app.used_memory_mib is None
+            else f"{app.used_memory_mib} MiB"
+        )
+        shown.append(f"{app.process_name} ({pid}, {memory})")
+    return ", ".join(shown)
+
+
+# --- 状態の確認 (`serve status`。読み取りだけ) -----------------------------
+
+
+def _listed(
+    runner: RemoteRunner, node: NodeDef, timeout_s: float, stream: TextIO
+) -> tuple[OwnContainer, ...]:
+    """自分のラベルで絞った一覧を読む。読めなければ、警告を出して、空として扱う。"""
+    try:
+        return list_own_containers(runner, node, timeout_s=timeout_s)
+    except (RemoteError, ValueError) as exc:
+        _report(
+            stream,
+            f"警告: {node.role} ({node.ssh_host}) の自分のコンテナの一覧を読めなかった。"
+            f"この台の状態は、読めなかったものとして (container_state は absent で) 示す: {exc}",
+        )
+        return ()
+
+
+def _exit_code_of(
+    runner: RemoteRunner,
+    node: NodeDef,
+    container: OwnContainer | None,
+    timeout_s: float,
+    stream: TextIO,
+) -> int | None:
+    """終了した自分のコンテナの終了コードを読む (動いているものは読まない。決めごとの 11)。
+
+    対象は、一覧から来た識別子だけである (requirements 2.3 の不変条件の (a))。
+    """
+    if container is None or container.state == _STATE_RUNNING:
+        return None
+    try:
+        _, code = _inspect_container(runner, node, container.id, timeout_s)
+    except RemoteError as exc:
+        _report(
+            stream,
+            f"警告: {node.role} ({node.ssh_host}) の {container.name} の終了コードを"
+            f"読めなかった: {exc}",
+        )
+        return None
+    return code
+
+
+def _observed_node_status(
+    role: NodeRole,
+    container: OwnContainer | None,
+    *,
+    gpu_apps: tuple[GpuApp, ...],
+    fabric_link_up: bool | None,
+    exit_code: int | None,
+) -> NodeStatus:
+    """1 台の状態を、一覧の行と、GPU と、直結のリンクの読み取りから作る (`serve status`)。
+
+    構成の名前と種類は、**そのコンテナのラベル**から読む (`start` の `_node_status` が、選んだ
+    構成から読むのとは違う。`serve status` は、構成の名前を受けないため)。コンテナがない
+    **か、一覧を読めなかった**ときは `absent` になる (module の docstring の「`None` を許さない
+    項目の扱い」)。
+    """
+    if container is None:
+        return NodeStatus(
+            node=role,
+            container_state="absent",
+            gpu_apps=gpu_apps,
+            fabric_link_up=fabric_link_up,
+        )
+    state: ContainerState = "running" if container.state == _STATE_RUNNING else "exited"
+    return NodeStatus(
+        node=role,
+        container_state=state,
+        exit_code=exit_code,
+        config_name=container.labels.get(LABEL_CONFIG),
+        kind=_label_kind(container.labels.get(LABEL_KIND)),
+        image_digest=container.labels.get(LABEL_IMAGE),
+        config_sha256=container.labels.get(LABEL_CONFIG_SHA256),
+        started_at=label_time(container.labels.get(LABEL_STARTED_AT)),
+        gpu_apps=gpu_apps,
+        fabric_link_up=fabric_link_up,
+    )
+
+
+def _status_target(
+    configs: Mapping[str, ConfigDef],
+    nodes: Mapping[NodeRole, NodeDef],
+    container: OwnContainer | None,
+    stream: TextIO,
+) -> tuple[str, str] | None:
+    """HTTP の宛先と、名乗るはずのモデルの名前を、head のコンテナのラベルから決める。
+
+    決めごとの 13: 動いている `kind = "serve"` のコンテナがあるときだけ、問い合わせに行く。
+    構成の名前が手元の定義にない、`--port` を 1 つに決められない、のときは、警告を出して
+    飛ばす (`serve status` は、断らない)。
+    """
+    head = nodes.get(_HEAD)
+    if head is None or container is None or container.state != _STATE_RUNNING:
+        return None
+    if container.kind != _KIND_SERVE:
+        return None
+    name = container.labels.get(LABEL_CONFIG)
+    config = None if name is None else configs.get(name)
+    if config is None:
+        _report(
+            stream,
+            f"警告: head で動いているコンテナの構成 '{name or '(ラベルがない)'}' が、手元の"
+            "定義にないので、推論サーバーの口には問い合わせない",
+        )
+        return None
+    if config.served_model_name is None:  # pragma: no cover - config の検査 4 が、先に断る
+        _report(
+            stream,
+            f"警告: 構成 '{config.name}' に served_model_name がないので、推論サーバーの口には"
+            "問い合わせない",
+        )
+        return None
+    try:
+        port = http_port(config)
+    except ConfigError as exc:
+        _report(stream, f"警告: 推論サーバーの口には問い合わせない: {exc}")
+        return None
+    return f"http://{head.lan_addr}:{port}", config.served_model_name
+
+
+def status(
+    runner: RemoteRunner,
+    configs: Mapping[str, ConfigDef],
+    nodes: Mapping[NodeRole, NodeDef],
+    *,
+    client: httpx.Client | None = None,
+    report: TextIO | None = None,
+    http_timeout_s: float = HTTP_TIMEOUT_S,
+    read_timeout_s: float = READ_TIMEOUT_S,
+) -> ServiceStatus:
+    """2 台と、推論サーバーの、いまの状態を示す (`serve status`。requirements 1.6、6.5)。
+
+    **読み取りだけで、状態を変える呼び出しを 1 つも出さない**ので、了承も求めない。台ごとに
+    読むのは、自分のラベルで絞った一覧、(終了しているときだけ) その識別子への
+    `docker container inspect`、`nvidia-smi` の 3 つの列、(ノードの定義に直結の
+    インターフェースの名前があるときだけ) `ip -br link show dev <名前>` である。
+
+    **どれが読めなくても、断らない** (module の docstring の「状態の確認」)。読めなかったこと
+    は `report` に警告として出し、結果の項目は空にする。`container_state` は `None` を許さない
+    ので、一覧そのものを読めなかった台も `absent` になる。
+
+    引数:
+        runner: 遠隔の実行役。
+        configs: 読み込んだ構成の定義 (HTTP の宛先を、動いているコンテナのラベルから引く)。
+        nodes: 役割ごとのノードの定義 (head → worker の順に見る)。
+        client: HTTP のクライアント。省くと `new_client` で作り、この関数の中で閉じる。
+        report: 警告の出し先。既定は `sys.stderr` (標準出力は、後の処理が読む行に使う)。
+        http_timeout_s: 1 回の HTTP の問い合わせの時間切れ。
+        read_timeout_s: 1 つの読み取りの時間切れ。
+
+    返り値:
+        2 台の `NodeStatus` と、推論サーバーの `ServiceStatus` (終了コードは、つねに 0)。
+
+    例外:
+        ValueError: `nodes` に head も worker もないとき (Spark に触る前に断る)。
+    """
+    roles = _ordered_roles(nodes)
+    if not roles:
+        raise ValueError("nodes に head も worker もない (状態を確かめる台がない)")
+    stream = sys.stderr if report is None else report
+    found: list[NodeStatus] = []
+    seen: dict[NodeRole, OwnContainer] = {}
+    for role in roles:
+        node = nodes[role]
+        container = _current_container(_listed(runner, node, read_timeout_s, stream))
+        exit_code = _exit_code_of(runner, node, container, read_timeout_s, stream)
+        apps = read_gpu_apps(runner, node, timeout_s=read_timeout_s)
+        if apps is None:
+            _report(
+                stream,
+                f"警告: {role} ({node.ssh_host}) の GPU を使っているプロセス"
+                f" ({GPU_APPS_ARGV[0]}) を読めなかった (空として示す)",
+            )
+        found.append(
+            _observed_node_status(
+                role,
+                container,
+                gpu_apps=() if apps is None else apps,
+                fabric_link_up=read_fabric_link(runner, node, timeout_s=read_timeout_s),
+                exit_code=exit_code,
+            )
+        )
+        if container is not None:
+            seen[role] = container
+
+    target = _status_target(configs, nodes, seen.get(_HEAD), stream)
+    if target is None:
+        return ServiceStatus(nodes=tuple(found))
+    base_url, served_model_name = target
+    owns_client = client is None
+    used = new_client(http_timeout_s) if client is None else client
+    try:
+        readiness = check_ready(used, base_url, served_model_name)
+    finally:
+        if owns_client:
+            used.close()
+    return ServiceStatus(
+        nodes=tuple(found),
+        # 読めなかったこと (200 でない、つながらない) は、偽ではなく空で示す (決めごとの 12)
+        health_ok=True if readiness.health_ok else None,
+        served_model=readiness.served_model,
+        max_model_len=readiness.max_model_len,
+        running_requests=readiness.running_requests,
+        waiting_requests=readiness.waiting_requests,
+    )
+
+
+# --- 停止 (`serve stop`) ---------------------------------------------------
+
+
+def _stop_targets_text(
+    nodes: Mapping[NodeRole, NodeDef], targets: Mapping[NodeRole, Sequence[OwnContainer]]
+) -> str:
+    """了承を求める前に見せる、止める対象の一覧。
+
+    種類 (`serve` / `fetch` など) と状態は、`guards.format_plan` が見せる計画の文には出ない
+    ので、ここで見せる。184 GiB の取得を止めようとしていることに、計測者が気づけるように
+    するためである (design.md 「weights」の Idempotency)。
+    """
+    lines = ["止める対象 (この道具のラベルの付いた、自分のコンテナだけ):"]
+    for role in _ROLE_ORDER:
+        node = nodes.get(role)
+        where = role if node is None else f"{role} ({node.ssh_host})"
+        lines.extend(
+            f"  {where}: {container.name}"
+            f" (種類 {container.kind or '(ラベルがない)'}、状態 {container.state})"
+            for container in targets.get(role, ())
+        )
+    lines.append(
+        "コンテナを消すと、その中の記録は読めなくなる"
+        " (要るなら、先に `serve logs` で回収してから止める)"
+    )
+    return "\n".join(lines)
+
+
+def _run_stop_plan(
+    runner: RemoteRunner,
+    nodes: Mapping[NodeRole, NodeDef],
+    commands: Sequence[PlannedRun],
+    stream: TextIO,
+) -> tuple[tuple[str, ...], KeyboardInterrupt | None]:
+    """止めて消す列を、順に 1 回ずつ流す (task 3.4 の片付けの決まりに合わせる)。
+
+    **前提**: 了承済みの計画が、実行役に渡っていること (`guards.request_approval`)。列は
+    `guards.build_stop_plan` が `stop_argv` / `remove_argv` で作るので、了承を得た計画と完全に
+    一致する (`remote.CallGuard` は、完全な一致で見る)。
+
+    **保証**:
+
+    1. 相手は、`guards.build_stop_plan` が、自分のラベルで絞った一覧の行から作った名前だけで
+       ある。流す直前に一覧を読み直さないのは、**計画そのものが、その 1 回の読み取りから
+       作られている**からである (`clean_up` は、起動の**前**に書いた計画を流すので、直前に
+       `guards.rollback_commands` で相手を確かめ直す)
+    2. **中断が何度来ても、`stop` → `rm` の両方を、台のすべてで試みる**。`docker rm` (強制なし)
+       は、動いているコンテナを消せず、`-f` は了承済みの計画にも `remote` の許可の一覧の決まり
+       にもないので、`stop` を飛ばして `rm` だけ流すと、コンテナが残ってしまう
+    3. **同じ呼び出しを、やり直さない** (無限に粘らない)。1 つの命令に 1 回だけ挑み、中断は
+       最初の 1 つを覚えて、残りの命令に進む
+    4. **急ぐことはできない**。流せるのは、了承済みの計画にある列だけなので、`stop` の猶予
+       (`-t 90`) を短くする列は作れない
+
+    返り値:
+        止め切れなかったことと、受けた中断 (**投げるのは、呼ぶ側**)。
+    """
+    problems: list[str] = []
+    interrupted: KeyboardInterrupt | None = None
+    for command in commands:
+        what = _CLEANUP_LABELS[command.argv[1]]
+        node = nodes[command.node]
+        try:
+            result = runner.run(node, command.argv, timeout_s=CLEANUP_TIMEOUT_S, mutating=True)
+        except KeyboardInterrupt as exc:
+            # やり直さずに、次の命令に進む (保証の 2、3)
+            interrupted = interrupted or exc
+            problems.append(f"{command.container}: {what} (中断された。残りの片付けは続ける)")
+            continue
+        except RemoteError as exc:
+            problems.append(f"{command.container}: {what} (読み取りが届かなかった): {exc}")
+            continue
+        if result.exit_code != 0:
+            problems.append(f"{command.container}: {what}: {_shown_failure(result)}")
+    if problems:
+        _report(
+            stream,
+            "警告: コンテナの片付けが、すべては終わらなかった: " + " / ".join(problems),
+        )
+    return tuple(problems), interrupted
+
+
+def _wait_for_gpu(
+    runner: RemoteRunner,
+    nodes: Mapping[NodeRole, NodeDef],
+    roles: Sequence[NodeRole],
+    *,
+    timeout_s: float,
+    poll_interval_s: float,
+    read_timeout_s: float,
+    sleep: Callable[[float], None],
+    clock: Callable[[], float],
+) -> tuple[tuple[GpuApp, ...], tuple[NodeRole, ...]]:
+    """GPU を使っているプロセスが 0 件になるまで待つ (**止めには行かない**)。
+
+    読めなかった台は、待ち続けても読めるようにならないので、その回で「空」として数えずに、
+    名前だけを返す (呼ぶ側が「確かめられなかった」と示す)。時計と眠りは引数から来るので、
+    試験は実際に眠らない。
+
+    返り値:
+        残っているプロセスと、読めなかった台の役割。
+    """
+    deadline = clock() + timeout_s
+    while True:
+        remaining: list[GpuApp] = []
+        unreadable: list[NodeRole] = []
+        for role in roles:
+            apps = read_gpu_apps(runner, nodes[role], timeout_s=read_timeout_s)
+            if apps is None:
+                unreadable.append(role)
+                continue
+            remaining.extend(apps)
+        if not remaining or clock() >= deadline:
+            return tuple(remaining), tuple(unreadable)
+        sleep(poll_interval_s)
+
+
+def _gpu_verdict(unreadable: Sequence[NodeRole]) -> str:
+    """GPU の確かめの言い方 (読めなかった台があれば、空いたとは言わない)。"""
+    if not unreadable:
+        return "GPU を使っているプロセスは 0 件になった"
+    return (
+        f"{'、'.join(unreadable)} の GPU を使っているプロセスを読めなかったので、"
+        "空いたかどうかは確かめられなかった (`serve status` で確かめる)"
+    )
+
+
+def stop(
+    runner: RemoteRunner,
+    nodes: Mapping[NodeRole, NodeDef],
+    *,
+    confirmer: Confirmer,
+    report: TextIO | None = None,
+    read_timeout_s: float = READ_TIMEOUT_S,
+    gpu_timeout_s: float = GPU_RELEASE_TIMEOUT_S,
+    gpu_poll_interval_s: float = GPU_POLL_INTERVAL_S,
+    sleep: Callable[[float], None] | None = None,
+    clock: Callable[[], float] | None = None,
+) -> StopOutcome:
+    """自分のコンテナを 2 台とも止めて消し、GPU が空くまで待つ (`serve stop`)。
+
+    対象は、**自分のラベルで絞った一覧に出たコンテナのすべて**である (`kind` を問わない)。
+    構成の名前は受けない (module の docstring の「停止」)。順序は head → worker の
+    `docker stop -t 90` のあと、2 台の `docker rm` である (design.md 「lifecycle」の停止)。
+
+    **記録は回収しない** (`serve logs` の仕事である)。消すと読めなくなるので、その旨を、
+    了承を求める前に見せる。
+
+    引数:
+        runner: 遠隔の実行役。
+        nodes: 役割ごとのノードの定義 (head → worker の順に止める)。
+        confirmer: 計画を見せて、了承を得る口。
+        report: 対象の一覧と警告の出し先。既定は `sys.stderr`。
+        read_timeout_s: 一覧と `nvidia-smi` の読み取りの時間切れ。
+        gpu_timeout_s: GPU を使っているプロセスが 0 件になるのを待つ上限。
+        gpu_poll_interval_s: そのプロセスを見に行く間隔。
+        sleep: 眠る口 (試験は、実際に眠らないものを渡す)。既定は `time.sleep`。
+        clock: 時計 (単調増加の秒)。既定は `time.monotonic`。
+
+    返り値:
+        `stopped` / `already_stopped` (終了コード 0)、`gpu_not_released` (2)。
+
+    例外:
+        guards.ApprovalError: 計測者が了承しなかった (終了コード 1。状態を変える呼び出しは、
+            1 つも出ない)。
+        LifecycleError: 止められなかった、消せなかった、一覧を読めなかった台がある
+            (終了コード 2)。
+        KeyboardInterrupt: 中断 (終了コード 130)。台のすべてで `stop` → `rm` を試みてから
+            伝える。
+        ValueError: `nodes` に head も worker もないとき (Spark に触る前に断る)。
+    """
+    roles = _ordered_roles(nodes)
+    if not roles:
+        raise ValueError("nodes に head も worker もない (止める台がない)")
+    stream = sys.stderr if report is None else report
+
+    found: dict[NodeRole, tuple[OwnContainer, ...]] = {}
+    unchecked: list[str] = []
+    for role in roles:
+        node = nodes[role]
+        try:
+            found[role] = list_own_containers(runner, node, timeout_s=read_timeout_s)
+        except (RemoteError, ValueError) as exc:
+            # 一覧が読めていないので、その名前が自分のものだと言えない (requirements 2.3)
+            unchecked.append(
+                f"{role} ({node.ssh_host}): 自分のコンテナの一覧を読めないので、この台では"
+                f" 何も止めない (名前だけで止めると、よそのコンテナを止めうる): {exc}"
+            )
+    targets = {role: items for role, items in found.items() if items}
+    if not targets:
+        if unchecked:
+            raise LifecycleError(
+                "止める対象を確かめられなかった: "
+                + " / ".join(unchecked)
+                + "。入れるようになってから、もう一度 `serve stop` を打つ"
+            )
+        return StopOutcome(
+            status="already_stopped",
+            detail=(
+                f"{len(roles)} 台とも、この道具のラベルの付いたコンテナは 1 つもない。"
+                "止めるものがないので、了承も求めず、状態を変える呼び出しも 1 つも出さない"
+            ),
+        )
+
+    _report(stream, _stop_targets_text(nodes, targets))
+    plan = build_stop_plan(targets)
+    request_approval(confirmer, runner, plan, nodes)
+    commands = tuple(item for item in plan.forward if isinstance(item, PlannedRun))
+    failures, interrupted = _run_stop_plan(runner, nodes, commands, stream)
+    if interrupted is not None:
+        # 中断は、計測者の意思表示なので、実行しての失敗より優先して伝える (決めごとの 8)
+        raise interrupted
+    if failures or unchecked:
+        raise LifecycleError(
+            "止め切れなかった: "
+            + " / ".join((*failures, *unchecked))
+            + "。`serve status` で残りを確かめてから、もう一度 `serve stop` を打つ"
+        )
+
+    remaining, unreadable = _wait_for_gpu(
+        runner,
+        nodes,
+        roles,
+        timeout_s=gpu_timeout_s,
+        poll_interval_s=gpu_poll_interval_s,
+        read_timeout_s=read_timeout_s,
+        sleep=time.sleep if sleep is None else sleep,
+        clock=time.monotonic if clock is None else clock,
+    )
+    count = sum(len(items) for items in targets.values())
+    cleaned = (
+        f"head → worker の順に、{count} 個のコンテナを止めて消した"
+        f" (`docker stop -t {STOP_TIMEOUT_S}` → `docker rm`)。"
+    )
+    if remaining:
+        return StopOutcome(
+            status="gpu_not_released",
+            detail=(
+                f"{cleaned}{gpu_timeout_s:.0f} 秒のうちに、GPU を使っているプロセスが 0 件に"
+                f"ならなかった ({_shown_gpu_apps(remaining)})。よそのプロセスかもしれないので、"
+                f"止めには行かない。{_gpu_verdict(unreadable)}"
+            ),
+            remaining_gpu_apps=remaining,
+        )
+    return StopOutcome(status="stopped", detail=f"{cleaned}{_gpu_verdict(unreadable)}")
+
+
+# --- 短い要求での確かめ (`serve smoke`) ------------------------------------
+
+
+def _smoke_body(model: str, prompt: str, max_tokens: int) -> dict[str, object]:
+    """Anthropic の Messages API の、ストリームでない要求の本文。"""
+    return {
+        "model": model,
+        "max_tokens": max_tokens,
+        "stream": False,
+        "messages": [{"role": "user", "content": prompt}],
+    }
+
+
+def _usage_count(usage: object, key: str) -> int | None:
+    """`usage` から、トークンの数を読む (読めなければ空)。"""
+    if not isinstance(usage, dict):
+        return None
+    value = usage.get(key)
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return None
+    return value
+
+
+def _reply_text(payload: Mapping[str, object]) -> tuple[str, str]:
+    """応答の `content` から、本文のテキストを集める (**画面に出すためだけ**)。
+
+    返り値:
+        本文と、読めなかった理由 (読めたら空)。理由に、応答の本文を入れない。
+    """
+    content = payload.get("content")
+    if not isinstance(content, list):
+        return "", "応答に content の配列がないので、本文が空である"
+    blocks = [
+        block.get("text")
+        for block in content
+        if isinstance(block, dict) and block.get("type") == _TEXT_BLOCK
+    ]
+    if not blocks:
+        return "", (
+            f"応答の content に {_TEXT_BLOCK} のブロックがないので、本文が空である"
+            " (thinking のブロックだけ、など)"
+        )
+    text = "".join(piece for piece in blocks if isinstance(piece, str))
+    return (text, "") if text else ("", "応答の本文が空である")
+
+
+def send_smoke(
+    client: httpx.Client,
+    base_url: str,
+    *,
+    model: str,
+    lang: Lang,
+    prompt: str,
+    max_tokens: int = SMOKE_MAX_TOKENS,
+) -> SmokeShown:
+    """短い要求を 1 つ送って、結果を読む (公開の口。4.1 の縮小の確認も、これを使う)。
+
+    **落ちない**。つながらない、200 でない、JSON として読めない、`text` のブロックがない、の
+    どれでも、読めたところまでを `SmokeShown` に入れて返す (requirements 6.5)。判定はしない
+    (意味の通る文かどうかは、人が画面で読む)。
+
+    **応答の本文が入るのは `SmokeShown.text` だけ**で、`SmokeShown.reply` (保存してよい部分)
+    にも `SmokeShown.problem` にも入らない (requirements 10.5)。
+
+    認証のヘッダは付けない (待ち受けに認証がない。design.md 「Security Considerations」)。
+    """
+    url = f"{base_url}/v1/messages"
+    try:
+        response = client.post(url, json=_smoke_body(model, prompt, max_tokens))
+    except (httpx.HTTPError, httpx.InvalidURL) as exc:
+        return SmokeShown(
+            reply=SmokeReply(lang=lang),
+            problem=f"{url} に届かない ({type(exc).__name__})",
+        )
+    code = response.status_code
+    if code != httpx.codes.OK:
+        return SmokeShown(
+            reply=SmokeReply(lang=lang, http_status=code),
+            problem=f"{url} が {code} を返した",
+        )
+    try:
+        payload: object = response.json()
+    except ValueError:
+        return SmokeShown(
+            reply=SmokeReply(lang=lang, http_status=code),
+            problem="応答を JSON として読めない",
+        )
+    if not isinstance(payload, dict):
+        return SmokeShown(
+            reply=SmokeReply(lang=lang, http_status=code),
+            problem="応答が JSON の object でない",
+        )
+    text, problem = _reply_text(payload)
+    stop_reason = payload.get("stop_reason")
+    return SmokeShown(
+        reply=SmokeReply(
+            lang=lang,
+            http_status=code,
+            stop_reason=stop_reason if isinstance(stop_reason, str) else None,
+            input_tokens=_usage_count(payload.get("usage"), "input_tokens"),
+            output_tokens=_usage_count(payload.get("usage"), "output_tokens"),
+            replacement_char=_REPLACEMENT_CHAR in text,
+        ),
+        text=text,
+        problem=problem,
+    )
+
+
+def _shown_count(value: int | None) -> str:
+    return "不明" if value is None else str(value)
+
+
+def _smoke_facts(shown: SmokeShown) -> str:
+    """1 つの応答の、**保存してよい事実だけ**を並べる (本文を入れない)。"""
+    reply = shown.reply
+    parts = ["届かなかった" if reply.http_status is None else f"HTTP {reply.http_status}"]
+    if reply.stop_reason is not None:
+        parts.append(f"終わりの理由 {reply.stop_reason}")
+    parts.append(
+        f"入力 {_shown_count(reply.input_tokens)} / 出力 {_shown_count(reply.output_tokens)}"
+        " トークン"
+    )
+    if reply.replacement_char:
+        parts.append("置き換え文字 (U+FFFD) を含む")
+    if shown.problem:
+        parts.append(shown.problem)
+    return "、".join(parts)
+
+
+def _shown_smoke(shown: SmokeShown) -> str:
+    """1 つの応答を、画面に出す文にする (**本文が出るのは、ここだけ**)。"""
+    lines = [f"--- 短い要求 ({shown.reply.lang}) ---", _smoke_facts(shown)]
+    if shown.text:
+        lines.append(shown.text)
+    return "\n".join(lines)
+
+
+def _smoke_detail(shown: Sequence[SmokeShown]) -> str:
+    """結果の文 (**応答の本文を入れない**。requirements 10.5)。"""
+    facts = " / ".join(f"{item.reply.lang}: {_smoke_facts(item)}" for item in shown)
+    return (
+        f"英語と日本語の短い要求を 1 つずつ送った ({facts})。応答の本文は画面にだけ出し、"
+        "記録には残さない。意味の通る文かどうかは、計測者が画面で読んで判断する"
+    )
+
+
+def smoke(
+    config: ConfigDef,
+    nodes: Mapping[NodeRole, NodeDef],
+    *,
+    client: httpx.Client | None = None,
+    report: TextIO | None = None,
+    timeout_s: float = SMOKE_TIMEOUT_S,
+    max_tokens: int = SMOKE_MAX_TOKENS,
+) -> SmokeOutcome:
+    """英語と日本語の短い要求を 1 つずつ送る (`serve smoke <構成>`。requirements 6.5)。
+
+    宛先は head の `/v1/messages` で、Spark の状態は変えない (HTTP だけで、遠隔の実行役を
+    使わない)。**応答の本文は `report` (画面) にだけ出し、返り値にも、どのファイルにも
+    書かない** (requirements 10.5)。
+
+    引数:
+        config: `kind = "serve"` の構成 (`config.select_config` を通ったもの)。
+        nodes: 役割ごとのノードの定義 (head の LAN のアドレスに送る)。
+        client: HTTP のクライアント。省くと `new_client` で作り、この関数の中で閉じる。
+        report: 応答の本文と事実の出し先。既定は `sys.stderr`。
+        timeout_s: 1 つの要求の時間切れ (生成があるので、読み取りより長くする)。
+        max_tokens: 応答の長さの上限 (小さくする)。
+
+    返り値:
+        言語ごとの `SmokeReply` (本文を持たない) と、事実を並べた `detail`。**終了コードは、
+        5.1 が `replies` から決める** (すべて 200 なら 0、1 つでも違えば 2)。
+
+    例外:
+        config.ConfigError: `kind` が `serve` でない構成、HTTP のポートを決められない構成。
+        ValueError: head のノードの定義がないとき。
+    """
+    if config.kind != _KIND_SERVE:
+        raise ConfigError(
+            f"短い要求で確かめられるのは、kind = '{_KIND_SERVE}' の構成だけである"
+            f" (構成 '{config.name}' の kind は '{config.kind}')"
+        )
+    if config.served_model_name is None:  # pragma: no cover - 型の検証が、先に断る
+        raise ConfigError(f"構成 '{config.name}' に served_model_name がない")
+    head = _node_of(nodes, config, _HEAD)
+    base_url = f"http://{head.lan_addr}:{http_port(config)}"
+    stream = sys.stderr if report is None else report
+    owns_client = client is None
+    used = new_client(timeout_s) if client is None else client
+    shown: list[SmokeShown] = []
+    try:
+        for lang, prompt in SMOKE_PROMPTS.items():
+            sent = send_smoke(
+                used,
+                base_url,
+                model=config.served_model_name,
+                lang=lang,
+                prompt=prompt,
+                max_tokens=max_tokens,
+            )
+            shown.append(sent)
+            _report(stream, _shown_smoke(sent))
+    finally:
+        if owns_client:
+            used.close()
+    return SmokeOutcome(replies=tuple(item.reply for item in shown), detail=_smoke_detail(shown))
