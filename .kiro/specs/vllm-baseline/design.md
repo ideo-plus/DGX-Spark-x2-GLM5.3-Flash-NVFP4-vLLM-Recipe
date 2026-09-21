@@ -321,7 +321,7 @@ stateDiagram-v2
 | 1.9 | 記録の回収 | logs | `serve logs`。`serving/var/<UTC>-logs-<構成>/` へ | — |
 | 2.1 | 状態を変える前の了承 | guards、cli | `Confirmer`。計画と対象の機械を見せて `yes` を待つ | 起動 |
 | 2.2 | よそのプロセスが GPU を使っていたら断る | guards | `gate_gpu_idle` | 起動 |
-| 2.3 | 自分のもの以外を触らない | lifecycle、remote | コンテナの選択は `--filter label=` だけ | — |
+| 2.3 | 自分のもの以外を触らない | lifecycle、remote、plan | コンテナを対象にする操作の対象は、(a) `--filter label=` で絞った一覧の ID か、(b) 了承済みの計画が自分で起こす名前、のどちらかだけ | — |
 | 2.4 | 別の構成の中身を読まない | guards、lifecycle | ラベルのないコンテナに、inspect も logs も向けない。試験で固定 | — |
 | 2.5 | ディスクの空きの確認 | guards | `gate_disk_space`。要る量はマニフェストとイメージの大きさから | — |
 | 2.6 | 認証の情報を Spark に置かない | weights、plan | 環境変数の許可の一覧。`HF_TOKEN` などを渡さないことを試験で固定 | — |
@@ -460,10 +460,11 @@ class ConfigDef(_Frozen):
     image: ImageRef
     weights: WeightsRef | None         # job だけ None でよい。probe は、設定とトークナイザの取得元として持つ
     docker: dict[str, Setting]
-    serve: dict[str, Setting]          # job では、コンテナの中で動かすコマンドの引数
+    serve: dict[str, Setting]          # serve と probe では vllm serve の引数。job では command に続く引数
     env: dict[str, Setting]
     ready_timeout_s: PositiveInt
-    served_model_name: str             # serve と probe で必須
+    served_model_name: str | None      # serve と probe で必須。job は None
+    command: tuple[str, ...] | None    # job だけ。コンテナの中で動かすコマンド (torchrun とスクリプト)。serve と probe は None
 
 class NodeDef(_Frozen):
     role: NodeRole                     # "head" | "worker"
@@ -526,14 +527,16 @@ class RemoteRunner(Protocol):
     def pull(self, node: NodeDef, remote_path: str, local_dir: Path) -> CommandResult: ...
 ```
 
+- `push` は、つねに状態を変える呼び出しとして扱い、`run(mutating=True)` と同じく、了承済みの計画に含まれていなければ `RuntimeError` にする。`push` の宛先は、`remote_root` の下の、決まった部分 (`payload/` と `state/`) だけ。`models/`、`probe/`、`cache/`、`logs/` は、`push` の宛先にできない (`--delete` つきの rsync が、取得した重みを消す事故を、構造でなくす)
 - Spark の上のファイルに書く道は、`push` だけ (コンテナが自分で書く記録と、取得した重みを除く)。起動の記録と、照合の結果の記録は、Mac で作った小さなファイルを `state/` に `push(delete=False)` で置く。`payload/` は `push(delete=True)` で、Mac の側と同じにする
 - `ApprovedPlan` (了承を得た計画) の型は `types` に置く。`guards` が作り、`SshRunner` が受け取る
 - **計画は、前に進むコマンドと、それを巻き戻すコマンドの組で作る**。前に進むコマンド (`docker run`、`docker pull`、記録の `push`、A/B の繰り返しのすべての回) と、巻き戻すコマンド (自分のコンテナの `docker stop` と `docker rm`) を、了承の前にすべて並べ、計測者は、その全体を了承する。コンテナの名前は `vb-<構成>-<役割>` で決まっているので、起動の前に、巻き戻すコマンドまで書ける。これで、失敗や中断のときの片付けが、了承のない呼び出しとして断られることがない (1.5)
 - 巻き戻すコマンドが対象にできるのは、その計画が起こす名前のコンテナだけ。計画を作る関数は、ほかの名前を巻き戻しに入れられない (試験で固定)
+- **コンテナを対象にする操作の不変条件**: 対象は、(a) ラベル `vllm-baseline.owner=serving-kit` で絞った一覧から来た ID か、(b) 了承済みの計画が自分で起こす名前 (`vb-…`。その計画の `docker run` は、必ず同じラベルを付ける) の、どちらかだけ。(b) が要るのは、巻き戻しを起動の**前**に決めるので、一覧からは作れないため。`docker run` が名前の衝突で失敗した場合 (その名前の、ラベルのないコンテナがすでにある) は、巻き戻しを実行せずに、衝突を示して止まる (自分のものでないコンテナを、名前で止めない)
 
 - 実装は `SshRunner` の 1 つだけ。`ssh -o BatchMode=yes -o ConnectTimeout=5 <ssh_host> -- <shlex.join(argv)>`。遠隔のシェルに渡る文字列は、必ず `shlex.join` で作る (引用の事故を防ぐ)
 - `mutating=True` の呼び出しは、その前に了承を得た計画に含まれていなければ、`RuntimeError` にする (`ApprovedPlan` を渡して作る)。了承なしに状態を変える経路を、構造でなくす (2.1)
-- `argv[0]` の許可の一覧: `docker`、`nvidia-smi`、`df`、`sha256sum`、`ip`、`ethtool`、`ibv_devinfo`、`ibdev2netdev`、`cat`、`mkdir`、`test`、`uname`。`sudo`、`apt`、`pip`、`systemctl` は、一覧にないので呼べない (2.7)
+- `argv[0]` の許可の一覧: `docker`、`nvidia-smi`、`df`、`sha256sum`、`ss`、`ip`、`ethtool`、`ibv_devinfo`、`ibdev2netdev`、`cat`、`mkdir`、`test`、`uname`。`sudo`、`apt`、`pip`、`systemctl` は、一覧にないので呼べない (2.7)
 - `docker` は、サブコマンドも許可の一覧で絞る: `run`、`ps`、`stop`、`rm`、`logs`、`pull`、`image inspect`、`container inspect`、`version`。`build`、`exec`、`rmi`、`system`、`volume`、`network`、`cp`、`commit` は呼べない (2.3、8.6)。`docker` を通すだけでは、許可の一覧が歯止めにならないため
 - `push` は `rsync -a` (`delete=True` のときは `--delete` つき)。宛先は `remote_root` の下だけ。`pull` は `serving/var/` の下だけ
 - 時間切れ、接続の失敗は、`RemoteError` (どのノードの、どのコマンドかを持つ)
@@ -558,8 +561,9 @@ def build_plans(config: ConfigDef, nodes: dict[NodeRole, NodeDef],
                 started_at: datetime) -> tuple[ContainerPlan, ...]: ...
 ```
 
+- **この道具が起こすコンテナは、すべてここを通す** (推論サーバー、縮小の確認、通信の確認のジョブ、重みの取得、ライセンスの表記の読み取り)。名前とラベルのないコンテナを起こす経路を作らない。重みの取得も `-d` で起こし、終わりは `docker container inspect` の状態と終了コードで見る (ssh が途中で切れても取得は続き、もう一度打てば、動いている取得を見つけて待つ)。前面で `--rm` で動かすのは、数秒で終わるライセンスの表記の読み取りだけ
 - 道具が必ず付けるもの (構成に書かない。構成に書いてあれば誤り): `-d`、`--pull never`、`--name`、`--label`、`--restart no`。根拠は、`plan.py` の中の定数に、構成と同じ `Provenance` の形で持つ (試験で、空でないことを確かめる)
-- ラベル: `vllm-baseline.owner=serving-kit`、`vllm-baseline.config=<名前>`、`vllm-baseline.kind=<kind>`、`vllm-baseline.role=<役割>`、`vllm-baseline.image=<ダイジェスト>`、`vllm-baseline.weights=<repo>@<revision>`、`vllm-baseline.started-at=<UTC>`。`serve status` は、このラベルから「どの構成で動いているか」を読む (1.6)
+- ラベル: `vllm-baseline.owner=serving-kit`、`vllm-baseline.config=<名前>`、`vllm-baseline.kind=<kind>`、`vllm-baseline.role=<役割>`、`vllm-baseline.image=<ダイジェスト>`、`vllm-baseline.weights=<repo>@<revision>`、`vllm-baseline.started-at=<UTC>`、`vllm-baseline.config-sha256=<その構成の定義を正規化したものの sha256>`。通信の確認の A/B では、`vllm-baseline.run=<腕>-<回>` も付ける。`serve status` は、このラベルから「どの構成で動いているか」を読む (1.6)
 - 環境変数は、構成の `env` にあるものだけを `-e` で渡す。Mac の側の環境を引き継がない。名前に `TOKEN`、`KEY`、`SECRET`、`PASSWORD` を含むものは誤り (2.6)
 - `only_on` で、head と worker の差 (`--node-rank`、`--headless`、`VLLM_HOST_IP`) を表す。差は、この 3 つと、置き換えの印だけ
 - 引数の順序は決まっている (docker の引数 → イメージの参照 → serve の引数)。試験で、構成から作った列を、そのまま固定する
@@ -642,6 +646,7 @@ class Confirmer(Protocol):
 | `gate_image_digest` | `docker image inspect --format '{{json .RepoDigests}}' <ref>` | 一覧に、構成のダイジェストがない (3.3) |
 | `gate_weights_verified` | `state/<slug>.verified.json` (照合の結果の記録) と、`models/<slug>/` の一覧と大きさ | 照合の記録がない、マニフェストの版と違う、ファイルの一覧か大きさが合わない (3.5) |
 | `gate_disk_space` | `df -B1 --output=avail <remote_root>` | 空きが、要る量 (マニフェストの合計、またはイメージの大きさ) + 10% に足りない (2.5) |
+| `gate_ports_free` | `ss -ltnH` | 構成が使う待ち受けのポート (HTTP の `--port`、`--master-port`、ジョブの rendezvous のポート) を、すでに何かが使っている。`--network host` では、コンテナの外のプロセスとも衝突する |
 
 - 関門は、ラベルのないコンテナに、`docker inspect` も `docker logs` も `docker top` も向けない。よそのものについて知るのは、`nvidia-smi` の 3 つの列だけ (2.4)
 - `kind = "probe"` の構成では、`gate_weights_verified` と `gate_disk_space` は、マニフェストのうち、設定とトークナイザのファイル (safetensors を除いたもの) だけを対象にする。置き場所は `probe/<slug>/`
@@ -707,6 +712,7 @@ class ServiceStatus(_Frozen):
     nodes: tuple[NodeStatus, ...]
     health_ok: bool | None             # head の /health
     served_model: str | None           # /v1/models の data[0].id
+    max_model_len: int | None          # /v1/models の data[0].max_model_len (6.3 の、入力の長さの上限)
     running_requests: int | None       # /metrics
     waiting_requests: int | None
 
@@ -718,7 +724,8 @@ def smoke(config: ConfigDef, ...) -> SmokeOutcome: ...     # 英語と日本語�
 
 ##### State Management
 
-- 状態の出どころは、Docker のラベルつきのコンテナだけ。Mac の側に、状態のファイルを持たない (2 つの出どころが食い違うことをなくす)
+- 状態の出どころは、Docker のラベルつきのコンテナだけ。Mac の側に、状態のファイルを持たない (2 つの出どころが食い違うことをなくす)。`state/` の 2 つのファイル (起動の記録、照合の結果) は、状態ではなく、記録である (起動の記録は回収のためだけに書き、判定には使わない。照合の結果は、関門が、マニフェストの版と、一覧と大きさと一緒に確かめる)
+- **`already_running` と判定するのは、動いている自分のコンテナのラベルの、構成の名前、イメージのダイジェスト、`config-sha256` が、いま選んだ構成と、2 台とも一致するときだけ**。名前が同じで中身が違う (構成を編集したあとに、止めずに `start` した) ときは、0 で返さず、違う項目を示して断る (終了コード 1。`serve stop` を促す)。古い設定のサーバーに `bench` を流して、記録が実体とずれることを防ぐ (1.8、3.10、8.2)
 - `LaunchRecord` (構成の名前、イメージのダイジェスト、重みの `repo@revision`、開始の時刻、組み立てた引数の列、構成のファイルの sha256) を、起動の直前に `state/<構成>.launch.json` に書く。`serve logs` が、記録と一緒に回収する (3.10)
 - 受け付けの開始の判定: (1) head の `/health` が 200、(2) `/v1/models` の `data[0].id` が `served_model_name` と一致、(3) `/metrics` が読めて、`vllm:spec_decode_` で始まる行がない (6.7)。10 秒ごとに見る。上限は構成の `ready_timeout_s` (最初の値は 1800。実測で直す)
 - 停止: head に `docker stop -t 90` → worker に同じ → 2 台で `docker rm` → GPU のプロセスが 0 件になるまで、最大 60 秒待つ。空かなければ `gpu_not_released` で、残っているプロセスの名前を示す (止めには行かない)
@@ -756,6 +763,7 @@ def smoke(config: ConfigDef, ...) -> SmokeOutcome: ...     # 英語と日本語�
 - 比べる相手: NVIDIA の公表の実測 189.85 Gbps (`ib_write_bw`、道具が違うことを記録に書く) と、NVIDIA 自身の合否のしきい値 175 Gbps
 - 合否 (4.7): `network == "IB"` かつ `socket_channel_seen` が偽、かつ `sanity` の 4 段がすべて通る。満たさなければ、手順書は 2 台の起動に進まない
 - A/B (4.5): `--env KEY=VALUE` (何度でも) と `--repeat 3`。最小の設定と、足した設定を、3 回ずつ交互に流す。**採用するのは、足した側の最小が、最小の設定の側の最大を上回ったときだけ** (大きなメッセージの `busbw` で比べる)。採用したら、結果の要約を `docs/results/` に書き (計測者の指示で)、構成には `measured` の根拠で書く
+- A/B の 6 回は、コンテナの名前に回の番号を付ける (`vb-<構成>-<役割>-r<回>`)。1 回ごとに、記録を回収してから消すので、名前は重ならないが、回収した記録の置き場所と、ラベル `run` で、どの腕の何回目かを区別する。torchrun の rendezvous のポートは、構成に明示する (推論サーバーの `--master-port` と別の値)
 - 最初の A/B は、`NCCL_SOCKET_IFNAME` を直結の側にするか、管理の側にするか (NVIDIA の 2 つの手順で割れている)
 - 最小の設定は、`VLLM_HOST_IP`、`NCCL_SOCKET_IFNAME`、`GLOO_SOCKET_IFNAME` だけ。`NCCL_IB_HCA`、`NCCL_IB_MERGE_NICS`、`NCCL_IB_GID_INDEX` は設定しない。確認のときだけ、`NCCL_DEBUG=INFO`、`NCCL_DEBUG_SUBSYS=INIT,BOOTSTRAP,ENV,NET,GRAPH`、`NCCL_DEBUG_FILE` を足す
 - nccl-tests は使わない (2 台で動かすには MPI が要り、Spark への導入は恒久的な変更になる)。計測者が求めたときの追加の確認として、手順書に残す (2.8)
@@ -864,7 +872,7 @@ quote = "distributed node rank for multi-node distributed inference when distrib
 |---|---|
 | docker | `--gpus all`、`--ipc host`、`--shm-size 16g`、`--ulimit memlock=-1`、`--ulimit stack=67108864`、`--network host`、重みの読み取り専用の `--mount`、`cache/` の `--mount`、`logs/` の `--mount` |
 | docker (最初は入れない。実測の根拠で足す) | `--device /dev/infiniband`、`--cap-add SYS_NICE`、`--cap-add IPC_LOCK` |
-| serve | モデルの場所 (`{weights.mount_at}`)、`--served-model-name glm-5-3-flash`、`--host {head.lan_addr}`、`--port 8000`、`--tensor-parallel-size 2`、`--nnodes 2`、`--node-rank` (ノードごと)、`--headless` (worker だけ)、`--master-addr {head.fabric_addr}`、`--max-model-len 163840`、`--max-num-seqs 16`、`--max-num-batched-tokens 2048`、`--gpu-memory-utilization 0.90`、`--language-model-only`、`--no-enable-flashinfer-autotune`、`--tool-call-parser glm47`、`--reasoning-parser glm47`、`--enable-auto-tool-choice`、`--enable-prompt-tokens-details`、`--shutdown-timeout 60` |
+| serve | モデルの場所 (`{weights.mount_at}`)、`--served-model-name glm-5-3-flash`、`--host {head.lan_addr}`、`--port 8000`、`--tensor-parallel-size 2`、`--nnodes 2`、`--node-rank` (ノードごと)、`--headless` (worker だけ)、`--master-addr {head.fabric_addr}`、`--master-port 29501` (既定と同じ値を、明示する)、`--max-model-len 163840`、`--max-num-seqs 16`、`--max-num-batched-tokens 2048`、`--gpu-memory-utilization 0.90`、`--language-model-only`、`--no-enable-flashinfer-autotune`、`--tool-call-parser glm47`、`--reasoning-parser glm47`、`--enable-auto-tool-choice`、`--enable-prompt-tokens-details`、`--shutdown-timeout 60` |
 | serve (指定しない) | `--kv-cache-dtype` (どれを指定しても同じ型に正規化される)、`--block-size` (段 0 で要否を確かめる)、投機的デコードの指定、`--distributed-executor-backend` (自動で `mp` になる) |
 | env | `VLLM_HOST_IP={node.fabric_addr}`、`NCCL_SOCKET_IFNAME==…`、`GLOO_SOCKET_IFNAME=…` (インターフェースの名前は実測)。最初の起動だけ、NCCL の記録の 3 つの変数 |
 
@@ -922,9 +930,9 @@ Spark なしで、Mac の上で流す。`RemoteRunner` は `FakeRunner` に、�
 ### Unit Tests
 
 - `test_config.py`: 根拠のない設定を 2 つ含む構成が、2 つの項目の名前を並べて断られる (3.7)。`source` だけで `quote` がない、`measured` のファイルがない、タグだけのイメージの参照、短い revision、`/` を含むモデルの名前、投機的デコードの指定、知らない置き換えの印、`--privileged`、`--pid host`、`-v`、`{remote_root}` の外を指す `--mount`、一覧にない `--device` と `--cap-add` (根拠があっても)、直結の値のない 2 台の構成、のそれぞれが断られる。リポジトリにコミットした `configs.toml` と `nodes.toml` が、そのまま読み込める (drift の見張り)
-- `test_plan.py`: `p1-nvfp4-tp2` から作った head と worker の引数の列が、固定した列と一致する。差が `--node-rank`、`--headless`、`VLLM_HOST_IP` と置き換えの印だけである。ラベルが 7 つ付く。Mac の側の環境変数 (`HF_TOKEN` を置いて試す) が、どの引数にも現れない (2.6)。`docker build` を含む列を作る経路がない (8.6)
+- `test_plan.py`: `p1-nvfp4-tp2` から作った head と worker の引数の列が、固定した列と一致する。差が `--node-rank`、`--headless`、`VLLM_HOST_IP` と置き換えの印だけである。ラベルが 8 つ付く。構成の値を 1 つ変えると、`config-sha256` のラベルが変わる。Mac の側の環境変数 (`HF_TOKEN` を置いて試す) が、どの引数にも現れない (2.6)。`docker build` を含む列を作る経路がない (8.6)
 - `test_observe.py`: `pe_dim must be 64` を含む記録が `pe_dim_assert` になる。バックエンドの行、MoE の行、KV の大きさの行、ロードの所要の行から、値が読める。どれもない記録は、すべて `None` で返る (断らない)。NCCL の記録で、`Using network Socket` + `No device found` が `network="Socket"` に、`Made vNic` が `merged_nic=True` に、`ndevs=1` だけの記録が `merged_nic=False` になる
-- `test_guards.py`: 自分のコンテナがなく GPU のプロセスがあるときに、名前とメモリの量を示して断る (2.2)。空きが足りないときに、要る量と空いている量を示す (2.5)。ダイジェストが `RepoDigests` の 2 番目にあっても通る。`FakeRunner` に記録された、すべての `docker inspect` / `logs` / `stop` / `rm` の対象が、ラベルで絞った一覧から来た ID だけである (2.3、2.4)
+- `test_guards.py`: 自分のコンテナがなく GPU のプロセスがあるときに、名前とメモリの量を示して断る (2.2)。空きが足りないときに、要る量と空いている量を示す (2.5)。ダイジェストが `RepoDigests` の 2 番目にあっても通る。`FakeRunner` に記録された、すべての `docker inspect` / `logs` / `stop` / `rm` の対象が、ラベルで絞った一覧から来た ID か、了承済みの計画が起こす名前だけである。名前の衝突で `docker run` が失敗したときは、その名前への `stop` / `rm` が出ない (2.3、2.4)
 - `test_remote.py`: 空白と引用符を含む引数が、`shlex.join` で 1 つの引数のまま遠隔に渡る。許可の一覧にない `argv[0]` (`sudo`、`apt`) と、許可の一覧にない docker のサブコマンド (`exec`、`build`、`rmi`、`system prune`) が断られる (2.7、8.6)。了承した計画にない `mutating=True` の呼び出しが `RuntimeError` になる (2.1)。了承した計画の巻き戻しのコマンドは、前に進むコマンドが途中で失敗したあとでも、断られずに実行できる (1.5)
 - `test_weights.py`: `tree` API の偽の応答から、`path` の順のマニフェストができる。`README.md` を取得する要求が、1 つも出ない (8.8)。`sha256sum` の出力の 1 行が違うと、そのファイルの名前を示して失敗し、取り直しの呼び出しが出ない (3.5)
 
