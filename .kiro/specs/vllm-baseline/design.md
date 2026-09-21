@@ -457,7 +457,7 @@ class ConfigDef(_Frozen):
     description: str
     nodes: tuple[NodeRole, ...]        # serve は head と worker。probe は 1 つ
     image: ImageRef
-    weights: WeightsRef | None         # probe と job は None でよい
+    weights: WeightsRef | None         # job だけ None でよい。probe は、設定とトークナイザの取得元として持つ
     docker: dict[str, Setting]
     serve: dict[str, Setting]          # job では、コンテナの中で動かすコマンドの引数
     env: dict[str, Setting]
@@ -479,7 +479,8 @@ class NodeDef(_Frozen):
 ```python
 def load_configs(path: Path, repo_root: Path) -> dict[str, ConfigDef]: ...
 def load_nodes(path: Path, repo_root: Path) -> dict[NodeRole, NodeDef]: ...
-def select_config(configs: dict[str, ConfigDef], name: str) -> ConfigDef: ...   # なければ、使える名前を添えて ConfigError
+def select_config(configs: dict[str, ConfigDef], name: str,
+                  nodes: dict[NodeRole, NodeDef]) -> ConfigDef: ...   # なければ、使える名前を添えて ConfigError。検査 7 もここで
 ```
 
 - 検査 (いずれも `ConfigError`。項目の名前を、`configs.p1-nvfp4-tp2.serve.max-num-seqs: 根拠がない` の形で、すべて並べる):
@@ -489,7 +490,7 @@ def select_config(configs: dict[str, ConfigDef], name: str) -> ConfigDef: ...   
   4. モデルの名前: `--served-model-name` が 1 つだけで、`/` を含まない (6.2)
   5. 投機的デコード: `--speculative-config`、`--spec-method`、`--spec-model`、`--spec-tokens` のどれかを持つ構成は誤り (6.7。P3 で、この検査を構成ごとの許可に変える)
   6. 置き換えの印: 値に書けるのは、`{node.fabric_addr}`、`{node.fabric_ifname}`、`{node.rank}`、`{head.fabric_addr}`、`{head.lan_addr}`、`{weights.mount_at}`、`{remote_root}` だけ。ほかの `{…}` は誤り
-  7. 直結の値: `kind` が `serve` か `job` で、ノードが 2 つの構成は、2 台の `fabric_addr`、`fabric_ifname`、`fabric_measured` が揃っていなければ誤り (4.7)
+  7. 直結の値: `kind` が `serve` か `job` で、ノードが 2 つの構成は、2 台の `fabric_addr`、`fabric_ifname`、`fabric_measured` が揃っていなければ誤り (4.7)。**この検査だけは、読み込みのときではなく、構成を選んだとき (`select_config`) に、選んだ構成について行う**。直結の値を埋める前でも、1 台の構成 (`probe-pinned`) と `serve netcheck links` は使えるようにするため
   8. 禁じる docker のフラグ: `--privileged`、`--restart` の `no` 以外、`--rm` (記録が消える) は誤り
 
 **Implementation Notes**
@@ -637,6 +638,7 @@ class Confirmer(Protocol):
 | `gate_disk_space` | `df -B1 --output=avail <remote_root>` | 空きが、要る量 (マニフェストの合計、またはイメージの大きさ) + 10% に足りない (2.5) |
 
 - 関門は、ラベルのないコンテナに、`docker inspect` も `docker logs` も `docker top` も向けない。よそのものについて知るのは、`nvidia-smi` の 3 つの列だけ (2.4)
+- `kind = "probe"` の構成では、`gate_weights_verified` と `gate_disk_space` は、マニフェストのうち、設定とトークナイザのファイル (safetensors を除いたもの) だけを対象にする。置き場所は `probe/<slug>/`
 - `gate_weights_verified` は、起動のたびに 184 GiB の sha256 を計算し直さない。全体の照合は `serve fetch` の終わりと `serve verify` で行い、結果を記録する。起動のときは、その記録と、一覧と大きさを見る
 - `Confirmer` の実装は 2 つ。端末で `yes` の入力を待つもの。`--yes` が付いたときに、計画を表示してから通すもの。端末でなく、`--yes` もなければ、断って終了コード 1。Claude が計測者の代わりに打つときは、会話の中で了承を得てから `--yes` を付ける (README に書く)
 
