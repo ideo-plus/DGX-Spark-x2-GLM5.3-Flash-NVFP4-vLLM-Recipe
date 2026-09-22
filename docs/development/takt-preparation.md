@@ -70,3 +70,25 @@ tail -f .takt/verification/tp2-run.log
 `takt workflow doctor spark-preparation` は警告なしで通過した。
 TAKT 0.66.0 の `takt prompt spark-preparation` は `reportContent is required for report-based judgment`
 で失敗する。同じエラーは未変更の `flash-default` でも再現するが、上記の実行自体は開始・進行できた。
+
+## 次の作業を小さく分ける
+
+準備と CI の統合後、[API 互換・計測準備の調査](../tasks/p0-compatibility-research.md) を
+組み込みの `research` で実行した。約 19 分で終了値 0。非ストリーミング応答は `serve smoke`、
+SSE とツール呼び出しは `bench` で確認できること、8000 番と実際のモデル名を使う対象定義が
+必要なことを確認した。レビューが指摘した `quality.code_problem_limit=0` は無効なため採用しない。
+調査ログは `.takt/verification/p0-research-run.log` にある。
+
+続いて [対象定義と初回計測手順](../tasks/tp2-benchmark-target.md) を `simple-mini` で実行し、
+約 30 分でレビュー承認・終了値 0 まで完了した。設定ローダー、既存の設定テスト 30 件、ruff が通過。
+対話側で、対象外の skip と今回の失敗条件を分け、非ストリーミング確認のコマンドを明記した。
+変更範囲は設定と手順の 2 ファイルに限定し、既存の設定検査を使う。実機操作の禁止は依頼と
+AGENTS.md で維持する。コード実装を伴う最初の依頼と同じ規模のワークフローを毎回使うのではなく、
+調査・小さな設定変更・コード実装に分ける。ログは `.takt/verification/benchmark-target-run.log`。
+
+リポジトリ直下での実行コマンドは次のとおり。いずれも実機には接続しない依頼を渡す。
+
+```bash
+takt --pipeline --skip-git --workflow research --task "$(cat docs/tasks/p0-compatibility-research.md)"
+takt --pipeline --skip-git --workflow simple-mini --task "$(cat docs/tasks/tp2-benchmark-target.md)"
+```
