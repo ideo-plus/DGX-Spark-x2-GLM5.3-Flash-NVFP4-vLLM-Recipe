@@ -172,7 +172,7 @@
   - _Boundary: thinking_
 
 - [ ] 5. コマンドと、端から端までの確認
-- [ ] 5.1 サブコマンドをつなぎ、終了コードを決める
+- [x] 5.1 サブコマンドをつなぎ、終了コードを決める
   - 検査、配布、イメージの取得、ライセンスの表記、マニフェスト、重みの取得、照合、起動、停止、状態、短い要求、記録の回収、縮小の確認、通信の確認 (3 つ)、見張り、thinking の確かめを、サブコマンドとしてつなぐ
   - 例外を終了コードに変える場所を 1 つにする (0 正常、1 前提の不足と断り、2 実行しての失敗、130 中断)。誤りは、traceback を出さずに、1 行の文で示す
   - 状態を変えるコマンドは、計画 (前に進むコマンドと、巻き戻すコマンド) を表示してから、了承を待つ。起動と縮小の確認は、待ちの上限をその回だけ上書きする指定を持つ
@@ -400,3 +400,6 @@
 - 4.6: `thinking.run_thinking(*, base_url, model, var_root, trials=3, max_tokens=1024, timeout_s=180.0, messages=None, …) -> ThinkingOutcome`。`remote` も構成も要らない (HTTP だけ。5.1 が、選んだ構成から `base_url` と `model` を組み立てて渡す)。5 通りとも同じ複数ターンの会話 (過去の thinking のブロックを持つ合成の固定の文) を、回ごとに 1〜5 の順で送る。判定は「範囲が重ならない」(一方の最大 < 他方の最小)。`max_tokens` で打ち切られた回は下限で、低い側に打ち切りがあれば判定しない。**5.1 への申し送り**: `effective` が True/False なら判定できた、None なら判定できなかった。置き場所は `<var_root>/<UTC>-thinking/result.json` (構成の名前は付かない)
 - 4.6 → **8 の段 (実機) への申し送り**: (a) 過去の thinking のブロックを、Anthropic の形 (`{"type": "thinking", "thinking": …, "signature": …}`) で `messages` に入れている。vLLM の `/v1/messages` がこの形を受け付けるか、チャットテンプレートの `reasoning_content` に写るか (5 番目の `clear_thinking` の比べが成り立つか) は、紙の上では裏が取れなかった。実機で 4xx になったら、`messages` の差し替えの引数で形を変えて試す。(b) 打ち切りの `stop_reason` は `"max_tokens"` を想定している (仕様に記載なし。外れても、打ち切りの検出が効かないだけ)。実機の応答で確かめる
 - 4.6: レビューで 1 回差し戻し (複数の thinking のブロックの合計の試験がなく、変異が生き残った。偽のサーバーの `MessagesReply` は thinking のブロックを 1 つしか作れないので、生の本文を `Fault(status=200, body=…)` で台本にして直した)。新しい module の RED を「module がなければ ImportError」だけで済ませない。試験の要は、変異で確かめる
+- 5.1: `cli.main(argv, *, runner_factory=, client_factory=, confirmer=, stdin/stdout/stderr=)` に、試験のための差し込みの口がある。終了コードの写しは `_EXIT_BY_ERROR` の表 1 つ (上から順。`WeightsRefError` を `WeightsError` より先に)。予期しない例外は 2 で traceback なし (`SERVE_DEBUG=1` で traceback)。`serve push` は、了承のために見せた計画 (`_push_plan`: 2 台の `mkdir -p` の 6 つの置き場所 + `payload/` の配布) そのものを `_run_step` で順に流す (計画と実行を 2 か所に書かない。片方にだけ宛先を足す誤りが、どちらの試験にも掛からないため)。状態を変える 11 のコマンド (`push`/`pull-image`/`image-licenses`/`fetch`/`verify`/`start`/`stop`/`probe`/`netcheck bandwidth|sanity|ab`) は、`--yes` なし・非端末では、状態を変える呼び出しを 1 つも出さずに 1 (`test_no_state_changing_call_without_approval` で全部固定)
+- 5.1 → **design との意図した食い違い** (cli の docstring の決めごと 12〜17): `serve logs <構成>` に `--since` はない (`collect_logs` に範囲の引数がない)。`serve thinking <構成>` は構成から宛先を組み立てる (`--base-url`/`--model` ではない)。`serve netcheck links` はつねに 0。`serve status` は読めなかった台があれば 1 (`lifecycle.read_status` / `StatusShown` を追加。`status` は変えていない)。A/B の回数は design どおり `--repeat`。**6.3 の手順書は、この形のコマンドを書く** (`serving/README.md` のサブコマンドの表が正)
+- 5.1: レビューで 1 回差し戻し (`--repeats`、了承の試験が `push` だけ、計画と実行の二重化、docstring の食い違い)。**レビュー担当には、実装担当の報告を要約せず、RED の出力を含めてそのまま渡す** (要約したため「RED の証拠がない」と誤って指摘された)

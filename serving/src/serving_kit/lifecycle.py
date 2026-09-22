@@ -51,10 +51,11 @@
 付けている)。HTTP の宛先は、**動いている head のコンテナのラベル** (`vllm-baseline.config`)
 から構成の定義を引いて、その `--port` で決める。
 
-**終了コードは、つねに 0 である**。何も動いていない、片方の台に入れない、`nvidia-smi` が
-読めない、推論サーバーが応答しない、のどれでも、断らずに「読めなかった」として示す
+**`status` は、何も断らない**。何も動いていない、片方の台に入れない、`nvidia-smi` が
+読めない、推論サーバーが応答しない、のどれでも、誤りにせずに「読めなかった」として示す
 (requirements 1.6)。例外になるのは、`nodes` に見る台が 1 つもないという、呼ぶ側の誤り
-(`ValueError`。終了コード 1) だけである。
+(`ValueError`) だけである。**`serve status` の終了コードは、この関数では決まらない**。
+5.1 が `read_status` の `unreadable` から決める (読めなかった台があれば 1。決めごとの 16)。
 
 **`ServiceStatus` が `None` を許さない項目の扱い**: `NodeStatus.container_state` は
 `absent` / `running` / `exited` の 3 つしかないので、**その台の一覧そのものを読めなかった
@@ -235,6 +236,14 @@ design が明示しない細部を、ここで決めて残す。
    定める)。ただし、**本文が空であること**と**置き換え文字があること**は、機械で分かるので
    `SmokeOutcome.detail` と `SmokeReply.replacement_char` に出す (`SmokeReply` に「空」の項目は
    ないので、空は `detail` の文で示す)
+16. **一覧を読めなかった台の印は、`status` の外で付ける** (task 5.1 の申し送り)。`status` が
+   返す `types.ServiceStatus` は design.md が決めた形で、`container_state` に「わからない」が
+   ないので、一覧を読めなかった台も `absent` になる。それだけを見て「何も動いていない」と
+   読み違えないように、`read_status` が `StatusShown` (状態と、読めなかった台) を返す。
+   `status` は変えないので、`read_status` は、印のために一覧をもう一度読む (どちらも
+   読み取りだけ)。**`status` 自身は断らないが、`serve status` の終了コードは、cli が
+   `unreadable` から決める** (読めた = 0、読めなかった台がある = 1)。この module は、
+   終了コードを決めない
 """
 
 from __future__ import annotations
@@ -330,6 +339,7 @@ __all__ = [
     "Readiness",
     "RunFailed",
     "SmokeShown",
+    "StatusShown",
     "Target",
     "Waited",
     "WrapUp",
@@ -344,6 +354,7 @@ __all__ = [
     "push_launch_records",
     "read_fabric_link",
     "read_gpu_apps",
+    "read_status",
     "record_pushes",
     "send_smoke",
     "smoke",
@@ -627,6 +638,22 @@ class SmokeShown:
     reply: SmokeReply
     text: str = ""
     problem: str = ""
+
+
+@dataclass(frozen=True)
+class StatusShown:
+    """状態と、一覧を読めなかった台 (公開の口。`read_status` が返す。決めごとの 16)。
+
+    - `service`: `status` がそのまま返す `types.ServiceStatus`
+    - `unreadable`: 自分のコンテナの一覧を読めなかった台の役割
+
+    `types.NodeStatus.container_state` に「わからない」がないので、`status` は、一覧を読め
+    なかった台も `absent` として返す。それだけを見ると「何も動いていない」と読み違えるので、
+    読めなかった台を、この型で別に持って返す (`SmokeShown` と同じ形の、画面のための型)。
+    """
+
+    service: ServiceStatus
+    unreadable: tuple[NodeRole, ...] = ()
 
 
 class RunFailed(Exception):
@@ -2059,7 +2086,8 @@ def status(
         read_timeout_s: 1 つの読み取りの時間切れ。
 
     返り値:
-        2 台の `NodeStatus` と、推論サーバーの `ServiceStatus` (終了コードは、つねに 0)。
+        2 台の `NodeStatus` と、推論サーバーの `ServiceStatus` (この関数は、何も断らない。
+        `serve status` の終了コードは、cli が `read_status` の `unreadable` から決める)。
 
     例外:
         ValueError: `nodes` に head も worker もないとき (Spark に触る前に断る)。
@@ -2113,6 +2141,48 @@ def status(
         running_requests=readiness.running_requests,
         waiting_requests=readiness.waiting_requests,
     )
+
+
+def read_status(
+    runner: RemoteRunner,
+    configs: Mapping[str, ConfigDef],
+    nodes: Mapping[NodeRole, NodeDef],
+    *,
+    client: httpx.Client | None = None,
+    report: TextIO | None = None,
+    http_timeout_s: float = HTTP_TIMEOUT_S,
+    read_timeout_s: float = READ_TIMEOUT_S,
+) -> StatusShown:
+    """`status` に、一覧を読めなかった台の印を足して返す (`serve status` の入口)。
+
+    **`status` そのものは変えない** (返す型は design.md が決めている)。読めたかどうかは、
+    `status` を呼ぶ前に、台ごとに自分のラベルで絞った一覧を読んで確かめる。そのため、一覧の
+    読み取りは台ごとに 2 回出る (どちらも読み取りだけで、状態を変える呼び出しは 1 つも出ない)。
+    2 回の間に状態が変わりうるが、この結果は画面に見せるためのものなので、判定には使わない。
+
+    引数と例外は `status` と同じである (`ValueError`: `nodes` に head も worker もないとき)。
+    """
+    roles = _ordered_roles(nodes)
+    if not roles:
+        raise ValueError("nodes に head も worker もない (状態を確かめる台がない)")
+    stream = sys.stderr if report is None else report
+    unreadable: list[NodeRole] = []
+    for role in roles:
+        try:
+            list_own_containers(runner, nodes[role], timeout_s=read_timeout_s)
+        except (RemoteError, ValueError):
+            # 理由は、このあとの `status` が `_listed` で警告として出す (二重に出さない)
+            unreadable.append(role)
+    service = status(
+        runner,
+        configs,
+        nodes,
+        client=client,
+        report=stream,
+        http_timeout_s=http_timeout_s,
+        read_timeout_s=read_timeout_s,
+    )
+    return StatusShown(service=service, unreadable=tuple(unreadable))
 
 
 # --- 停止 (`serve stop`) ---------------------------------------------------

@@ -855,6 +855,63 @@ def test_status_reads_the_fabric_link_with_a_read_only_ip_command(tmp_path: Path
     assert argv_of(runner, "ip") == (("ip", "-br", "link", "show", "dev", FABRIC_IFNAME),) * 2
 
 
+# --- 読めなかった台の印 (`read_status`。5.1 への申し送り) -------------------
+
+
+def test_read_status_marks_the_node_whose_listing_could_not_be_read(tmp_path: Path) -> None:
+    """一覧を読めなかった台を、`unreadable` として返す (「何も動いていない」と読み違えない)。
+
+    `status` の `ServiceStatus` は、読めなかった台も `absent` にするので (`types.NodeStatus`
+    に「わからない」がない)、印を別に持つ。
+    """
+    rows: Mapping[NodeRole, tuple[Reply, ...]] = {
+        "head": (Reply(stdout=""),),
+        "worker": (Reply(exit_code=255, stderr="ssh: connect timed out"),),
+    }
+    runner = runner_of(tmp_path, OpsScript(listings=rows), default=Reply(exit_code=255))
+
+    shown = lc.read_status(
+        runner, configs_of(serve_config(UNUSED_PORT)), NODES, report=io.StringIO()
+    )
+
+    assert shown.unreadable == ("worker",)
+    assert [item.container_state for item in shown.service.nodes] == ["absent", "absent"]
+
+
+def test_read_status_marks_nothing_when_both_listings_are_readable(tmp_path: Path) -> None:
+    """2 台とも読めたときは、印が付かず、`status` と同じ結果になる。"""
+    runner = runner_of(tmp_path, OpsScript(listings=running_listings()))
+
+    shown = lc.read_status(
+        runner, configs_of(serve_config(UNUSED_PORT)), NODES, report=io.StringIO()
+    )
+
+    assert shown.unreadable == ()
+    assert [item.container_state for item in shown.service.nodes] == ["running", "running"]
+    assert [item.config_name for item in shown.service.nodes] == [CONFIG_NAME, CONFIG_NAME]
+
+
+def test_read_status_makes_no_mutating_calls(tmp_path: Path) -> None:
+    """印を付けるための読み取りも、状態を変える呼び出しを 1 つも出さない。"""
+    runner = runner_of(tmp_path, OpsScript(listings=running_listings()))
+
+    lc.read_status(runner, configs_of(serve_config(UNUSED_PORT)), NODES, report=io.StringIO())
+
+    assert mutating_argvs(runner) == ()
+    assert runner.plan is None
+    assert set(container_targets(runner)) <= set(CONTAINER_NAMES.values()) | set(
+        CONTAINER_IDS.values()
+    )
+
+
+def test_read_status_refuses_when_there_is_no_node_definition(tmp_path: Path) -> None:
+    """台が 1 つもなければ、Spark に触る前に断る (`status` と同じ)。"""
+    runner = runner_of(tmp_path, OpsScript(listings=running_listings()))
+
+    with pytest.raises(ValueError, match="nodes"):
+        lc.read_status(runner, configs_of(serve_config(UNUSED_PORT)), {}, report=io.StringIO())
+
+
 # --- 短い要求での確かめ ----------------------------------------------------
 
 EN_REPLY = "The capital of France is Paris."
