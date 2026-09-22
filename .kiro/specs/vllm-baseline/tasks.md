@@ -180,7 +180,7 @@
   - 使い方、終了コード、Spark の上の置き場所、了承の流れ (Claude が代わりに打つときは、会話で了承を得てから `--yes` を付ける) を、`serving/README.md` に書く
   - 完了の状態: すべてのサブコマンドの `--help` が 0 で終わる。配布が、6 つの置き場所を作ってから、Spark に配るスクリプトの置き場所だけを、決まった宛先に送る
   - _Requirements: 1.1, 1.2, 1.3, 1.6, 1.7, 1.9, 2.1_
-- [ ] 5.2 起動と停止の、端から端までの試験を書く
+- [x] 5.2 起動と停止の、端から端までの試験を書く
   - 起動 → 状態 → もう一度の起動 → 停止 → もう一度の停止が、期待した終了コードになる
   - 応答の確認が 200 を返さないまま、worker のコンテナが終了すると、時間切れを待たずに失敗し、記録の末尾が出て、呼び出しの順序が「記録の回収 → 停止 → 削除」で、終了コードが 2 になる
   - 了承しないと、状態を変える呼び出しが 1 つも出ない。端末でなく `--yes` もないと、終了コードが 1 になる
@@ -403,3 +403,4 @@
 - 5.1: `cli.main(argv, *, runner_factory=, client_factory=, confirmer=, stdin/stdout/stderr=)` に、試験のための差し込みの口がある。終了コードの写しは `_EXIT_BY_ERROR` の表 1 つ (上から順。`WeightsRefError` を `WeightsError` より先に)。予期しない例外は 2 で traceback なし (`SERVE_DEBUG=1` で traceback)。`serve push` は、了承のために見せた計画 (`_push_plan`: 2 台の `mkdir -p` の 6 つの置き場所 + `payload/` の配布) そのものを `_run_step` で順に流す (計画と実行を 2 か所に書かない。片方にだけ宛先を足す誤りが、どちらの試験にも掛からないため)。状態を変える 11 のコマンド (`push`/`pull-image`/`image-licenses`/`fetch`/`verify`/`start`/`stop`/`probe`/`netcheck bandwidth|sanity|ab`) は、`--yes` なし・非端末では、状態を変える呼び出しを 1 つも出さずに 1 (`test_no_state_changing_call_without_approval` で全部固定)
 - 5.1 → **design との意図した食い違い** (cli の docstring の決めごと 12〜17): `serve logs <構成>` に `--since` はない (`collect_logs` に範囲の引数がない)。`serve thinking <構成>` は構成から宛先を組み立てる (`--base-url`/`--model` ではない)。`serve netcheck links` はつねに 0。`serve status` は読めなかった台があれば 1 (`lifecycle.read_status` / `StatusShown` を追加。`status` は変えていない)。A/B の回数は design どおり `--repeat`。**6.3 の手順書は、この形のコマンドを書く** (`serving/README.md` のサブコマンドの表が正)
 - 5.1: レビューで 1 回差し戻し (`--repeats`、了承の試験が `push` だけ、計画と実行の二重化、docstring の食い違い)。**レビュー担当には、実装担当の報告を要約せず、RED の出力を含めてそのまま渡す** (要約したため「RED の証拠がない」と誤って指摘された)
+- 5.2: 端から端までの試験は `serving/tests/e2e/test_start_stop.py` (design の Testing Strategy は 3 ファイルに分けて示すが、1 ファイルに統合。5.3 の probe/watch の e2e も同じ `tests/e2e/` に置く)。入口は `cli.main` だけ (部品を `monkeypatch` しない)。**「時間切れを待たずに失敗する」は、終了コードと片付けの順序だけでは固定できない** (`sleep=` に差し込んだ「眠ったら落ちる」関数の例外も、`_launch` の `except BaseException` の片付けを通って同じ 2 になる)。正しい経路の `detail` の文言 (「終了した」「時間切れを待たずに」) があり、壊れた経路の文言 (「予期しない失敗」) がないことと、`docker container inspect` が台ごとに 1 回であることを assert して固定した (レビューで 1 回差し戻し)
