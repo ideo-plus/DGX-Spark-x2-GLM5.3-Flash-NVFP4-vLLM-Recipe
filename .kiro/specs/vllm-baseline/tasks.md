@@ -209,7 +209,7 @@
   - 完了の状態: コミットした構成とノードの定義が、そのまま読み込めることを確かめる試験が通る。コミットした第一の構成から (試験用の直結の値を与えて) 組み立てた 2 台ぶんの引数の列を、固定した列と比べる試験が通る。縮小の確認、取得、読み取りの構成を選べる。第一の構成は、直結の値がないという理由だけで、選べない
   - _Requirements: 3.1, 3.2, 3.6, 6.2, 6.7, 11.1, 11.2, 11.3, 11.4, 11.5_
   - _Depends: 1.3, 2.1_
-- [ ] 6.3 (P) 手順書を書く
+- [x] 6.3 (P) 手順書を書く
   - 段 0〜5 のそれぞれに、前提、打つコマンド、進む条件、止める条件、書く記録を並べる。段と、構成の名前の対応を書く
   - 計測者に尋ねる場所 (状態を変える操作の前、第二の重みの前、打ち切り、2 台での層の分割の扱い、上流への報告、終わったあとの停止、恒久的な設定の変更が要るとわかったとき) に印を付ける
   - 試す前に試行の記録を見る、という手順を置く。通信の確認が通らなければ 2 台での起動に進まない、という関門を置く
@@ -413,3 +413,7 @@
 - 6.2 → **実機の段への申し送り**: (a) 縮小の確認は `text_config` を先頭 4 層 (linear ×3 + sparse MLA、MLP dense ×3 + sparse) に `--hf-overrides` で減らす。`indexer_types`/`mlp_layer_types` の長さの検査や `pe_dim` の assert に到達するかは 7.2 で決まる (到達せず `inconclusive` なら層を増やす)。(b) ポートは 8000 (HTTP)、29501 (推論サーバーの `--master-port`)、29520 (ジョブの rendezvous)。(c) `ready_timeout_s` は p1 の 1800 以外は見積もり (probe 600、licenses 120、fetch-probe 900、netcheck 1800、fetch 28800)。実測で直す。(d) probe の `--gpu-memory-utilization 0.30` は design にない追加 (要件 5.1)。(e) ジョブに `VLLM_HOST_IP` は入れていない。(f) p1 に NCCL の記録の 3 変数は入れていない (design「最初の起動だけ」。**6.3 の手順書で、段 2 の最初の起動の扱いを決める**)。(g) huggingface_hub の出典は `main` (イメージの `hf` の版は 7.1 で確かめる)。(h) NCCL docs は 2.31.2 の頁 (イメージは 2.30.7)。(i) `p1-fetch-nvfp4-probe` は design の `_NODE_COUNTS` に従い 2 台 (3.3 の申し送りの「1 台」は誤り)。(j) 重みの読み取り専用の結び付けは `models/<slug>`、fetch は親の `models/`
 - 6.2 → **7.3 への申し送り**: `test_cli.py::test_the_default_config_paths_point_into_serving` の (iv) は、直結の値が空であることに寄りかかる。7.3 で `nodes.toml` を埋めると、ssh を出す代わりに「既定の道筋の試験は、Spark に触らない」で落ちる (構造で守った)。**7.3 は、その節を落とすか、直結の値が空の見本を `--nodes` に渡す形に直す**
 - 6.2: レビューで 1 回差し戻し (出典の帰属の誤り)。根拠の監査は「`quote` を原文に WebFetch で突き合わせる」形が効いた。設計に書いてある出典でも、この関門で確かめる (11.5)
+- 6.3: 手順書は `docs/vllm-baseline/procedure.md`。段は 0〜4 (打ち切りとまとめは段でない。tasks.md の「段 0〜5」は要件 8.1 の 5 段に読み替えた)。`serving/tests/unit/test_procedure_doc.py` (10 件) が、コマンドと引数の実在、構成の名前の実在、要件 8.1 の見出しの順、10 コマンドの初出の順、`logs` が `stop` より前、状態を変える塊 (15 件) ごとの直前の ⚠、22 項目 (26 行) の割り当てを固定する。**手順書を直したら、この試験が落ちないかを見る**。段 1/3/4 の構成 (`probe-nightly`、`p1-nvfp4-tp2-x<連番>`、`p1-w4a16-tp2`) はまだなく、「この段で作る」と書いた行にだけ名前がある
+- 6.3 → **design との食い違い (記録)**: (a) design「記録の置き場所」の `observation.json` (`NcclObservation`) は、`serve start` では書かれない (`observe_nccl` は netcheck だけが使う)。段 2 の最初の起動の経路の確認は、回収した `nccl.*.log` の `Using network` の行を読む形にした。(b) thinking の確かめは status → smoke → bench → watch → **thinking** の順 (要件 9.3 の観点で、bench のランを先に根拠にする)。(c) 段 2 の最初の起動は、`p1-nvfp4-tp2` の `env` に NCCL の 3 変数を根拠つきで足して起動し、経路を確かめたら外す (両方が状態を変える操作。`config-sha256` が変わるので stop → start)
+- 6.3 → **6.5 への申し送り**: `serving/README.md` の「使い方 (段の順)」に、6.2 より前に書かれた実在しない構成名が 2 つある (`p1-fetch-probe-files`、`p1-netcheck-sanity`)。実物 (`p1-fetch-nvfp4-probe`、`netcheck-sanity`) に直す。手順書の `attempts.md` / `not-working.md` / ADR へのリンクは 6.4 がファイルを作るまで壊れている
+- 6.3: レビューで 1 回差し戻し (`netcheck ab` の前に ⚠ がない。試験が順序と印を固定していなかった)。文書の試験は、総数でなく「塊ごと」「初出の順」で固定する
