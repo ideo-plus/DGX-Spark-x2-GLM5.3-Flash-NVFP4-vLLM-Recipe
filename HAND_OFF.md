@@ -101,7 +101,19 @@ HTTP 200 を確認し、head の検証コンテナと GPU プロセスは 0 件�
 [TP=2 の依頼](docs/tasks/tp2-preparation.md) を用意した。
 準備するコード・構成・テスト・文書を対象とし、実機操作はこの対話で扱う。
 計測者から、準備完了後の統合、最低限の CI の追加、その後の PLAN.md に沿った続行を了承済み。
-実重みの取得と TP=2 の起動はまだ実施していない。
+準備と CI は [PR #3](https://github.com/ideo-plus/DGX-Spark-GLM5.3-Flash-Recipe/pull/3)、
+[PR #4](https://github.com/ideo-plus/DGX-Spark-GLM5.3-Flash-Recipe/pull/4) で統合した。
+TAKT による API 調査と初回計測の準備も
+[PR #5](https://github.com/ideo-plus/DGX-Spark-GLM5.3-Flash-Recipe/pull/5) で統合した。
+起動試行後に使う [計測手順](docs/vllm-baseline/initial-benchmark-procedure.md) と bench の対象定義がある。
+その後、worker へ自前イメージを移送し、両台の固定 ID と全 42 レイヤーの一致を確認した。
+実重みの取得・照合は 2026-09-23 06:45:59 JST に完了。両台とも 19 ファイルの不一致は 0 件。
+起動前の全関門を通過し、06:55:53 JST に実重み TP=2 が ready に到達。両台の IB も確認した。
+英語の短い応答は通過したが、日本語は出力上限 64 で本文なし。2 件の応答の合格条件は未達。
+ログ回収・停止を終え、両台の自分たちのコンテナと GPU プロセスは 0 件。
+TAKT で smoke の出力上限を CLI から指定する変更を実装・レビュー済み。
+既定の 64 は維持し、統合後の別試行で `--max-tokens 512` を指定して再確認する。
+続きは [実行記録](docs/results/2026-09-23-patched-tp2.md) を参照する。
 TP=2 の生成器と [実行手順](docs/vllm-baseline/patched-tp2-procedure.md) は準備済み。
 takt の修正検証に残った手順の問題は対話側で修正した。ワークフローは途中引き取りであり、
 takt の最終承認済みではない。引き取り後に serving の 1,898 件、ruff、mypy が通過した。
