@@ -58,9 +58,11 @@
 
 | 名前 | 版 | 入手先 | ライセンス | 用途 |
 |---|---|---|---|---|
-| uv | 0.12.11 | https://pypi.org/project/uv/ | MIT OR Apache-2.0 | 依存の解決と、仮想環境の管理 (`uv sync`、`uv run`) |
+| uv | 0.12.17 | https://pypi.org/project/uv/ | MIT OR Apache-2.0 | 依存の解決と、仮想環境の管理 (`uv sync`、`uv run`) |
 | hatchling | (版は固定していない。`[build-system] requires`) | https://pypi.org/project/hatchling/ | MIT | パッケージのビルドのバックエンド。`uv.lock` には入らない |
 | TAKT | 0.66.0 | https://github.com/nrslib/takt | MIT (インストール済みパッケージの LICENSE を 2026-09-23 に確認) | Mac 上での準備作業の計画・実装・レビュー。Spark は操作しない |
+| actions/checkout | v7.0.1 (`3d3c42e5aac5ba805825da76410c181273ba90b1`) | https://github.com/actions/checkout | MIT | CI でリポジトリを取得 |
+| astral-sh/setup-uv | v10.2.0 (`c18668ad3cf93ea998bef934396af7bb5c839dc7`) | https://github.com/astral-sh/setup-uv | MIT | CI で uv 0.12.17 と Python 3.12 を用意 |
 | takt-workflows | `4eaeb89c986d023b2e6f9b3755852acc2648c812` | https://github.com/ideo-plus/takt-workflows | Apache-2.0 | 日本語の段階別ワークフローを `.takt/` に同梱。出典と変更点は `.takt/UPSTREAM.md`、ライセンス全文は `.takt/LICENSE.takt-workflows` |
 
 ## serving-kit の依存する部品
