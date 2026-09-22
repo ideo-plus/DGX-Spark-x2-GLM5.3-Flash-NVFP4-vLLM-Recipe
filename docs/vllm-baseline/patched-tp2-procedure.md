@@ -151,6 +151,30 @@ uv run --directory serving serve smoke p2-nope-tp2-smoke --configs var/nope-buil
 
 進む条件は `status=answered`、短い要求 2 件の HTTP 200、両方の応答の意味が通ることです。空の応答、意味不明な応答、判定不能の場合は成功扱いにしません。`serve smoke` の応答本文は stderr に出ます。本文の意味は対話側で確認し、stderr をファイルへ保存しません。記録するのは状態、`reply.*.http_status`、`*_tokens`、`stop_reason`、意味の通る文かの判定だけです。
 
+### 7.1 上限を変えて短い応答を確認し直す
+
+上の `serve smoke` は、応答の長さの上限が既定の 64 トークンです。`stop_reason` が `max_tokens` で応答の本文が空、または意味を判定できない場合は、上の条件のとおり成功扱いにせず、§8 のログ回収・停止へ回します。上限に達したこと自体を根拠に、原因を思考の長さと断定しません。
+
+確認し直すときは、§8 で停止したうえで、別の試行としてやり直します。⚠ この別試行には §6 の起動と §8 の停止が含まれます。状態を変えるので、それぞれの節に書いた了承の条件をそのまま満たしてから進みます。前の試行の結果を根拠に、次の 3 つを省きません。
+
+1. §6 の `serve check` を流し直し、`gate.N.name` が 8 種そろい、head・worker とも `gate.N.passed` がすべて `true`、`gates_failed=0`、`status=passed` であることを確認する。
+2. §6 の `serve start` を、同じ構成・同じ重み・同じイメージで実行する。進む条件は `status=ready` だけです。`already_running`、`refused`、`failed` の扱いは §6 のとおりです。
+3. §7 の手順で、今回のコンテナに帰属する NCCL 記録だけを選び直し、少なくとも 1 行の `Using network IB` があること、今回分にある経路確定行がすべて IB であることを確認する。前の試行のファイルを今回分として使いません。
+
+この 3 つを満たした後だけ、上限を上げて短い要求を送り直します。
+
+```bash
+uv run --directory serving serve status --configs var/nope-build-0961bbae/tp2.toml
+uv run --directory serving serve smoke p2-nope-tp2-smoke \
+  --configs var/nope-build-0961bbae/tp2.toml --max-tokens 512
+```
+
+再送でも、`status` が `answered` でない、HTTP 200 でない、`stop_reason` が上限到達 (`max_tokens`)、応答の本文が欠落している、意味を判定できない、のいずれかに当たれば合格にしません。「上限を上げたから合格」とは扱いません。
+
+記録するのは、変更した上限値 (512)、`status`、`reply.*.http_status`、`stop_reason`、`*_tokens`、意味の通る文かの判定だけです。要求・応答の本文と思考の内容は記録せず、stderr をファイルへ保存しません。
+
+再送の可否にかかわらず、§8 に従ってログを回収してから停止し、サーバーを常駐させません。重み、構成 TOML、イメージ、サーバーの設定は変えません。変えるのは `--max-tokens` に渡す値だけです。
+
 ## 8. 推論用コンテナのログを回収して停止する
 
 §7 の応答確認が終わった後（または §6・§7 で記録して停止すると判断した後）、推論用構成 `p2-nope-tp2-smoke` のコンテナを対象に、ログを回収してから停止します（§5 の取得中止の回収は取得用構成 `p1-fetch-nvfp4` が対象で、コンテナが別のためここでは流用しません）。

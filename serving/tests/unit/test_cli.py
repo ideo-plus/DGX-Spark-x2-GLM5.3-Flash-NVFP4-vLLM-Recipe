@@ -1552,6 +1552,49 @@ def test_smoke_fails_when_a_request_does_not_answer(tmp_path: Path, fake_vllm: F
     assert kv(result.out)["status"] == "failed"
 
 
+def test_smoke_uses_the_default_max_tokens_when_it_is_not_given(
+    tmp_path: Path, fake_vllm: FakeVllm
+) -> None:
+    """`--max-tokens` を書かないと、2 件とも `lifecycle.SMOKE_MAX_TOKENS` で送る。"""
+    repo = make_repo(tmp_path, port=_port_of(fake_vllm))
+    result = run(["smoke", SERVE_CONFIG], repo)
+    assert result.code == cli.EXIT_OK
+    assert _smoke_max_tokens(fake_vllm) == [lc.SMOKE_MAX_TOKENS, lc.SMOKE_MAX_TOKENS]
+
+
+def test_smoke_sends_the_given_max_tokens_in_both_languages(
+    tmp_path: Path, fake_vllm: FakeVllm
+) -> None:
+    """`--max-tokens` に書いた上限が、英語と日本語の両方の要求の本文に入る。"""
+    fake_vllm.set_messages_reply(MessagesReply(text=BODY_MARKER, output_tokens=7))
+    repo = make_repo(tmp_path, port=_port_of(fake_vllm))
+    result = run(["smoke", SERVE_CONFIG, "--max-tokens", "512"], repo)
+    assert result.code == cli.EXIT_OK
+    assert _smoke_max_tokens(fake_vllm) == [512, 512]
+    assert BODY_MARKER in result.err
+    assert BODY_MARKER not in result.out
+
+
+@pytest.mark.parametrize("text", ["0", "-1", "1.5", "true"])
+def test_a_degenerate_smoke_max_tokens_is_refused_before_anything_is_sent(
+    tmp_path: Path, fake_vllm: FakeVllm, text: str
+) -> None:
+    """上限の値は `argparse` の段で断り、推論サーバーに要求を 1 つも送らない。"""
+    repo = make_repo(tmp_path, port=_port_of(fake_vllm))
+    with pytest.raises(SystemExit) as caught:
+        run(["smoke", SERVE_CONFIG, "--max-tokens", text], repo)
+    assert caught.value.code == 2
+    assert fake_vllm.requests_for("/v1/messages") == ()
+
+
+def _smoke_max_tokens(fake: FakeVllm) -> list[int]:
+    """届いた短い要求 2 件の本文から、`max_tokens` を届いた順に読む。"""
+    sent = fake.requests_for("/v1/messages")
+    bodies = [request.body for request in sent if request.body is not None]
+    assert len(bodies) == 2, "短い要求の本文が、2 件とも JSON として届いていない"
+    return [int(body["max_tokens"]) for body in bodies]
+
+
 def _port_of(fake: FakeVllm) -> int:
     return int(fake.base_url.rsplit(":", 1)[1])
 
