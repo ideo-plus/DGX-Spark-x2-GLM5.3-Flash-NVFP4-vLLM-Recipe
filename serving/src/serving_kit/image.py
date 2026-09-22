@@ -311,7 +311,7 @@ def _refusal_detail(refused: Sequence[GateResult]) -> str:
 def _pull_argv(reference: str) -> tuple[str, ...]:
     """イメージを取得する引数の列 (**つねにダイジェストでの参照**)。
 
-    `reference` は `types.ImageRef.ref` なので、`<名前>@sha256:<64 桁>` の形しかない。
+    呼び出し元の `pull_image` がローカル ID を断った後に使う。
     タグでの取得の列を作る口は、この module にない。
     """
     return ("docker", "pull", reference)
@@ -357,6 +357,8 @@ def pull_image(
     食い違いの `ImageError` になる)。
     """
     reference = config.image.ref
+    if reference.startswith("sha256:"):
+        raise ValueError("ローカルイメージ ID は pull できない。対象ノードでビルド結果を確認する")
     # 取得するのはイメージなので、要る空きはイメージの大きさである (重みのマニフェストは
     # 渡さない。`required_free_bytes` は、マニフェストがなければイメージの大きさを返す)
     required_bytes = required_free_bytes(config, None)

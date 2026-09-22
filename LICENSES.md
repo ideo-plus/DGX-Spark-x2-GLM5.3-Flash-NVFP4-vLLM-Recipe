@@ -191,6 +191,22 @@ DGX Spark 2 台で vLLM を動かすために取得するイメージである�
   Python の部品 (torch、transformers、…) は vLLM のイメージに同梱されたもので、それぞれの
   ライセンスに従う。この道具は、それらを Spark の上で動かすだけで、再配布しない
 
+### P1 後の NoPE 修正イメージ
+
+2026-09-23 に、固定した vLLM ソースへ上流の修正を適用し、head で縮小検証した。
+イメージと取得した上流ソースはリポジトリに同梱せず、第三者への再配布も行わない。
+
+| 名前 | 版・入手先 | ライセンス | 用途 |
+|---|---|---|---|
+| vLLM と NoPE 修正 | 基準 `0961bbae2894d574be790d219651824eb199318e`、修正元 [#55277](https://github.com/vllm-project/vllm/pull/55277) の head `8d09804c877c48165c6ba69bc9dc02d09bae0b83` | [Apache-2.0](https://github.com/vllm-project/vllm/blob/0961bbae2894d574be790d219651824eb199318e/LICENSE) | NoPE の C++ カーネル修正と回帰テスト。Python 側の変更は適用しない |
+| FlashInfer | 0.7.0、[公式リポジトリ](https://github.com/flashinfer-ai/flashinfer/tree/v0.7.0) | [Apache-2.0](https://github.com/flashinfer-ai/flashinfer/blob/v0.7.0/LICENSE) | GLM53_NOPE 対応。Python・cubin・JIT キャッシュの版を揃える |
+
+両者の LICENSE を 2026-09-23 に確認した。CUDA などの同梱部品は各部品の条件に従い、
+NVIDIA のベースイメージについては上記の受け入れ条件を維持する。
+ビルド用イメージのダイジェスト、生成したイメージ ID と実測結果は
+[検証手順](docs/vllm-baseline/patched-build-procedure.md) と
+[実行結果](docs/results/2026-09-22-nope-build.md) に記録した。
+
 ### コンテナの実行環境
 
 イメージを動かす実行環境そのものも、再配布はしない。計測者の機械に入っているものを使う。

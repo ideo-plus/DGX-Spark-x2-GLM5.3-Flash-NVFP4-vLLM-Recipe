@@ -543,6 +543,13 @@ def test_image_ref_accepts_a_digest_reference() -> None:
     assert IMAGE.ref.endswith(DIGEST)
 
 
+def test_image_ref_accepts_a_complete_local_image_id() -> None:
+    image = t.ImageRef(
+        ref=f"sha256:{DIGEST}", seen_as="local-build", size_bytes=1, source=SOURCE, quote=QUOTE
+    )
+    assert image.ref == f"sha256:{DIGEST}"
+
+
 @pytest.mark.parametrize(
     "bad",
     [
@@ -551,6 +558,9 @@ def test_image_ref_accepts_a_digest_reference() -> None:
         f"vllm/vllm-openai@md5:{DIGEST}",
         f"vllm/vllm-openai@sha256:{DIGEST.upper()}",
         f"@sha256:{DIGEST}",
+        "sha256:b0501f99",
+        DIGEST,
+        f"sha256:{DIGEST.upper()}",
     ],
 )
 def test_image_ref_rejects_anything_but_a_sha256_digest(bad: str) -> None:

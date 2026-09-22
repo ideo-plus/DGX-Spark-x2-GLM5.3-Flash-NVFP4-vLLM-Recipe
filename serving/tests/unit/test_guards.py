@@ -644,6 +644,32 @@ def test_a_digest_that_is_not_in_the_list_is_refused(tmp_path: Path) -> None:
     assert IMAGE_REF in detail and OTHER_REF in detail
 
 
+@pytest.mark.parametrize(
+    ("reply", "passed"),
+    [
+        (Reply(stdout=json.dumps(f"sha256:{DIGEST}")), True),
+        (Reply(stdout=json.dumps("sha256:" + "a1" * 32)), False),
+        (Reply(stdout="null"), False),
+        (Reply(stdout=json.dumps([f"sha256:{DIGEST}"])), False),
+        (Reply(stdout="invalid json"), False),
+        (Reply(exit_code=1, stderr="No such image"), False),
+        (Reply(exit_code=255, stderr="Connection failed"), False),
+    ],
+)
+def test_local_image_identity_is_checked_before_launch(
+    tmp_path: Path, reply: Reply, passed: bool
+) -> None:
+    config = serve_config()
+    image = config.image.model_copy(update={"ref": f"sha256:{DIGEST}"})
+    config = config.model_copy(update={"image": image})
+    argv = ("docker", "image", "inspect", "--format", "{{json .Id}}", image.ref)
+    runner = FakeRunner(var_root=tmp_path, script=[Rule(prefix=argv, replies=(reply,))])
+    result = g.gate_image_digest(runner, HEAD, config)
+    assert result.passed is passed
+    assert runner.argvs == (argv,)
+    assert image.ref in plans_of(config)[0].argv
+
+
 def test_a_missing_verification_record_is_refused(tmp_path: Path) -> None:
     records: Records = {"head": {ALL_RECORD: record_json("head")}, "worker": {}}
     _, results = gates_for(tmp_path, serve_config(), Script(records=records))

@@ -421,6 +421,19 @@ def test_nothing_is_pulled_when_the_operator_refuses(tmp_path: Path) -> None:
     assert runner.plan is None, "了承されていないのに、計画が実行役に渡った"
 
 
+def test_local_image_id_is_refused_before_any_remote_call(tmp_path: Path) -> None:
+    config = serve_config()
+    config = config.model_copy(
+        update={"image": config.image.model_copy(update={"ref": f"sha256:{DIGEST}"})}
+    )
+    runner = FakeRunner(var_root=tmp_path)
+    confirmer = SpyConfirmer()
+    with pytest.raises(ValueError, match="ローカルイメージ ID"):
+        im.pull_image(runner, config, NODES, confirmer=confirmer)
+    assert not runner.argvs
+    assert not confirmer.shown
+
+
 def test_the_pull_uses_the_digest_reference_on_both_nodes(tmp_path: Path) -> None:
     runner = pull_runner(tmp_path)
     im.pull_image(runner, serve_config(), NODES, confirmer=SpyConfirmer())

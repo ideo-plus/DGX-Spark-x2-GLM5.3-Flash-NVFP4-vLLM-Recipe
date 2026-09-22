@@ -210,11 +210,11 @@ class Setting(Provenance):
 class ImageRef(Provenance):
     """使うイメージの参照 (requirements 3.2)。
 
-    `ref` は `<名前>@sha256:<64 桁の 16 進>` だけを受ける。タグだけの参照は、あとから
-    中身が変わるので断る (design.md 「types / config」の検査 2)。
+    `ref` は `<名前>@sha256:<64 桁の 16 進>` またはローカルの完全なイメージ ID
+    `sha256:<64 桁の 16 進>` を受ける。タグや短縮 ID は中身を固定できないため断る。
     """
 
-    ref: str = Field(pattern=r"^[a-z0-9][a-z0-9._/-]*@sha256:[0-9a-f]{64}$")
+    ref: str = Field(pattern=r"^(?:[a-z0-9][a-z0-9._/-]*@)?sha256:[0-9a-f]{64}$")
     seen_as: str = Field(min_length=1)
     size_bytes: PositiveInt
 

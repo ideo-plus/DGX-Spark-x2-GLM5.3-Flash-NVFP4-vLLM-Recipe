@@ -203,7 +203,8 @@ _MESSAGES: Final[Mapping[str, str]] = {
 """pydantic の誤りの種類ごとの、日本語の文。"""
 
 _PATTERN_MESSAGES: Final[Mapping[str, str]] = {
-    "ref": "イメージの参照は <名前>@sha256:<64 桁の 16 進> の形にする (タグだけの参照は、"
+    "ref": "イメージの参照は <名前>@sha256:<64 桁の 16 進> または "
+    "sha256:<64 桁の 16 進> にする (タグだけの参照は、"
     "あとから中身が変わるので使えない)",
     "revision": "版は 40 桁の 16 進の commit にする",
     "sha256": "sha256 は 64 桁の 16 進にする",

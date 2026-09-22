@@ -94,6 +94,13 @@ uv run serve stop --yes
 書ける (`30`、`30s`、`5m`、`2h`)。正で有限の値だけを受け、`nan`、`inf`、0、負は、Spark に
 触る前に断る。
 
+## ローカルでビルドしたイメージ
+
+自前ビルドのイメージは、完全なローカル ID (`sha256:` と 64 桁) でも指定できる。
+この場合は、各ノードの `docker image inspect` の `.Id` と照合してから起動する。
+タグと短縮 ID は受け付けず、`serve pull-image` もローカル ID を拒否する。
+ビルドの手順は [NoPE 修正イメージの検証](../docs/vllm-baseline/patched-build-procedure.md) を参照する。
+
 ## 終了コード
 
 | 値 | 意味 | 例 |

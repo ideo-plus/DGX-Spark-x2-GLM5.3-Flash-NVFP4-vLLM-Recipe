@@ -766,6 +766,7 @@ def gate_image_digest(
     """手元のイメージが、構成のダイジェストと合うか (requirements 3.2、3.3)。
 
     `RepoDigests` の項目と、構成の `ref` (`<名前>@sha256:<64 桁>`) を、そのまま突き合わせる。
+    ローカルの完全なイメージ ID (`sha256:<64 桁>`) は `.Id` と照合する。
     `docker.io/` の接頭辞が付いた形は、いまは「合わない」として断る (**実物の出力の形は、
     7.1 でイメージを取得したときに確かめて、見本を足す**)。
     """
@@ -779,6 +780,27 @@ def _image_digest(
 ) -> GateResult:
     """gate_image_digest の中身。読めなかったことは、`gate_image_digest` が断りに変える。"""
     reference = config.image.ref
+    if reference.startswith("sha256:"):
+        result = runner.run(
+            node,
+            ("docker", "image", "inspect", "--format", "{{json .Id}}", reference),
+            timeout_s=timeout_s,
+            mutating=False,
+        )
+        if result.exit_code != 0:
+            return _result(
+                GATE_IMAGE_DIGEST,
+                node.role,
+                passed=False,
+                detail=f"固定したローカルイメージがない ({reference})。ビルド結果の ID を確認する",
+            )
+        actual = json.loads(result.stdout)
+        return _result(
+            GATE_IMAGE_DIGEST,
+            node.role,
+            passed=actual == reference,
+            detail=f"ローカルイメージ ID の照合: 構成 {reference}、実物 {actual}",
+        )
     argv = ("docker", "image", "inspect", "--format", "{{json .RepoDigests}}", reference)
     result = runner.run(node, argv, timeout_s=timeout_s, mutating=False)
     if result.exit_code != 0:
