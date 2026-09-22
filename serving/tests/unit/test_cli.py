@@ -62,7 +62,7 @@ from serving_kit.plan import (
     OWNER,
     OWNER_FILTER,
 )
-from serving_kit.remote import RemoteError
+from serving_kit.remote import RemoteError, RemoteRunner
 from serving_kit.types import (
     GateResult,
     InterfaceLink,
@@ -617,6 +617,16 @@ def subcommand_paths(parser: argparse.ArgumentParser) -> tuple[tuple[str, ...], 
     return tuple(found)
 
 
+def subcommand_parser(parser: argparse.ArgumentParser, name: str) -> argparse.ArgumentParser:
+    """サブコマンド 1 つの引数解析器を取る (引数の説明を読むため)。"""
+    for action in parser._actions:
+        if isinstance(action, argparse._SubParsersAction) and name in action.choices:
+            found = action.choices[name]
+            assert isinstance(found, argparse.ArgumentParser)
+            return found
+    raise AssertionError(f"サブコマンド {name} がない")
+
+
 def test_the_commands_are_the_ones_in_the_design_table() -> None:
     """使える名前が、design.md 「入口 › cli」の表と合う (drift の見張り)。"""
     assert set(subcommand_paths(cli.build_parser())) == set(EXPECTED_COMMANDS)
@@ -728,10 +738,50 @@ def test_the_debug_switch_shows_the_traceback(
 def test_the_default_config_paths_point_into_serving(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """`--configs` を省くと、`serving/config/configs.toml` を見る (design.md cli)。"""
-    assert cli.main(["check", SERVE_CONFIG]) == cli.EXIT_PRECONDITION
-    err = capsys.readouterr().err
-    assert str(Path("serving") / "config" / "configs.toml") in err
+    """`--configs` / `--nodes` を省くと、`serving/config/` の下を見る (design.md cli)。
+
+    **主に構造で確かめる**。もとは、`check` を既定のまま呼んで、誤りの文に出る道筋を見ていた
+    が、それは「既定のファイルが実在しない」ことに寄りかかった見方だった (6.2 が `configs.toml`
+    と `nodes.toml` をコミットしたので、誤りは 1 段先の「直結の値がない」に変わる)。そこで
+    (i) argparse が既定を決めずに `None` のままにすること、(ii) 2 つの引数の説明が既定の道筋を
+    名指しすること、(iii) その道筋が `serving_dir()` の下に実在すること、の 3 つで見る。
+
+    (iv) として、**既定の場所から実際に読んだ証拠**も 1 つ置く: 既定のまま `check` を呼ぶと、
+    コミットした `nodes.toml` の直結の値が空なので `nodes.head.fabric_addr` を理由に断られる。
+    この断りは `config.select_config` が出すもので、`_cmd_check` が `ctx.runner()` に触るより
+    前である。
+
+    **Spark に触らないことは、構造で保証する**: 遠隔の実行役の工場を、呼ばれたら落ちるものに
+    差し替えて渡す。いまは `select_config` が先に断るので工場は呼ばれない。7.3 が直結の値を
+    実測で埋めたら、`select_config` が通って `_cmd_check` が関門に進むので、**本物の ssh が
+    出る代わりに、この試験が大きな音で落ちる** (7.3 が (iv) を直す合図になる。そのときは
+    (i)〜(iii) だけでも、既定の道筋の意図は守れる)。
+    """
+    parser = cli.build_parser()
+    args = parser.parse_args(["check", SERVE_CONFIG])
+    # (i) 既定は argparse では決めない (あとで serving_dir() から組み立てる)
+    assert args.configs is None
+    assert args.nodes is None
+
+    # (ii) 2 つの引数の説明が、既定の道筋を名指ししている
+    check_help = subcommand_parser(parser, "check").format_help()
+    for name in ("configs.toml", "nodes.toml"):
+        assert f"serving/config/{name}" in check_help, name
+
+    # (iii) その道筋が、`serving/` の下に実在する
+    serving = cli.serving_dir()
+    for name in ("configs.toml", "nodes.toml"):
+        path = serving / "config" / name
+        assert path.is_file(), path
+        assert path.relative_to(serving) == Path("config") / name
+
+    # (iv) 既定の場所から実際に読んでいる。遠隔の実行役の工場は、呼ばれたら落ちるものを渡す
+    # ので、この道が Spark に触った時点で試験が落ちる (SshRunner を作らせない)
+    def no_spark(var_root: Path) -> RemoteRunner:
+        raise AssertionError("既定の道筋の試験は、Spark に触らない")
+
+    assert cli.main(["check", SERVE_CONFIG], runner_factory=no_spark) == cli.EXIT_PRECONDITION
+    assert "nodes.head.fabric_addr" in capsys.readouterr().err
 
 
 def test_the_serving_dir_is_two_levels_above_the_package() -> None:
