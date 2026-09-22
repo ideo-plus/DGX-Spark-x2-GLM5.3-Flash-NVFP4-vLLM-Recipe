@@ -196,13 +196,15 @@ uv run serve check p1-fetch-nvfp4-probe
 
 ```bash
 uv run serve image-licenses p1-image-licenses --yes
+uv run serve image-licenses p1-image-hf-version --yes   # 取得の道具 hf の有無と版 (同じ仕組みで hf version を 1 回流す)
 ```
 
 - 標準出力の `key=value` のあと、空の行を 1 つ置いて、読み取った表記の本文がそのまま出る
 - vLLM と、ベースのイメージのそれぞれについて、名前、版、入手先、ライセンス、用途を
   `LICENSES.md` に足す (要件 3.8)
 - イメージの中に、重みの取得の道具 (`hf`) があるかも、ここで確かめる (research.md の 14b)。
-  なければ、ホストに入れずに ⚠ 計測者に尋ねる
+  2 つめの構成 `p1-image-hf-version` は、`--entrypoint hf` で `hf version` を流すだけの
+  `inspect` の構成で、版が出れば道具がある。なければ、ホストに入れずに ⚠ 計測者に尋ねる
 
 **→ 進む条件**: `LICENSES.md` にイメージの行がある。
 

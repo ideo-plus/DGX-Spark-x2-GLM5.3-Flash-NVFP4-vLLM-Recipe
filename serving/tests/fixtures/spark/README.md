@@ -26,6 +26,7 @@
 | `ip-link-show-enp1s0f0np0.txt` | `ip link show dev enp1s0f0np0` | 0 |
 | `ibdev2netdev.txt` | `ibdev2netdev` | 0 |
 | `ibv_devinfo.txt` | `ibv_devinfo` | 0 |
+| `docker-image-inspect-repodigests.txt` | `docker image inspect vllm/vllm-openai@sha256:b0501f99… --format '{{json .RepoDigests}}'` | 0 |
 
 下の 4 つは、2026-09-22 に足した (4.3 の `netcheck links` が、MTU と、RoCE のデバイスとの対応を読む形を、推測で書かないため)。`ibdev2netdev` と `ibv_devinfo` は、2 台とも入っている。
 
@@ -39,7 +40,8 @@
 - 直結の側は、2 台とも、つながっているインターフェースが 2 つある (`enp1s0f0np0` と `enP2p1s0f0np0`。どちらも `Speed: 200000Mb/s`)。ケーブルの本数の判断と、PLAN.md の訂正は、7.3 で行う (ここでは、見本を採っただけ)
 - `df` は、`remote_root` がまだないので、その親の `/home/j5ik2o` について採った。出力の形 (見出しの行 `Avail` と、バイト数の行) は同じ
 - GB10 のユニファイドメモリで `[N/A]` になる列があるかは、ここでは確かめられていない (`--query-compute-apps` の `used_memory` は、プロセスがないので行が出ない。`utilization.gpu` は `0 %` と数で出た)。7.2 で、自分のコンテナが GPU を使っているときの出力を採って、確かめる
-- **ここで採れないもの** (7.1 と 7.2 で採って、足す): 自分のコンテナがあるときの `docker ps` の JSON、イメージを取得したあとの `docker image inspect --format '{{json .RepoDigests}}'`、GPU を使っているプロセスがあるときの `--query-compute-apps`
+- **`docker-image-inspect-repodigests.txt` は、2026-09-22 (7.1) に、`serve pull-image` のあとに採った** (2 台とも、固定したダイジェストの 1 つだけの配列)。`gate_image_digest` の見本
+- **ここで採れないもの** (7.2 で採って、足す): 自分のコンテナがあるときの `docker ps` の JSON、`docker container inspect` の状態、GPU を使っているプロセスがあるときの `--query-compute-apps` (7.1 の読み取りのコンテナは数秒で終わるので、採らなかった)
 
 ## 採らなかったもの
 

@@ -525,6 +525,8 @@ class SshRunner:
             "rsync",
             "-a",
             *(("--delete",) if delete else ()),
+            # Mac の Python のバイトコードは配らない (Spark で動かすのは .py だけ)
+            "--exclude=__pycache__",
             "-e",
             _SSH_TRANSPORT,
             f"{local_dir}/",

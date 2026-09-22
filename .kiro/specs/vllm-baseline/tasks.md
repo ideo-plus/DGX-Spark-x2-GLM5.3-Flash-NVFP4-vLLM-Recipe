@@ -232,7 +232,7 @@
   - _Boundary: PLAN.md, CLAUDE.md, brief.md_
 
 - [ ] 7. 実機: 配布、イメージ、段 0、通信の確認
-- [ ] 7.1 配布し、イメージを 2 台に取得し、ライセンスの表記を確かめる
+- [x] 7.1 配布し、イメージを 2 台に取得し、ライセンスの表記を確かめる
   - 始める前に、2 台が空いていること (GPU を使っているプロセスがないこと) を、読み取りだけで確かめる
   - 了承を得てから、配布と、固定したダイジェストでの取得を行う。ディスクの空きが足りなければ、始めない
   - イメージの中のライセンスの表記を読み、vLLM と、ベースのイメージのそれぞれについて、`LICENSES.md` に行を足す。方針に合わないものがあれば、採用せずに、理由を記録して、計測者に尋ねる
@@ -419,3 +419,6 @@
 - 6.3: レビューで 1 回差し戻し (`netcheck ab` の前に ⚠ がない。試験が順序と印を固定していなかった)。文書の試験は、総数でなく「塊ごと」「初出の順」で固定する
 - 6.4: 記録は `docs/vllm-baseline/not-working.md` (要件 10.1 + 10.4 の項目の雛形) と `attempts.md` (`日時 | 段 | 構成の名前 | 結果 | 止まった場所 | 次に進む理由 | 記録の置き場所`)。ADR 0002〜0005 は `docs/decisions/` に骨組み (見出しは 0001 の 7 つ)。**0002 の「クリーンルーム」の節に、6.2 の作業者の文脈の切り離しと、参照した資料の一覧 (URL つき) と、design.md / research.md の誤りの訂正 3 つが書いてある**。`serving/tests/unit/test_records_doc.py` (14 件) が、項目を名前で、見出しを順で、手順書のリンクの実在を固定する。**実機の段で ADR を埋めるときは、この試験が落ちないように見出しを保つ**
 - 6.5: PLAN.md §6、CLAUDE.md の「どこで何をするか」の表、brief.md の末尾の注記、`serving/README.md` の使い方 (手順書の順に合わせた) を直した。`serving/tests/unit/test_readme_config_names.py` が README の構成名の実在を固定する。**6.x (Spark に触らない作業) はここまで。7.1 から実機**。PLAN.md のハードウェアの表は 7.3 の実測のあとに直す
+- 7.1 (実機、2026-09-22): 親 (メインのセッション) が、計測者の了承を得て `serve push` → `serve pull-image` (1 台の構成では head にしか取得されないので、2 台の構成 `p1-fetch-nvfp4-probe` でもう一度) → `serve image-licenses p1-image-licenses` → `serve image-licenses p1-image-hf-version` を流した。ベースのイメージの表記は **NVIDIA Deep Learning Container License** (方針の外) で、要件 3.9 に従って計測者に尋ね、受け入れる判断を得た (`LICENSES.md` と ADR 0002 に理由)。`hf` は 1.30.0。build commit のラベルは `385dce36…` で構成の出典と一致。`serve check probe-pinned` で `image_digest` が通る (完了の状態)。**`serve check` は、`fetch` の構成にも `weights_verified` を並べる** (取得の前には記録がないので必ず不通過に見える。`serve fetch` 自体はその関門を飛ばすので実害はないが、読むときに注意)
+- 7.1 → **7.2 への申し送り**: 自分のコンテナがあるときの `docker ps --format json`、`docker container inspect` の状態、GPU を使っているプロセスがあるときの `nvidia-smi --query-compute-apps` の見本を、縮小の確認 (数分動く) の間に採る。`hf` の版が分かったので、`configs.toml` の huggingface_hub の出典を `v1.30.0` のタグに直せる (任意)
+- 7.1: `serve push` が Mac の `payload/__pycache__/` まで送っていたので、rsync に `--exclude=__pycache__` を足した (Spark の `payload/__pycache__/` は残っているが害はない。次の push で消えはしない (`--delete` なし))

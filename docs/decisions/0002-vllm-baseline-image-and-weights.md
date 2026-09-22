@@ -1,9 +1,10 @@
 # 0002. vLLM のイメージと、重みの選定
 
-状態: 部分的に採用 (骨組み、2026-09-22)。イメージと第一候補の重みの選定そのものは確定し、
+状態: 部分的に採用 (2026-09-22)。イメージと第一候補の重みの選定そのものは確定し、
 `serving/config/configs.toml` と `serving/weights/RedHatAI__GLM-5.3-Flash-NVFP4.manifest.json`
-に反映済みである。イメージの中のライセンスの表記の確認 (要件 3.8、3.9) と、実機での起動の
-結果は、7.1 (配布・取得・ライセンス) 以降で追記する。
+に反映済みである。イメージの中のライセンスの表記の確認 (要件 3.8、3.9) は 7.1 で済み、
+ベースのイメージの NVIDIA の EULA は計測者の判断で受け入れた (下の「実機で確かめたこと」)。
+実機での起動の結果 (段 0 以降) は、7.2 以降で追記する。
 
 関係する要件: 3.2、3.4、3.8、3.9、6.4、8.8、10.3、11.1、11.2、11.3、11.4、11.5、11.6。
 仕様は `.kiro/specs/vllm-baseline/`。手順は
@@ -58,7 +59,10 @@ Decision 8)。
   ようにする (Docker の文書: "Do not pull the image, even if it's missing, and produce an
   error if the image does not exist in the image cache.")
 - vLLM 本体は Apache-2.0 (使える)。ベースイメージ (`nvidia/cuda`) の実際のライセンス表記は、
-  取得後に読む (下の「実機で確かめたこと」を参照)
+  7.1 で読んだ (下の「実機で確かめたこと」)。**NVIDIA Deep Learning Container License** で、
+  方針 (MIT / Apache-2.0 / BSD 系) の外にあるが、CUDA を使う限り不可避であり、この用途
+  (自分の設備での推論。イメージを再配布しない) が EULA の許す範囲に収まることを確かめて、
+  **計測者の判断 (2026-09-22) で受け入れた** (要件 3.9。`LICENSES.md` に行と理由がある)
 
 ### 2. 重み (第一候補)
 
@@ -199,11 +203,27 @@ research.md §b-3)。第三者のレシピ、ブログ、フォーラムにあ�
 
 ## 実機で確かめたこと
 
-この節は、実機の段 (7.1〜8.x) で埋める。予定している内容:
+### 7.1 (2026-09-22): 配布、イメージの取得、ライセンスの表記
 
-- 準備 3 (`serve image-licenses`) で読んだ、vLLM とベースイメージのライセンスの表記の全文
-  (`LICENSES.md` に転記)。ライセンスの節 (要件 3.8、3.9) はここで確定する
-- 準備 2 (`serve pull-image`) のあとの、2 台のイメージのダイジェストの一致
+- 準備 1 (`serve push`): 2 台に 6 つの置き場所を作り、`payload/` を配った (終了コード 0)
+- 準備 2 (`serve pull-image`): 2 台で `vllm/vllm-openai@sha256:b0501f99…` を取得し、
+  ダイジェストが一致した (`RepoDigests` が 2 台ともその 1 つだけ)。読み取った事実: arm64、
+  展開後 22,172,559,299 バイト、`ai.vllm.build.commit` = `385dce36bcee42309924a5ece951a96db3dce7f2`
+  (research.md §a-2 と構成の出典が前提にした commit と一致)、`org.opencontainers.image.licenses`
+  のラベルは空、entrypoint は `vllm serve`。1 台の構成で流すと head にしか取得されないので、
+  2 台の構成 (`p1-fetch-nvfp4-probe`) でもう一度流した
+- 準備 3 (`serve image-licenses p1-image-licenses`): `/NGC-DL-CONTAINER-LICENSE` (292 行、
+  v. September 14, 2021) が読めた。**NVIDIA Deep Learning Container License** (CUDA など
+  NVIDIA 独自の部品に掛かる EULA)。要件 3.9 に従い、採用の判断を計測者に尋ね、
+  **受け入れる判断 (2026-09-22)** を得た。理由: (a) vLLM 本体は Apache-2.0、(b) CUDA を使う
+  限り、どのイメージにもこの EULA が付き、除くと P1 で試せるイメージがない、(c) この用途
+  (自分の設備での推論。コンテナを配らず、NVIDIA の API を直接さらさず、NVIDIA の GPU の上で
+  だけ動かす) は、EULA の 1.b と 4.a の範囲に収まる。受け入れの条件 (再配布しない、単体の
+  製品として配らない、後援をうたわない) は `LICENSES.md` に書いた
+- 準備 3 の 2 つめ (`serve image-licenses p1-image-hf-version`): イメージの中に `hf`
+  (huggingface_hub の CLI) が **1.30.0** で入っている (research.md の 14b は「ある」で決着。
+  ホストには何も入れない)。読み取りのコンテナは、どちらも読み終えたあとに止めて消した
+  (自分のコンテナは 0 に戻った)
 - 段 0 / 段 1 (`serve probe`) の結果と、KV キャッシュの実測が、brief.md の見積もりと
   どれだけ合っていたか (要件 6.4)
 - 第二候補の重み (段 4) に進んだ場合の、その判断の記録

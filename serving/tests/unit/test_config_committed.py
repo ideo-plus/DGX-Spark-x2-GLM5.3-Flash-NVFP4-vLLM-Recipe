@@ -66,6 +66,7 @@ EXPECTED_NAMES = frozenset(
         "p1-fetch-nvfp4",
         "p1-fetch-nvfp4-probe",
         "p1-image-licenses",
+        "p1-image-hf-version",
         "netcheck-bandwidth",
         "netcheck-sanity",
     }

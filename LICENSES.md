@@ -167,6 +167,30 @@ Spark に配り、コンテナの中で `torchrun` で動かす 2 つのスク�
   だけで、イメージもその中身も再配布しない。イメージに足しているのは numpy だけである
 - numpy のライセンスは、PyPI の申告 (同梱の部品を含む表記) をそのまま写した
 
+## serving-kit が Spark で動かす、推論サーバーのイメージ (P1、task 7.1)
+
+DGX Spark 2 台で vLLM を動かすために取得するイメージである。ダイジェストで固定し、
+`--pull never` で起こす。**手元で作らず、配布も再配布もしない** (Spark の上で動かすだけ)。
+
+| 名前 | 版 | 入手先 | ライセンス | 用途 |
+|---|---|---|---|---|
+| vllm/vllm-openai (`glm53-flash-arm64-cu130` として公開されたもの) | `sha256:b0501f99fec5136f248f78d5850977a2ec32d55cd9a665f4a9ffef24cbdf7fe5` (linux/arm64。vLLM の build commit `385dce36bcee42309924a5ece951a96db3dce7f2`) | https://hub.docker.com/r/vllm/vllm-openai | vLLM 本体は Apache-2.0 (https://github.com/vllm-project/vllm/blob/main/LICENSE) | 2 台の Spark での推論サーバー (P1 の第一の構成、縮小の確認、通信の確認、重みの取得) |
+| nvidia/cuda (`13.0.3-base-ubuntu24.04`。上のイメージのベース) | 上のイメージに含まれる (vLLM の `docker/versions.json` の `FINAL_BASE_IMAGE`) | https://hub.docker.com/r/nvidia/cuda | **NVIDIA Deep Learning Container License** (v. September 14, 2021)。イメージの中の `/NGC-DL-CONTAINER-LICENSE` を、2026-09-22 に `serve image-licenses` で読んだ。CUDA など NVIDIA 独自の部品に掛かる。Ubuntu などの OSS の部品は、それぞれのライセンス | 推論サーバーのイメージの土台 (CUDA の実行環境) |
+
+- **方針との関係 (要件 3.9)**: ベースのイメージの NVIDIA の EULA は、上の方針 (MIT、
+  Apache-2.0、BSD 系) の外にある。ただし、CUDA を使う限り、どのイメージ (自前で作っても)
+  にも同じ条件が付き、これを除くと P1 で試せるイメージがなくなる。EULA が許す範囲
+  (「自分の持つ、または借りる設備に置いて、第三者にサービスを提供する。コンテナ自体を
+  配らず、NVIDIA の API を直接さらさない」「NVIDIA 独自の部品は NVIDIA の GPU の上でだけ
+  動かす」) にこの用途が収まることを確かめたうえで、**計測者の判断 (2026-09-22) で受け入れた**。
+  理由は `docs/decisions/0002-vllm-baseline-image-and-weights.md` に書く
+- 受け入れの条件: イメージを再配布しない、単体の製品として配らない、NVIDIA の後援を
+  うたわない。このリポジトリが配るのは、構成の定義とマニフェストと自前のスクリプトだけである
+- イメージの中の `hf` (huggingface_hub の CLI。重みの取得に使う) は 1.30.0 で、
+  huggingface_hub は Apache-2.0 (https://pypi.org/project/huggingface-hub/)。ほかの
+  Python の部品 (torch、transformers、…) は vLLM のイメージに同梱されたもので、それぞれの
+  ライセンスに従う。この道具は、それらを Spark の上で動かすだけで、再配布しない
+
 ### コンテナの実行環境
 
 イメージを動かす実行環境そのものも、再配布はしない。計測者の機械に入っているものを使う。

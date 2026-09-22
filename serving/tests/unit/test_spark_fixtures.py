@@ -26,6 +26,8 @@ REQUIRED = (
     "ip-br-link.txt",
     "ip-br-addr.txt",
     "ss-ltnH.txt",
+    # tasks.md 7.1 で足した (イメージを取得したあとのダイジェストの一覧)
+    "docker-image-inspect-repodigests.txt",
 )
 
 _MAC_RE = re.compile(r"\b(?:[0-9a-f]{2}:){5}[0-9a-f]{2}\b", re.IGNORECASE)

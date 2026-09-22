@@ -624,6 +624,22 @@ def test_push_allows_only_the_payload_and_state_directories(
     assert sent.calls[-1].kwargs.get("shell") in (None, False)
 
 
+def test_push_leaves_python_bytecode_caches_behind(
+    tmp_path: Path, var_root: Path, sent: Recorder
+) -> None:
+    """`__pycache__` は配らない (7.1 の実機で、試験が作った `payload/__pycache__/` まで
+    Spark に届いた。Spark で動かすのは `.py` だけで、Mac の Python のバイトコードは要らない)。"""
+    local = tmp_path / "payload"
+    local.mkdir()
+    runner = SshRunner(var_root=var_root, plan=planned_push(local, "payload", delete=False))
+
+    runner.push(HEAD, local, "payload", delete=False)
+
+    assert sent.last[0] == "rsync"
+    assert "--exclude=__pycache__" in sent.last
+    assert sent.last.index("--exclude=__pycache__") < sent.last.index("-e")
+
+
 @pytest.mark.parametrize(
     "remote_subdir",
     [

@@ -721,6 +721,43 @@ quote = "COPY NGC-DL-CONTAINER-LICENSE /"
 
 
 # ===========================================================================
+# p1-image-hf-version — イメージの中に、重みの取得の道具 (hf) があるかを確かめる (7.1)
+# ===========================================================================
+#
+# `serve fetch` は、イメージの中の `hf` (huggingface_hub の CLI) で重みを落とす (design.md
+# 「fetch」)。無ければ、ホストに入れずに計測者に尋ねる (tasks.md 7.1)。`kind = "inspect"`
+# の仕組み (`serve image-licenses <この構成>`) で `hf version` を 1 回流し、出力 (版) を読む。
+# 無ければ docker が entrypoint を見つけられずに失敗し、その文面がそのまま材料になる。
+
+[configs.p1-image-hf-version]
+kind = "inspect"
+description = "固定したイメージの中の hf (huggingface_hub の CLI) の有無と版を読む"
+nodes = ["head"]
+# hf version を 1 回流すだけなので、数秒で終わる
+ready_timeout_s = 120
+
+[configs.p1-image-hf-version.image]
+ref = "vllm/vllm-openai@sha256:b0501f99fec5136f248f78d5850977a2ec32d55cd9a665f4a9ffef24cbdf7fe5"
+seen_as = "vllm/vllm-openai:glm53-flash-arm64-cu130"
+size_bytes = 9666567584
+source = "https://hub.docker.com/v2/repositories/vllm/vllm-openai/tags"
+quote = "glm53-flash-arm64-cu130 / linux/arm64 / 9666567584 B / 2026-09-09T13:31:25Z"
+
+[configs.p1-image-hf-version.docker.entrypoint]
+flag = "--entrypoint"
+value = "hf"
+why = "イメージの既定は vllm serve なので、取得の道具そのものに差し替える (p1-fetch-nvfp4 と同じ道具)"
+source = "https://docs.docker.com/reference/cli/docker/container/run/"
+quote = "Overwrite the default ENTRYPOINT of the image"
+
+[configs.p1-image-hf-version.args.version]
+value = "version"
+why = "hf の版を出すだけの副作用のないサブコマンド。出れば道具があり、版がわかる"
+source = "https://raw.githubusercontent.com/huggingface/huggingface_hub/main/docs/source/en/guides/cli.md"
+quote = "version  Print information about the hf version."
+
+
+# ===========================================================================
 # netcheck-bandwidth — 2 台の間の帯域を測る (requirements 4.3、4.4、4.6)
 # ===========================================================================
 #
