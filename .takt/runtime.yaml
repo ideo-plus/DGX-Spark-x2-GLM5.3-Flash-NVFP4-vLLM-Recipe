@@ -1,0 +1,43 @@
+# Step assignments for the flash-default bundle.
+# scripts/use-lang.sh copies this file to <project>/.takt/runtime.yaml when none exists.
+#
+# Only profile NAMES appear here. The profiles themselves (provider + model) are defined once
+# per machine in ~/.takt/runtime.yaml, for example:
+#
+#   version: 1
+#   companion:
+#     enabled: true
+#   provider:
+#     defaults: { profile: t2 }
+#     profiles:
+#       t0-test-code:       { provider: opencode, model: ollama/glm-5.3-flash:cloud }
+#       t0-production-code: { provider: opencode, model: opencode-go/gpt-5.6-luna }
+#       t1:                 { provider: claude,   model: claude-sonnet-5 }
+#       t2:                 { provider: claude,   model: claude-opus-5 }
+#       t3-plan:            { provider: claude,   model: claude-fable-5-1 }   # optional
+#       t3-judge:           { provider: codex,    model: gpt-6-astra }        # optional
+#
+# TAKT's default .takt/.gitignore does not track runtime.yaml. Add `!runtime.yaml` to it if your
+# team wants to share these assignments; the profile names are stable across machines.
+version: 1
+provider:
+  defaults: { profile: t2 }
+  targets:
+    steps:
+      # T3 (optional): remove these four lines to run plan/replan and adjudication/final-gate on t2.
+      development-core/plan:                     { profile: t3-plan }
+      development-core/replan:                   { profile: t3-plan }
+      peer-review/review-adjudication:           { profile: t3-judge }
+      peer-review/final-gate:                    { profile: t3-judge }
+      # Tiers
+      development-core/write_tests:              { ladder: [t0-test-code, t1, t2] }
+      flash-implement-dynamic/implement:         { profile: t0-production-code }
+      flash-implement-dynamic/reimplement:       { profile: t1 }
+      flash-implement-dynamic/reimplement_final: { profile: t2 }
+      flash-remediation-dynamic/fix:             { ladder: [t1, t2] }
+    internal_agents:
+      selector: { profile: t1 }
+    companions:
+      ai-antipattern-review-companion: { profile: t1 }
+      testing-review-companion:        { profile: t1 }
+      review-companion-moderator:      { profile: t1 }
