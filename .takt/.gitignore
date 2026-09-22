@@ -1,0 +1,31 @@
+# Ignore everything by default
+*
+
+# This file itself
+!.gitignore
+
+# Project configuration
+!config.yaml
+
+# Facets and workflows (version-controlled)
+!workflows/
+!workflows/**
+!steps/
+!steps/**
+!facets/
+!facets/personas/
+!facets/personas/**
+!facets/policies/
+!facets/policies/**
+!facets/knowledge/
+!facets/knowledge/**
+!facets/instructions/
+!facets/instructions/**
+!facets/output-contracts/
+!facets/output-contracts/**
+
+# 共有する割り当てと出典。実行ログは引き続き無視する
+!runtime.yaml
+!.takt-workflows
+!UPSTREAM.md
+!LICENSE.takt-workflows

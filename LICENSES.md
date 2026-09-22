@@ -60,6 +60,8 @@
 |---|---|---|---|---|
 | uv | 0.12.11 | https://pypi.org/project/uv/ | MIT OR Apache-2.0 | 依存の解決と、仮想環境の管理 (`uv sync`、`uv run`) |
 | hatchling | (版は固定していない。`[build-system] requires`) | https://pypi.org/project/hatchling/ | MIT | パッケージのビルドのバックエンド。`uv.lock` には入らない |
+| TAKT | 0.66.0 | https://github.com/nrslib/takt | MIT (インストール済みパッケージの LICENSE を 2026-09-23 に確認) | Mac 上での準備作業の計画・実装・レビュー。Spark は操作しない |
+| takt-workflows | `4eaeb89c986d023b2e6f9b3755852acc2648c812` | https://github.com/ideo-plus/takt-workflows | Apache-2.0 | 日本語の段階別ワークフローを `.takt/` に同梱。出典と変更点は `.takt/UPSTREAM.md`、ライセンス全文は `.takt/LICENSE.takt-workflows` |
 
 ## serving-kit の依存する部品
 
