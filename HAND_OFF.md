@@ -2,8 +2,9 @@
 
 書いた日: 2026-09-22。書いた人: Claude (cc-sdd / kiro の `/kiro-impl vllm-baseline` の自律の実行)。
 進め方の更新 (2026-09-23): cc-sdd のスキルは導入しない。計測者の選択により、次の準備作業は
-takt、実機操作と失敗時の判断はこの対話に分ける。先にここまでの変更を Git で統合してから、
-takt の導入と作業依頼の整備へ進む。既存の仕様と実測記録は判断の根拠として使う。
+takt、実機操作と失敗時の判断はこの対話に分ける。ここまでの変更は
+[PR #2](https://github.com/ideo-plus/DGX-Spark-GLM5.3-Flash-Recipe/pull/2) で統合済み。
+既存の仕様と実測記録は判断の根拠として使う。
 
 書かないこと (要件 10.5): 送った内容と応答の本文、認証の情報、`exl3-tp2` の中身。
 
@@ -32,7 +33,8 @@ HTTP 200 を確認し、head の検証コンテナと GPU プロセスは 0 件�
 
 ## 2. リポジトリ
 
-- 実装ブランチは `feat/vllm-baseline` (`main` から)。2026-09-23 に private のまま統合する方針。
+- `feat/vllm-baseline` は 2026-09-23 に private のまま `main` へ統合済み
+  (`0da9a774873711b3cb711af0b1b99844c7b7b7bb`)。
   一般公開前には、Kiro のスキルのライセンス、CLAUDE.md の扱い、PLAN.md の名前、
   リポジトリ直下の LICENSE の追加を整理する
 - 検証: `cd serving && uv run pytest && uv run ruff check . && uv run ruff format --check . && uv run mypy`
@@ -94,8 +96,15 @@ HTTP 200 を確認し、head の検証コンテナと GPU プロセスは 0 件�
 経過は [実行記録](docs/results/2026-09-22-nope-build.md)、生ログは `serving/var/nope-build-0961bbae/` にある。
 `pip check` の 2 件は公式 nightly でも同一で、上流の NCCL 版指定と cuSPARSELt の wheel タグに由来する。
 これを依存全体の合格とは扱わず、比較とライブラリ読み込みの根拠を実行記録に残した。
-以下の 1〜5 は引き継ぎ時点の候補として残す。4 の takt 導入は Git での統合後に行う。
+以下の 1〜5 は引き継ぎ時点の候補として残す。4 の takt 導入は済み、
+[準備用の実行方法](docs/development/takt-preparation.md) と
+[TP=2 の依頼](docs/tasks/tp2-preparation.md) を用意した。
 準備するコード・構成・テスト・文書を対象とし、実機操作はこの対話で扱う。
+計測者から、準備完了後の統合、最低限の CI の追加、その後の PLAN.md に沿った続行を了承済み。
+実重みの取得と TP=2 の起動はまだ実施していない。
+TP=2 の生成器と [実行手順](docs/vllm-baseline/patched-tp2-procedure.md) は準備済み。
+takt の修正検証に残った手順の問題は対話側で修正した。ワークフローは途中引き取りであり、
+takt の最終承認済みではない。引き取り後に serving の 1,898 件、ruff、mypy が通過した。
 
 1. **計測者が決めること (未決)**: 上流の issue #57578 に「DGX Spark (GB10) で公式イメージ 2 つで
    再現した」と報告するか (要件 10.4)。`not-working.md` 件 1 の「上流に報告するかの判断」を埋める
