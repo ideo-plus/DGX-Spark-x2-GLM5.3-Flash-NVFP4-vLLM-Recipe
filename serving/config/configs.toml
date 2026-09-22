@@ -1,0 +1,1451 @@
+# 構成の定義 (design.md Data Models、requirements 3.1、3.2、3.6、11.1〜11.5)。
+#
+# `[configs.<名前>]` が 1 つの構成で、`<名前>` はテーブルの鍵から取る。計測者は
+# `serve <コマンド> <名前>` で 1 つを選ぶ。
+#
+# **設定の 1 つ 1 つが、値と、なぜ (`why`) と、根拠を持つ。** 根拠の書き方は 2 通りだけで、
+# どちらか一方が必ず要る (`config.py` の検査 1 が、欠けていれば起動を断る):
+#
+#   source + quote : 道具の一次の資料の URL と、その原文の抜粋 (要約しない)
+#   measured       : 自分たちの実測の記録の場所 (`docs/` の下の、実在するファイル)
+#
+# 出典の選び方 (requirements 11.2): **公式の手引きのコマンドを写さず、道具の一次の資料
+# (CLI の引数の説明、環境変数の説明、設定の項目の説明) を引く**。vLLM の引数は、固定した
+# イメージの build commit (`385dce36bcee42309924a5ece951a96db3dce7f2`。research.md §a-2) の
+# ソースの、その項目の説明を引いている。第三者のレシピ、ブログ、フォーラム、モデルカードは
+# 開いていない (requirements 11.3)。
+#
+# 段と構成の名前の対応 (design.md 「Baseline Procedure」):
+#   段 0 = probe-pinned        1 台の縮小の確認 (重みを落とさない)
+#   段 1 = probe-nightly       より新しい上流の公式のイメージ (nightly) での、同じ確認
+#   段 2 = p1-nvfp4-tp2        2 台 TP=2 の推論サーバー (第一の構成)
+# 段より前に流すもの:
+#   p1-fetch-nvfp4-probe       段 0 に要る設定とトークナイザだけを取得する
+#   p1-fetch-nvfp4             重みの本体を 2 台に取得する
+#   p1-image-licenses          イメージの中のライセンスの表記を読む
+#   netcheck-bandwidth         2 台の間の帯域を測る (`serve netcheck bandwidth`)
+#   netcheck-bandwidth-ib      同上 + --device /dev/infiniband (回 1 の実測を根拠に足した A/B の B)
+#   netcheck-sanity            2 台での事前の 4 段の確認 (`serve netcheck sanity`)
+#
+# 入れていないもの (design.md 「最初は入れない」。実測の根拠 (`measured`) ができてから足す):
+#   --cap-add SYS_NICE、--cap-add IPC_LOCK (--device /dev/infiniband は 2026-09-22 の A/B で採用した)、--kv-cache-dtype、
+#   --block-size、--enforce-eager、--moe-backend、投機的デコードの 4 つの指定、
+#   --distributed-executor-backend (CUDA で nnodes > 1 なら自動で mp になる)、
+#   NCCL_IB_HCA、NCCL_IB_MERGE_NICS、NCCL_IB_GID_INDEX (どれも既定のまま)
+#
+# 入れていないもの (根拠に辿れないため。親の判断、2026-09-22):
+#   --ulimit stack=67108864 — design.md の最初の構成の表は挙げているが、64 MiB という値の
+#   唯一の出どころが NVIDIA の NGC の手引きの**コマンド**で、requirements 11.2 が「公式の
+#   手引きのコマンドを写さない」と定めている形に当たる。NCCL の一次の資料が述べているのは
+#   「上限を無制限にすると落ちる事例がある」だけで、コンテナの既定はもともと有限なので、
+#   この指定は上げる側になる。要るとわかったら、実測の根拠 (`measured`) を付けて足す。
+#   --ulimit memlock=-1 のほうは、NCCL の文書が理由まで述べているので残してある
+#
+# 道具が必ず付ける引数 (`-d`、`--pull never`、`--name`、`--label`、`--restart no`、
+# `-e`) は、ここに書くと二重になるので `plan.py` が断る。
+
+schema_version = 1
+
+
+# ===========================================================================
+# 段 0: probe-pinned — 1 台の縮小の確認 (requirements 5.1〜5.5)
+# ===========================================================================
+#
+# 重みを 1 バイトも落とさずに、固定したイメージで、同じアテンションの経路を踏む。
+# `--load-format dummy` で重みを乱数にし、`--hf-overrides` で層の数を 45 から 4 に
+# 減らす。設定とトークナイザ (約 37 MiB) だけは実物を読むので、`probe/<slug>/` を
+# 読み取り専用で結び付ける。
+
+[configs.probe-pinned]
+kind = "probe"
+description = "段 0。固定したイメージで、重みを落とさずに 1 台で起動できるかを見る"
+nodes = ["head"]
+# 重みの読み込みがなく、層が 4 つなので、時間を食うのは CUDA の初期化と JIT だけである。
+# vLLM の `VLLM_DEEP_GEMM_WARMUP` の説明が、この温めが起動を「数分」伸ばすと書いている
+# (`vllm/envs.py`: "However, this warmup increases the engine startup time by a couple of
+# minutes.")。その数分の 5 倍ほどを上限にする。足りなければ `serve probe --timeout` で、
+# その回だけ延ばせる (design.md 「cli」)
+ready_timeout_s = 600
+served_model_name = "glm-5-3-flash"
+
+[configs.probe-pinned.image]
+ref = "vllm/vllm-openai@sha256:b0501f99fec5136f248f78d5850977a2ec32d55cd9a665f4a9ffef24cbdf7fe5"
+seen_as = "vllm/vllm-openai:glm53-flash-arm64-cu130"
+size_bytes = 9666567584
+source = "https://hub.docker.com/v2/repositories/vllm/vllm-openai/tags"
+quote = "glm53-flash-arm64-cu130 / linux/arm64 / 9666567584 B / 2026-09-09T13:31:25Z"
+
+[configs.probe-pinned.weights]
+# 縮小の確認では、この参照のうち safetensors を除いたファイル (設定とトークナイザ) だけを
+# 使う (`guards` の `probe_files` の扱い)。置き場所は `probe/<slug>/` である
+repo = "RedHatAI/GLM-5.3-Flash-NVFP4"
+revision = "18d55bfd5a2194887738da73753975c9d3842f46"
+manifest = "RedHatAI__GLM-5.3-Flash-NVFP4.manifest.json"
+mount_at = "/probe/glm-5-3-flash-nvfp4"
+# ファイルの一覧と大きさと sha256 は、この版の木を列挙する公開の API から匿名で読む
+# (`serve manifest` が呼ぶのは
+# https://huggingface.co/api/models/RedHatAI/GLM-5.3-Flash-NVFP4/tree/18d55bfd5a2194887738da73753975c9d3842f46?recursive=1)。
+# 下の原文は、その口を定めている HF 自身の OpenAPI の、この経路の説明である
+source = "https://huggingface.co/.well-known/openapi.json"
+quote = "List the content of a repository tree, with pagination support."
+
+# --- docker の設定 ---------------------------------------------------------
+
+[configs.probe-pinned.docker.gpus]
+flag = "--gpus"
+value = "all"
+why = "GB10 の GPU をコンテナに見せる。1 台なので all は 1 基である"
+source = "https://docs.docker.com/reference/cli/docker/container/run/"
+quote = "GPU devices to add to the container ('all' to pass all GPUs)"
+
+[configs.probe-pinned.docker.ipc]
+flag = "--ipc"
+value = "host"
+why = "vLLM は API のサーバーと EngineCore を別のプロセスで動かし、その間で PyTorch の共有メモリを使う。コンテナの既定の /dev/shm では足りない"
+source = "https://docs.vllm.ai/en/latest/deployment/docker/"
+quote = "You can either use the `ipc=host` flag or `--shm-size` flag to allow the container to access the host's shared memory. vLLM uses PyTorch, which uses shared memory to share data between processes under the hood, particularly for tensor parallel inference."
+
+[configs.probe-pinned.docker.network]
+flag = "--network"
+value = "host"
+why = "この道具は -p を付けない (付けられない) ので、--port で開いた口を、そのままホストのアドレスで受ける。ホストのネットワークなら、-p を使わずに head の LAN のアドレスで応答の確認ができる"
+source = "https://docs.docker.com/engine/network/drivers/host/"
+quote = "If you use the host network mode for a container, that container's network stack isn't isolated from the Docker host (the container shares the host's networking namespace), and the container doesn't get its own IP-address allocated. …"
+
+[configs.probe-pinned.docker.mount-probe]
+flag = "--mount"
+value = "type=bind,source={remote_root}/probe/glm-5-3-flash-nvfp4,target=/probe/glm-5-3-flash-nvfp4,readonly"
+why = "設定とトークナイザを、書き換えない形で見せる (固定した版のまま読ませる。requirements 3.4)"
+source = "https://docs.docker.com/engine/storage/bind-mounts/"
+quote = "If present, causes the bind mount to be mounted into the container as read-only."
+
+# --- vllm serve の引数 -----------------------------------------------------
+
+[configs.probe-pinned.args.model-path]
+# flag を書かないと、位置の引数になる
+value = "{weights.mount_at}"
+why = "vllm serve の第一の位置の引数が、モデルの場所である。ここには設定とトークナイザだけがあり、重みは --load-format dummy で作る"
+source = "https://github.com/vllm-project/vllm/blob/385dce36bcee42309924a5ece951a96db3dce7f2/vllm/entrypoints/cli/serve.py"
+quote = "usage=\"vllm serve [model_tag] [options]\""
+
+[configs.probe-pinned.args.served-model-name]
+flag = "--served-model-name"
+value = "glm-5-3-flash"
+why = "/v1/models の id を、/ を含まない 1 つの名前に固定する (requirements 6.2)。段 0 と段 2 で同じ名前にして、確かめの筋道を変えない"
+source = "https://github.com/vllm-project/vllm/blob/385dce36bcee42309924a5ece951a96db3dce7f2/vllm/config/model.py"
+quote = "The model name(s) used in the API. If multiple names are provided, the server will respond to any of the provided names. The model name in the model field of a response will be the first name in this list. …"
+
+[configs.probe-pinned.args.host]
+flag = "--host"
+value = "{head.lan_addr}"
+why = "LAN のアドレスだけで待ち受ける (直結の側やほかのインターフェースで待ち受けない)。確認は Mac からこのアドレスに行う"
+source = "https://github.com/vllm-project/vllm/blob/385dce36bcee42309924a5ece951a96db3dce7f2/vllm/entrypoints/launchers/cli_args.py"
+quote = "Host name."
+
+[configs.probe-pinned.args.port]
+flag = "--port"
+value = "8000"
+is_port = true
+why = "HTTP の口を 1 つだけ開く。既存の対象サーバー (8001) と重ならない番号にする。is_port を付けて、起動の前に空いているかを見る"
+source = "https://github.com/vllm-project/vllm/blob/385dce36bcee42309924a5ece951a96db3dce7f2/vllm/entrypoints/launchers/cli_args.py"
+quote = "Port number."
+
+[configs.probe-pinned.args.load-format]
+flag = "--load-format"
+value = "dummy"
+why = "重みを 1 バイトも取得せずに、同じ経路で起動を試す (184.3 GiB は 1 台に収まらない。requirements 5.1)"
+source = "https://github.com/vllm-project/vllm/blob/385dce36bcee42309924a5ece951a96db3dce7f2/vllm/config/load.py"
+quote = '"dummy" will initialize the weights with random values, which is mainly for profiling. …'
+
+[configs.probe-pinned.args.hf-overrides]
+flag = "--hf-overrides"
+# 層を 45 から 4 に減らす。並びは、このリポジトリと版の config.json の先頭の 4 層を、
+# そのまま取ったものである:
+#   layer_types[0:4]      = linear_attention ×3 + deepseek_sparse_attention (索引 3)
+#   mlp_layer_types[0:4]  = dense ×3 + sparse (first_k_dense_replace = 3 なので、4 番目が MoE)
+#   indexer_types[0:4]    = full ×4
+#   linear_attn_config    = kda_layers [0,1,2] / full_attn_layers [3] (元の値から、
+#                           4 層に入る索引だけを残す。残さないと、無い層を指してしまう)
+# これで、線形アテンション 3 層、sparse MLA 1 層、MoE 1 層を含み、**アテンションの形
+# (qk_rope_head_dim = 0、kv_lora_rank = 512、index_topk = 2048、index_kpool = 4 など) を
+# 1 つも上書きしない**。vLLM は、値が辞書の上書きを、入れ子の設定に再帰的に混ぜるので
+# (`config/model.py` の `_apply_dict_overrides` / `_update_nested`)、text_config のほかの
+# 項目は元のまま残る
+value = '{"text_config":{"num_hidden_layers":4,"layer_types":["linear_attention","linear_attention","linear_attention","deepseek_sparse_attention"],"mlp_layer_types":["dense","dense","dense","sparse"],"indexer_types":["full","full","full","full"],"linear_attn_config":{"kda_layers":[0,1,2],"full_attn_layers":[3]}}}'
+why = "モデルの設定のファイル (config.json) の層の並びの先頭 4 層をそのまま渡し、アテンションの形を変えずに小さいモデルにする。線形アテンション、sparse MLA、MoE の層を、それぞれ 1 つ以上含む"
+source = "https://github.com/vllm-project/vllm/blob/385dce36bcee42309924a5ece951a96db3dce7f2/vllm/config/model.py"
+quote = "If a dictionary, contains arguments to be forwarded to the Hugging Face config. If a callable, it is called to update the HuggingFace config."
+
+[configs.probe-pinned.args.max-model-len]
+flag = "--max-model-len"
+value = "4096"
+why = "段 0 が送るのは短い要求 1 つだけ (requirements 5.4) なので、入力の長さの上限を小さくして、KV と線形アテンションの状態のぶんを最小にする"
+source = "https://github.com/vllm-project/vllm/blob/385dce36bcee42309924a5ece951a96db3dce7f2/vllm/config/model.py"
+quote = "Model context length (prompt and output). If unspecified, will be automatically derived from the model config. …"
+
+[configs.probe-pinned.args.max-num-seqs]
+flag = "--max-num-seqs"
+value = "1"
+why = "同時に 1 本しか送らない。既定 (デバイスのメモリから決まる大きな値) のままだと、線形アテンションの状態が同時の本数に比例して、確かめたい失敗の前にメモリで落ちる"
+source = "https://github.com/vllm-project/vllm/blob/385dce36bcee42309924a5ece951a96db3dce7f2/vllm/config/scheduler.py"
+quote = "Maximum number of sequences to be processed in a single iteration. …"
+
+[configs.probe-pinned.args.gpu-memory-utilization]
+flag = "--gpu-memory-utilization"
+value = "0.30"
+why = "GB10 はユニファイドメモリなので、空きの見積もりが psutil の available になる (上の原文)。要る量は「全体 × この割合」で、それが空きを上回ると起動しない (`vllm/v1/worker/utils.py` の requested_memory。同じ commit)。段 0 で見たいのはアテンションの部品の可否なので、要求を小さくして、メモリの都合で落ちる筋道 (判定できなかった) を避ける"
+source = "https://github.com/vllm-project/vllm/blob/385dce36bcee42309924a5ece951a96db3dce7f2/vllm/utils/mem_utils.py"
+quote = "On UMA (Unified Memory Architecture) platforms where CPU and GPU share physical memory (e.g. GH200, DGX Spark, Jetson Orin), cudaMemGetInfo underreports free memory because it does not account for reclaimable OS memory (page cache, buffers). Use psutil to get the true available memory."
+
+[configs.probe-pinned.args.language-model-only]
+flag = "--language-model-only"
+why = "このモデルは画像と動画も受ける形 (Glm5NextForConditionalGeneration) だが、この用途は文章だけである。マルチモーダルの下ごしらえのぶんのメモリを使わない"
+source = "https://github.com/vllm-project/vllm/blob/385dce36bcee42309924a5ece951a96db3dce7f2/vllm/config/multimodal.py"
+quote = "If True, disables all multimodal inputs by setting all modality limits to 0. Equivalent to setting `--limit-mm-per-prompt` to 0 for every modality."
+
+# --- 環境変数 --------------------------------------------------------------
+
+[configs.probe-pinned.env.logging-level]
+flag = "VLLM_LOGGING_LEVEL"
+value = "DEBUG"
+why = "選ばれなかったアテンションのバックエンドの理由が、debug の段でしか記録に出ない (requirements 5.2 が、その理由の記録を求める)"
+source = "https://github.com/vllm-project/vllm/blob/385dce36bcee42309924a5ece951a96db3dce7f2/vllm/envs.py"
+quote = "this is used for configuring the default logging level"
+
+
+# ===========================================================================
+# 段 1: probe-nightly — より新しい上流の公式のイメージでの、同じ 1 台の縮小の確認
+# (requirements 5.1〜5.5、8.1、8.7)
+# ===========================================================================
+#
+# なぜこのイメージか: 段 0 の probe-pinned (イメージ commit 385dce36bcee42309924a5ece951a96db3dce7f2)
+# が、`pe_dim must be 64 for fp8_ds_mla` の assert で失敗した (not-working.md 件 1)。要件 8.1 の
+# 順序に従い、より新しい上流の公式のイメージ (2026-09-22 の nightly、commit
+# 0961bbae2894d574be790d219651824eb199318e) で、同じ確認を行う。
+#
+# docker / args / env の設定と、その why / source / quote は、probe-pinned と同一である
+# (出典が固定したイメージの commit のソースを指しているものは、そのまま写した)。出典は固定した
+# イメージの commit のソースである。nightly で引数の意味が変わっていないかは、実機の記録で
+# 確かめる。weights の参照も probe-pinned と同一 (probe/<slug>/ の取得は済んでいる)。
+
+[configs.probe-nightly]
+kind = "probe"
+description = "段 1: より新しい上流の公式のイメージ (nightly) での、同じ 1 台の縮小の確認"
+nodes = ["head"]
+# 重みの読み込みがなく、層が 4 つなので、時間を食うのは CUDA の初期化と JIT だけである。
+# vLLM の `VLLM_DEEP_GEMM_WARMUP` の説明が、この温めが起動を「数分」伸ばすと書いている
+# (`vllm/envs.py`: "However, this warmup increases the engine startup time by a couple of
+# minutes.")。その数分の 5 倍ほどを上限にする。足りなければ `serve probe --timeout` で、
+# その回だけ延ばせる (design.md 「cli」)
+ready_timeout_s = 600
+served_model_name = "glm-5-3-flash"
+
+[configs.probe-nightly.image]
+ref = "vllm/vllm-openai@sha256:865784ba59b46e3e1370df8158c1bbff8769c3ab88d63551d3f25eabc1a61c45"
+seen_as = "vllm/vllm-openai:nightly-0961bbae2894d574be790d219651824eb199318e"
+size_bytes = 9694218436
+source = "https://hub.docker.com/v2/repositories/vllm/vllm-openai/tags"
+quote = "nightly-0961bbae2894d574be790d219651824eb199318e / linux/arm64 / 9694218436 B / 2026-09-22T06:27:00Z"
+
+[configs.probe-nightly.weights]
+# 縮小の確認では、この参照のうち safetensors を除いたファイル (設定とトークナイザ) だけを
+# 使う (`guards` の `probe_files` の扱い)。置き場所は `probe/<slug>/` である
+repo = "RedHatAI/GLM-5.3-Flash-NVFP4"
+revision = "18d55bfd5a2194887738da73753975c9d3842f46"
+manifest = "RedHatAI__GLM-5.3-Flash-NVFP4.manifest.json"
+mount_at = "/probe/glm-5-3-flash-nvfp4"
+# ファイルの一覧と大きさと sha256 は、この版の木を列挙する公開の API から匿名で読む
+# (`serve manifest` が呼ぶのは
+# https://huggingface.co/api/models/RedHatAI/GLM-5.3-Flash-NVFP4/tree/18d55bfd5a2194887738da73753975c9d3842f46?recursive=1)。
+# 下の原文は、その口を定めている HF 自身の OpenAPI の、この経路の説明である
+source = "https://huggingface.co/.well-known/openapi.json"
+quote = "List the content of a repository tree, with pagination support."
+
+# --- docker の設定 ---------------------------------------------------------
+
+[configs.probe-nightly.docker.gpus]
+flag = "--gpus"
+value = "all"
+why = "GB10 の GPU をコンテナに見せる。1 台なので all は 1 基である"
+source = "https://docs.docker.com/reference/cli/docker/container/run/"
+quote = "GPU devices to add to the container ('all' to pass all GPUs)"
+
+[configs.probe-nightly.docker.ipc]
+flag = "--ipc"
+value = "host"
+why = "vLLM は API のサーバーと EngineCore を別のプロセスで動かし、その間で PyTorch の共有メモリを使う。コンテナの既定の /dev/shm では足りない"
+source = "https://docs.vllm.ai/en/latest/deployment/docker/"
+quote = "You can either use the `ipc=host` flag or `--shm-size` flag to allow the container to access the host's shared memory. vLLM uses PyTorch, which uses shared memory to share data between processes under the hood, particularly for tensor parallel inference."
+
+[configs.probe-nightly.docker.network]
+flag = "--network"
+value = "host"
+why = "この道具は -p を付けない (付けられない) ので、--port で開いた口を、そのままホストのアドレスで受ける。ホストのネットワークなら、-p を使わずに head の LAN のアドレスで応答の確認ができる"
+source = "https://docs.docker.com/engine/network/drivers/host/"
+quote = "If you use the host network mode for a container, that container's network stack isn't isolated from the Docker host (the container shares the host's networking namespace), and the container doesn't get its own IP-address allocated. …"
+
+[configs.probe-nightly.docker.mount-probe]
+flag = "--mount"
+value = "type=bind,source={remote_root}/probe/glm-5-3-flash-nvfp4,target=/probe/glm-5-3-flash-nvfp4,readonly"
+why = "設定とトークナイザを、書き換えない形で見せる (固定した版のまま読ませる。requirements 3.4)"
+source = "https://docs.docker.com/engine/storage/bind-mounts/"
+quote = "If present, causes the bind mount to be mounted into the container as read-only."
+
+# --- vllm serve の引数 -----------------------------------------------------
+
+[configs.probe-nightly.args.model-path]
+# flag を書かないと、位置の引数になる
+value = "{weights.mount_at}"
+why = "vllm serve の第一の位置の引数が、モデルの場所である。ここには設定とトークナイザだけがあり、重みは --load-format dummy で作る"
+source = "https://github.com/vllm-project/vllm/blob/385dce36bcee42309924a5ece951a96db3dce7f2/vllm/entrypoints/cli/serve.py"
+quote = "usage=\"vllm serve [model_tag] [options]\""
+
+[configs.probe-nightly.args.served-model-name]
+flag = "--served-model-name"
+value = "glm-5-3-flash"
+why = "/v1/models の id を、/ を含まない 1 つの名前に固定する (requirements 6.2)。段 0 と段 2 で同じ名前にして、確かめの筋道を変えない"
+source = "https://github.com/vllm-project/vllm/blob/385dce36bcee42309924a5ece951a96db3dce7f2/vllm/config/model.py"
+quote = "The model name(s) used in the API. If multiple names are provided, the server will respond to any of the provided names. The model name in the model field of a response will be the first name in this list. …"
+
+[configs.probe-nightly.args.host]
+flag = "--host"
+value = "{head.lan_addr}"
+why = "LAN のアドレスだけで待ち受ける (直結の側やほかのインターフェースで待ち受けない)。確認は Mac からこのアドレスに行う"
+source = "https://github.com/vllm-project/vllm/blob/385dce36bcee42309924a5ece951a96db3dce7f2/vllm/entrypoints/launchers/cli_args.py"
+quote = "Host name."
+
+[configs.probe-nightly.args.port]
+flag = "--port"
+value = "8000"
+is_port = true
+why = "HTTP の口を 1 つだけ開く。既存の対象サーバー (8001) と重ならない番号にする。is_port を付けて、起動の前に空いているかを見る"
+source = "https://github.com/vllm-project/vllm/blob/385dce36bcee42309924a5ece951a96db3dce7f2/vllm/entrypoints/launchers/cli_args.py"
+quote = "Port number."
+
+[configs.probe-nightly.args.load-format]
+flag = "--load-format"
+value = "dummy"
+why = "重みを 1 バイトも取得せずに、同じ経路で起動を試す (184.3 GiB は 1 台に収まらない。requirements 5.1)"
+source = "https://github.com/vllm-project/vllm/blob/385dce36bcee42309924a5ece951a96db3dce7f2/vllm/config/load.py"
+quote = '"dummy" will initialize the weights with random values, which is mainly for profiling. …'
+
+[configs.probe-nightly.args.hf-overrides]
+flag = "--hf-overrides"
+# 層を 45 から 4 に減らす。並びは、このリポジトリと版の config.json の先頭の 4 層を、
+# そのまま取ったものである:
+#   layer_types[0:4]      = linear_attention ×3 + deepseek_sparse_attention (索引 3)
+#   mlp_layer_types[0:4]  = dense ×3 + sparse (first_k_dense_replace = 3 なので、4 番目が MoE)
+#   indexer_types[0:4]    = full ×4
+#   linear_attn_config    = kda_layers [0,1,2] / full_attn_layers [3] (元の値から、
+#                           4 層に入る索引だけを残す。残さないと、無い層を指してしまう)
+# これで、線形アテンション 3 層、sparse MLA 1 層、MoE 1 層を含み、**アテンションの形
+# (qk_rope_head_dim = 0、kv_lora_rank = 512、index_topk = 2048、index_kpool = 4 など) を
+# 1 つも上書きしない**。vLLM は、値が辞書の上書きを、入れ子の設定に再帰的に混ぜるので
+# (`config/model.py` の `_apply_dict_overrides` / `_update_nested`)、text_config のほかの
+# 項目は元のまま残る
+value = '{"text_config":{"num_hidden_layers":4,"layer_types":["linear_attention","linear_attention","linear_attention","deepseek_sparse_attention"],"mlp_layer_types":["dense","dense","dense","sparse"],"indexer_types":["full","full","full","full"],"linear_attn_config":{"kda_layers":[0,1,2],"full_attn_layers":[3]}}}'
+why = "モデルの設定のファイル (config.json) の層の並びの先頭 4 層をそのまま渡し、アテンションの形を変えずに小さいモデルにする。線形アテンション、sparse MLA、MoE の層を、それぞれ 1 つ以上含む"
+source = "https://github.com/vllm-project/vllm/blob/385dce36bcee42309924a5ece951a96db3dce7f2/vllm/config/model.py"
+quote = "If a dictionary, contains arguments to be forwarded to the Hugging Face config. If a callable, it is called to update the HuggingFace config."
+
+[configs.probe-nightly.args.max-model-len]
+flag = "--max-model-len"
+value = "4096"
+why = "段 0 が送るのは短い要求 1 つだけ (requirements 5.4) なので、入力の長さの上限を小さくして、KV と線形アテンションの状態のぶんを最小にする"
+source = "https://github.com/vllm-project/vllm/blob/385dce36bcee42309924a5ece951a96db3dce7f2/vllm/config/model.py"
+quote = "Model context length (prompt and output). If unspecified, will be automatically derived from the model config. …"
+
+[configs.probe-nightly.args.max-num-seqs]
+flag = "--max-num-seqs"
+value = "1"
+why = "同時に 1 本しか送らない。既定 (デバイスのメモリから決まる大きな値) のままだと、線形アテンションの状態が同時の本数に比例して、確かめたい失敗の前にメモリで落ちる"
+source = "https://github.com/vllm-project/vllm/blob/385dce36bcee42309924a5ece951a96db3dce7f2/vllm/config/scheduler.py"
+quote = "Maximum number of sequences to be processed in a single iteration. …"
+
+[configs.probe-nightly.args.gpu-memory-utilization]
+flag = "--gpu-memory-utilization"
+value = "0.30"
+why = "GB10 はユニファイドメモリなので、空きの見積もりが psutil の available になる (上の原文)。要る量は「全体 × この割合」で、それが空きを上回ると起動しない (`vllm/v1/worker/utils.py` の requested_memory。同じ commit)。段 0 で見たいのはアテンションの部品の可否なので、要求を小さくして、メモリの都合で落ちる筋道 (判定できなかった) を避ける"
+source = "https://github.com/vllm-project/vllm/blob/385dce36bcee42309924a5ece951a96db3dce7f2/vllm/utils/mem_utils.py"
+quote = "On UMA (Unified Memory Architecture) platforms where CPU and GPU share physical memory (e.g. GH200, DGX Spark, Jetson Orin), cudaMemGetInfo underreports free memory because it does not account for reclaimable OS memory (page cache, buffers). Use psutil to get the true available memory."
+
+[configs.probe-nightly.args.language-model-only]
+flag = "--language-model-only"
+why = "このモデルは画像と動画も受ける形 (Glm5NextForConditionalGeneration) だが、この用途は文章だけである。マルチモーダルの下ごしらえのぶんのメモリを使わない"
+source = "https://github.com/vllm-project/vllm/blob/385dce36bcee42309924a5ece951a96db3dce7f2/vllm/config/multimodal.py"
+quote = "If True, disables all multimodal inputs by setting all modality limits to 0. Equivalent to setting `--limit-mm-per-prompt` to 0 for every modality."
+
+# --- 環境変数 --------------------------------------------------------------
+
+[configs.probe-nightly.env.logging-level]
+flag = "VLLM_LOGGING_LEVEL"
+value = "DEBUG"
+why = "選ばれなかったアテンションのバックエンドの理由が、debug の段でしか記録に出ない (requirements 5.2 が、その理由の記録を求める)"
+source = "https://github.com/vllm-project/vllm/blob/385dce36bcee42309924a5ece951a96db3dce7f2/vllm/envs.py"
+quote = "this is used for configuring the default logging level"
+
+
+# ===========================================================================
+# 段 2: p1-nvfp4-tp2 — 2 台 TP=2 の推論サーバー (requirements 6.1〜6.7)
+# ===========================================================================
+
+[configs.p1-nvfp4-tp2]
+kind = "serve"
+description = "P1 の第一の構成。上流の公式のイメージ + NVFP4 + 2 台 TP=2、投機的デコードなし"
+nodes = ["head", "worker"]
+# 初回は 1 台あたり約 92 GiB の読み込みと JIT があるので長く取る。実測で直す
+# (直しても config-sha256 は変わらないので、動いているサーバーを止めずに済む)
+ready_timeout_s = 1800
+served_model_name = "glm-5-3-flash"
+
+[configs.p1-nvfp4-tp2.image]
+ref = "vllm/vllm-openai@sha256:b0501f99fec5136f248f78d5850977a2ec32d55cd9a665f4a9ffef24cbdf7fe5"
+seen_as = "vllm/vllm-openai:glm53-flash-arm64-cu130"
+size_bytes = 9666567584
+source = "https://hub.docker.com/v2/repositories/vllm/vllm-openai/tags"
+quote = "glm53-flash-arm64-cu130 / linux/arm64 / 9666567584 B / 2026-09-09T13:31:25Z"
+
+[configs.p1-nvfp4-tp2.weights]
+repo = "RedHatAI/GLM-5.3-Flash-NVFP4"
+revision = "18d55bfd5a2194887738da73753975c9d3842f46"
+manifest = "RedHatAI__GLM-5.3-Flash-NVFP4.manifest.json"
+mount_at = "/models/glm-5-3-flash-nvfp4"
+# ファイルの一覧と大きさと sha256 は、この版の木を列挙する公開の API から匿名で読む
+# (`serve manifest` が呼ぶのは
+# https://huggingface.co/api/models/RedHatAI/GLM-5.3-Flash-NVFP4/tree/18d55bfd5a2194887738da73753975c9d3842f46?recursive=1)。
+# 下の原文は、その口を定めている HF 自身の OpenAPI の、この経路の説明である
+source = "https://huggingface.co/.well-known/openapi.json"
+quote = "List the content of a repository tree, with pagination support."
+
+# --- docker の設定 ---------------------------------------------------------
+
+[configs.p1-nvfp4-tp2.docker.gpus]
+flag = "--gpus"
+value = "all"
+why = "GB10 の GPU をコンテナに見せる。1 台に 1 基なので、2 台で TP=2 になる"
+source = "https://docs.docker.com/reference/cli/docker/container/run/"
+quote = "GPU devices to add to the container ('all' to pass all GPUs)"
+
+[configs.p1-nvfp4-tp2.docker.ipc]
+flag = "--ipc"
+value = "host"
+why = "TP がプロセスの間で共有メモリを使う。コンテナの既定の /dev/shm では足りない"
+source = "https://docs.vllm.ai/en/latest/deployment/docker/"
+quote = "You can either use the `ipc=host` flag or `--shm-size` flag to allow the container to access the host's shared memory. vLLM uses PyTorch, which uses shared memory to share data between processes under the hood, particularly for tensor parallel inference."
+
+[configs.p1-nvfp4-tp2.docker.shm-size]
+flag = "--shm-size"
+value = "16g"
+why = "/dev/shm の大きさを明示する。NVIDIA が、NCCL をコンテナの中で使うときに広げるよう求めている (--ipc host と重なる指定で、vLLM の文書はどちらか一方でよいと書いている)"
+source = "https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/troubleshooting/runtime_and_mpi_issues.html"
+quote = "In particular, Docker containers default to limited shared and pinned memory resources. When using NCCL inside a container, please make sure to adjust the shared memory size inside the container, for example by adding the following arguments to the docker launch command line: `--shm-size=1g --ulimit memlock=-1`"
+
+[configs.p1-nvfp4-tp2.docker.ulimit-memlock]
+flag = "--ulimit"
+value = "memlock=-1"
+why = "NCCL をコンテナの中で使うときに、NVIDIA がこの指定を求めている。コンテナは、共有メモリとピン留めのメモリの資源が既定で絞られていて、RoCE のメモリの登録はピン留めのメモリを使う"
+source = "https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/troubleshooting/runtime_and_mpi_issues.html"
+quote = "In particular, Docker containers default to limited shared and pinned memory resources. When using NCCL inside a container, please make sure to adjust the shared memory size inside the container, for example by adding the following arguments to the docker launch command line: `--shm-size=1g --ulimit memlock=-1`"
+
+[configs.p1-nvfp4-tp2.docker.network]
+flag = "--network"
+value = "host"
+why = "2 台をまたぐ torch.distributed と NCCL が、ホストの直結のインターフェースをそのまま使う。-p が効かないので、--port で直接開く"
+source = "https://docs.docker.com/engine/network/drivers/host/"
+quote = "If you use the host network mode for a container, that container's network stack isn't isolated from the Docker host (the container shares the host's networking namespace), and the container doesn't get its own IP-address allocated. …"
+
+[configs.p1-nvfp4-tp2.docker.mount-weights]
+flag = "--mount"
+value = "type=bind,source={remote_root}/models/glm-5-3-flash-nvfp4,target=/models/glm-5-3-flash-nvfp4,readonly"
+why = "重みを書き換えない形で見せる (固定した版とファイルごとの検査の値を守る。requirements 3.4)"
+source = "https://docs.docker.com/engine/storage/bind-mounts/"
+quote = "If present, causes the bind mount to be mounted into the container as read-only."
+
+[configs.p1-nvfp4-tp2.docker.mount-cache]
+flag = "--mount"
+value = "type=bind,source={remote_root}/cache,target=/root/.cache"
+why = "JIT とコンパイルの結果を、起こし直しても作り直さない (要件 1.4 の「決めた時間のうちに受け付けられる状態になる」に効く)。/root/.cache は、vLLM のキャッシュ (~/.cache/vllm) の親である"
+source = "https://docs.vllm.ai/en/latest/deployment/docker/"
+quote = "Mounting the Hugging Face cache keeps model weights across containers, but each new container still starts with an empty `VLLM_CACHE_ROOT` (default `~/.cache/vllm`) and recompiles the model's `torch.compile` artifacts. …"
+
+[configs.p1-nvfp4-tp2.docker.mount-logs]
+flag = "--mount"
+value = "type=bind,source={remote_root}/logs,target=/logs"
+why = "通信の記録を、コンテナが消えても残る場所に書けるようにする (serve logs が回収する)。読み取り専用にしない"
+source = "https://docs.docker.com/reference/cli/docker/container/run/"
+quote = "Attach a filesystem mount to the container"
+
+# --- vllm serve の引数 (この順で並ぶ) --------------------------------------
+
+[configs.p1-nvfp4-tp2.docker.device-infiniband]
+flag = "--device"
+value = "/dev/infiniband"
+why = "コンテナの中から RDMA のデバイスが見えないと、NCCL が `NET/IB : No device found.` で TCP (Socket、16 Gbps) に落ちる。ホストの /dev/infiniband を渡すと、NCCL が IB (RoCE) の経路を選び、1 GiB の all-reduce の busbw が 186.9 Gbps になった (2026-09-22 の A/B。回 1 → 回 2 で 11.7 倍)"
+measured = "docs/results/2026-09-22-netcheck-bandwidth.md"
+
+[configs.p1-nvfp4-tp2.args.model-path]
+value = "{weights.mount_at}"
+why = "vllm serve の第一の位置の引数が、モデルの場所である"
+source = "https://github.com/vllm-project/vllm/blob/385dce36bcee42309924a5ece951a96db3dce7f2/vllm/entrypoints/cli/serve.py"
+quote = "usage=\"vllm serve [model_tag] [options]\""
+
+[configs.p1-nvfp4-tp2.args.served-model-name]
+flag = "--served-model-name"
+value = "glm-5-3-flash"
+why = "/v1/models の id を、/ を含まない 1 つの名前にする (requirements 6.2)。別名を複数渡さないのは、/v1/messages が最初の別名だけを返して、直前の thinking が捨てられる報告があるため"
+source = "https://github.com/vllm-project/vllm/blob/385dce36bcee42309924a5ece951a96db3dce7f2/vllm/config/model.py"
+quote = "The model name(s) used in the API. If multiple names are provided, the server will respond to any of the provided names. The model name in the model field of a response will be the first name in this list. …"
+
+[configs.p1-nvfp4-tp2.args.host]
+flag = "--host"
+value = "{head.lan_addr}"
+why = "LAN のアドレスだけで待ち受ける (直結の側やほかのインターフェースで待ち受けない)。Mac からはこのアドレスで呼ぶ (requirements 6.1)"
+source = "https://github.com/vllm-project/vllm/blob/385dce36bcee42309924a5ece951a96db3dce7f2/vllm/entrypoints/launchers/cli_args.py"
+quote = "Host name."
+
+[configs.p1-nvfp4-tp2.args.port]
+flag = "--port"
+value = "8000"
+is_port = true
+why = "HTTP の口を 1 つだけ開く。既存の対象サーバー (8001) と重ならない番号にする"
+source = "https://github.com/vllm-project/vllm/blob/385dce36bcee42309924a5ece951a96db3dce7f2/vllm/entrypoints/launchers/cli_args.py"
+quote = "Port number."
+
+[configs.p1-nvfp4-tp2.args.tensor-parallel-size]
+flag = "--tensor-parallel-size"
+value = "2"
+why = "2 台 × 1 基の GPU で、1 つのモデルを 2 つに分ける (requirements 6。2 台の両方で同じ値にする)"
+source = "https://github.com/vllm-project/vllm/blob/385dce36bcee42309924a5ece951a96db3dce7f2/vllm/config/parallel.py"
+quote = "Number of tensor parallel groups."
+
+[configs.p1-nvfp4-tp2.args.nnodes]
+flag = "--nnodes"
+value = "2"
+why = "2 台にまたがる 1 つのサーバーにする。CUDA で nnodes > 1 なら、実行の後ろ側は自動で mp になるので、--distributed-executor-backend は書かない"
+source = "https://github.com/vllm-project/vllm/blob/385dce36bcee42309924a5ece951a96db3dce7f2/vllm/config/parallel.py"
+quote = "num of nodes for multi-node distributed inference when distributed_executor_backend is mp."
+
+[configs.p1-nvfp4-tp2.args.node-rank]
+flag = "--node-rank"
+value = "{node.rank}"
+why = "構成の nodes に書いた順 (head が 0、worker が 1) を、そのまま順位にする。既定に頼らず、2 台の両方で明示する"
+source = "https://github.com/vllm-project/vllm/blob/385dce36bcee42309924a5ece951a96db3dce7f2/vllm/config/parallel.py"
+quote = "distributed node rank for multi-node distributed inference when distributed_executor_backend is mp."
+
+[configs.p1-nvfp4-tp2.args.headless]
+flag = "--headless"
+only_on = "worker"
+why = "worker は HTTP の API を持たず、worker のプロセスだけを動かす。API を持つのは head の 1 台だけである"
+source = "https://github.com/vllm-project/vllm/blob/385dce36bcee42309924a5ece951a96db3dce7f2/vllm/entrypoints/launchers/cli_args.py"
+quote = "Run in headless mode. See multi-node data parallel documentation for more details."
+
+[configs.p1-nvfp4-tp2.args.master-addr]
+flag = "--master-addr"
+value = "{head.fabric_addr}"
+why = "分散の初期化の宛先を、2 台の両方で head の直結の側のアドレスにする。既定は 127.0.0.1 なので、2 台では必ず上書きが要る"
+source = "https://github.com/vllm-project/vllm/blob/385dce36bcee42309924a5ece951a96db3dce7f2/vllm/config/parallel.py"
+quote = "distributed master address for multi-node distributed inference when distributed_executor_backend is mp."
+
+[configs.p1-nvfp4-tp2.args.master-port]
+flag = "--master-port"
+value = "29501"
+is_port = true
+why = "分散の初期化の口を明示する (既定と同じ値を、あとから既定が変わっても動くように書く)。通信の確認のジョブの rendezvous とは別の番号にして、両方が同時に上がっても衝突しない"
+source = "https://github.com/vllm-project/vllm/blob/385dce36bcee42309924a5ece951a96db3dce7f2/vllm/config/parallel.py"
+quote = "distributed master port for multi-node distributed inference when distributed_executor_backend is mp."
+
+[configs.p1-nvfp4-tp2.args.max-model-len]
+flag = "--max-model-len"
+value = "163840"
+why = "bench の prefill が 128k トークン、agent が 12 万トークンまで伸びる。入力 128k と出力の余裕を見て 160k にする (モデルの上限は 1,048,576 なので余裕がある)"
+source = "https://github.com/vllm-project/vllm/blob/385dce36bcee42309924a5ece951a96db3dce7f2/vllm/config/model.py"
+quote = "Model context length (prompt and output). If unspecified, will be automatically derived from the model config. …"
+
+[configs.p1-nvfp4-tp2.args.max-num-seqs]
+flag = "--max-num-seqs"
+value = "16"
+why = "線形アテンションの状態が同時の本数に比例し、1 本あたり 1 台で約 70 MiB を取る。既定 (デバイスのメモリから決まる大きな値) のままだと数十 GiB を失う。bench の同時 8 本まで足りる"
+source = "https://github.com/vllm-project/vllm/blob/385dce36bcee42309924a5ece951a96db3dce7f2/vllm/config/scheduler.py"
+quote = "Maximum number of sequences to be processed in a single iteration. …"
+
+[configs.p1-nvfp4-tp2.args.max-num-batched-tokens]
+flag = "--max-num-batched-tokens"
+value = "2048"
+why = "チャンク化した prefill の 1 回ぶん。小さいほど活性化のピークが下がる。128k の prefill ではチャンクの回数が増えるが、この構成ではメモリが先に効く"
+source = "https://github.com/vllm-project/vllm/blob/385dce36bcee42309924a5ece951a96db3dce7f2/vllm/config/scheduler.py"
+quote = "Maximum number of tokens that can be processed in a single iteration. …"
+
+[configs.p1-nvfp4-tp2.args.gpu-memory-utilization]
+flag = "--gpu-memory-utilization"
+value = "0.90"
+why = "GB10 はユニファイドメモリなので、空きの見積もりが psutil の available になる (上の原文)。要る量は「全体 × この割合」で、それが空きを上回ると起動しない (`vllm/v1/worker/utils.py` の requested_memory。同じ commit)。既定の 0.92 より控えめにして、OS の側に余裕を残す"
+source = "https://github.com/vllm-project/vllm/blob/385dce36bcee42309924a5ece951a96db3dce7f2/vllm/utils/mem_utils.py"
+quote = "On UMA (Unified Memory Architecture) platforms where CPU and GPU share physical memory (e.g. GH200, DGX Spark, Jetson Orin), cudaMemGetInfo underreports free memory because it does not account for reclaimable OS memory (page cache, buffers). Use psutil to get the true available memory."
+
+[configs.p1-nvfp4-tp2.args.language-model-only]
+flag = "--language-model-only"
+why = "このモデルは画像と動画も受ける形だが、この用途は文章だけである。マルチモーダルの下ごしらえのぶんのメモリを使わない"
+source = "https://github.com/vllm-project/vllm/blob/385dce36bcee42309924a5ece951a96db3dce7f2/vllm/config/multimodal.py"
+quote = "If True, disables all multimodal inputs by setting all modality limits to 0. Equivalent to setting `--limit-mm-per-prompt` to 0 for every modality."
+
+[configs.p1-nvfp4-tp2.args.no-enable-flashinfer-autotune]
+flag = "--no-enable-flashinfer-autotune"
+why = "この温めを走らせない。項目の既定は None (`enable_flashinfer_autotune: bool = None`) なので、走るかどうかが環境で変わる。起動の段を減らして、確かめたい失敗の前に別の原因で止まらないようにする (真偽の設定には --no- 付きの形ができる)。research.md §d-4 が、マルチノードの起動がこの段で止まるという上流の報告 (vLLM の issue #52291) を記録している (この構成を書いた作業者は、その issue を開いていない)"
+source = "https://github.com/vllm-project/vllm/blob/385dce36bcee42309924a5ece951a96db3dce7f2/vllm/config/kernel.py"
+quote = "If True, run FlashInfer autotuning during kernel warmup."
+
+[configs.p1-nvfp4-tp2.args.tool-call-parser]
+flag = "--tool-call-parser"
+value = "glm47"
+why = "ツール呼び出しの出力を、OpenAI 互換の形に読み替える。glm47 という名前は vllm/tool_parsers/__init__.py に登録されている (glm45 と同じ実装に写る。glm53 という名前はない)"
+source = "https://github.com/vllm-project/vllm/blob/385dce36bcee42309924a5ece951a96db3dce7f2/vllm/entrypoints/launchers/cli_args.py"
+quote = "Select the tool call parser depending on the model that you're using. This is used to parse the model-generated tool call into OpenAI API format. Required for `--enable-auto-tool-choice`. …"
+
+[configs.p1-nvfp4-tp2.args.reasoning-parser]
+flag = "--reasoning-parser"
+value = "glm47"
+why = "thinking の中身を、OpenAI 互換の形に読み替える。glm47 は vllm/reasoning/__init__.py に登録されている (glm45 と同じ実装に写る)"
+source = "https://github.com/vllm-project/vllm/blob/385dce36bcee42309924a5ece951a96db3dce7f2/vllm/config/structured_outputs.py"
+quote = "Select the reasoning parser depending on the model that you're using. This is used to parse the reasoning content into OpenAI API format."
+
+[configs.p1-nvfp4-tp2.args.enable-auto-tool-choice]
+flag = "--enable-auto-tool-choice"
+why = "bench がツール呼び出しを測るのに、自動のツール選択が要る。--tool-call-parser と組で渡さないと、起動そのものが断られる"
+source = "https://github.com/vllm-project/vllm/blob/385dce36bcee42309924a5ece951a96db3dce7f2/vllm/entrypoints/launchers/cli_args.py"
+quote = "Enable auto tool choice for supported models. Use `--tool-call-parser` to specify which parser to use."
+
+[configs.p1-nvfp4-tp2.args.enable-prompt-tokens-details]
+flag = "--enable-prompt-tokens-details"
+why = "これを付けないと、/v1/messages の cache_read_input_tokens に、キャッシュの内訳が出ない (requirements 9.1)"
+source = "https://github.com/vllm-project/vllm/blob/385dce36bcee42309924a5ece951a96db3dce7f2/vllm/entrypoints/launchers/cli_args.py"
+quote = "If set to True, enable prompt_tokens_details in usage."
+
+[configs.p1-nvfp4-tp2.args.shutdown-timeout]
+flag = "--shutdown-timeout"
+value = "60"
+why = "既定の 0 は、動いている要求をすぐ捨てる。bench の途中で止めたときに、記録が壊れないよう猶予を入れる"
+source = "https://github.com/vllm-project/vllm/blob/385dce36bcee42309924a5ece951a96db3dce7f2/vllm/config/vllm.py"
+quote = "Shutdown grace period for in-flight requests. Shutdown will be delayed for up to this amount of time to allow already-running requests to complete. Any remaining requests are aborted once the timeout is reached."
+
+# --- 環境変数 (最初の 3 つだけ。A/B で足すものは docs/results/ の実測を根拠にする) -----
+
+[configs.p1-nvfp4-tp2.env.vllm-host-ip]
+flag = "VLLM_HOST_IP"
+value = "{node.fabric_addr}"
+why = "ノードごとに、自分の直結の側のアドレスを渡す。設定しないと、vLLM が既定の経路の推測で自分のアドレスを決め、1 本のケーブルで 4 つのインターフェースが現れる Spark では外しやすい"
+source = "https://github.com/vllm-project/vllm/blob/385dce36bcee42309924a5ece951a96db3dce7f2/vllm/envs.py"
+quote = "used in distributed environment to determine the ip address of the current node, when the node has multiple network interfaces. If you are using multi-node inference, you should set this differently on each node."
+
+[configs.p1-nvfp4-tp2.env.nccl-socket-ifname]
+flag = "NCCL_SOCKET_IFNAME"
+# 先頭の = は、前方一致ではなく完全一致にするための印である (NCCL の書式)
+value = "={node.fabric_ifname}"
+why = "NCCL のブートストラップと制御の経路を、直結のインターフェースに固定する。自動の検出に任せると、上がっているが通らないインターフェースを掴んで初期化で止まりうる。= を付けて、名前の完全一致にする"
+source = "https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html"
+quote = "Define to a list of prefixes to filter interfaces to be used by NCCL. Multiple prefixes can be provided, separated by the , symbol. Using the ^ symbol, NCCL will exclude interfaces starting with any prefix in that list. To match (or not) an exact interface name, begin the prefix string with the = character. …"
+
+[configs.p1-nvfp4-tp2.env.gloo-socket-ifname]
+flag = "GLOO_SOCKET_IFNAME"
+# Gloo では、= の完全一致も ^ の除外も文書化されていないので、名前をそのまま渡す
+value = "{node.fabric_ifname}"
+why = "CPU の側の集団通信が使う Gloo の経路も、同じ直結のインターフェースに固定する"
+source = "https://docs.pytorch.org/docs/stable/distributed.html"
+quote = "By default, both the NCCL and Gloo backends will try to find the right network interface to use. If the automatically detected interface is not correct, you can override it using the following environment variables (applicable to the respective backend) …"
+
+
+# ===========================================================================
+# p1-fetch-nvfp4 — 重みの本体を 2 台に取得する (requirements 3.4、3.5、8.8)
+# ===========================================================================
+#
+# `models/` そのものを結び付け、`--local-dir` で下の名前を指す。`models/<slug>/` を直に
+# 結び付けると、`gate_layout` の `test -d` が、**最初の取得の前**に断ってしまう
+# (`serve push` が作るのは 6 つの置き場所までで、その下の名前は作らない)。
+
+[configs.p1-fetch-nvfp4]
+kind = "fetch"
+description = "第一の候補の重み (NVFP4、184.3 GiB) を、2 台が公開の Hub から直接取得する"
+nodes = ["head", "worker"]
+# 184.3 GiB を 2 台が並行に落とす。回線で大きく変わるので長めに取る
+ready_timeout_s = 28800
+
+[configs.p1-fetch-nvfp4.image]
+ref = "vllm/vllm-openai@sha256:b0501f99fec5136f248f78d5850977a2ec32d55cd9a665f4a9ffef24cbdf7fe5"
+seen_as = "vllm/vllm-openai:glm53-flash-arm64-cu130"
+size_bytes = 9666567584
+source = "https://hub.docker.com/v2/repositories/vllm/vllm-openai/tags"
+quote = "glm53-flash-arm64-cu130 / linux/arm64 / 9666567584 B / 2026-09-09T13:31:25Z"
+
+[configs.p1-fetch-nvfp4.weights]
+repo = "RedHatAI/GLM-5.3-Flash-NVFP4"
+revision = "18d55bfd5a2194887738da73753975c9d3842f46"
+manifest = "RedHatAI__GLM-5.3-Flash-NVFP4.manifest.json"
+mount_at = "/models/glm-5-3-flash-nvfp4"
+# ファイルの一覧と大きさと sha256 は、この版の木を列挙する公開の API から匿名で読む
+# (`serve manifest` が呼ぶのは
+# https://huggingface.co/api/models/RedHatAI/GLM-5.3-Flash-NVFP4/tree/18d55bfd5a2194887738da73753975c9d3842f46?recursive=1)。
+# 下の原文は、その口を定めている HF 自身の OpenAPI の、この経路の説明である
+source = "https://huggingface.co/.well-known/openapi.json"
+quote = "List the content of a repository tree, with pagination support."
+
+[configs.p1-fetch-nvfp4.docker.entrypoint]
+flag = "--entrypoint"
+value = "hf"
+why = "このイメージの既定は vllm serve なので、取得の道具に差し替える (huggingface-cli は 1.x で動かなくなり、hf が置き換えである)"
+source = "https://docs.docker.com/reference/cli/docker/container/run/"
+quote = "Overwrite the default ENTRYPOINT of the image"
+
+[configs.p1-fetch-nvfp4.docker.mount-models]
+flag = "--mount"
+value = "type=bind,source={remote_root}/models,target=/models"
+why = "重みの置き場所を、書き込みできる形で見せる。models/ そのものを結び付けるのは、最初の取得の前に models/<slug>/ がまだ無く、置き場所の関門が断ってしまうためである"
+source = "https://docs.docker.com/reference/cli/docker/container/run/"
+quote = "Attach a filesystem mount to the container"
+
+[configs.p1-fetch-nvfp4.args.download]
+value = "download"
+why = "hf の、Hub からファイルを落とすサブコマンド"
+source = "https://github.com/huggingface/huggingface_hub/blob/main/src/huggingface_hub/cli/download.py"
+quote = "Download files from the Hub."
+
+[configs.p1-fetch-nvfp4.args.repo]
+value = "RedHatAI/GLM-5.3-Flash-NVFP4"
+why = "取得するリポジトリ。hf download の第一の位置の引数である"
+source = "https://github.com/huggingface/huggingface_hub/blob/main/src/huggingface_hub/cli/_cli_utils.py"
+quote = "The ID of the repo (e.g. `username/repo-name` or `spaces/username/repo-name`)."
+
+[configs.p1-fetch-nvfp4.args.revision]
+flag = "--revision"
+value = "18d55bfd5a2194887738da73753975c9d3842f46"
+why = "版を 40 桁の commit で固定する。短縮形は使えない"
+source = "https://huggingface.co/docs/huggingface_hub/en/guides/download"
+quote = "When using the commit hash, it must be the full-length hash instead of a 7-character commit hash."
+
+[configs.p1-fetch-nvfp4.args.local-dir]
+flag = "--local-dir"
+value = "{weights.mount_at}"
+why = "実体のファイルを平たく置く。既定のキャッシュはシンボリックリンクを張り、CACHEDIR.TAG を作るので、rsync や照合と相性が悪い"
+source = "https://github.com/huggingface/huggingface_hub/blob/main/src/huggingface_hub/cli/download.py"
+quote = "If set, the downloaded file will be placed under this directory. …"
+
+[configs.p1-fetch-nvfp4.args.max-workers]
+flag = "--max-workers"
+value = "8"
+why = "既定と同じ値を明示する (あとから既定が変わっても、取得の並行数が変わらない)"
+source = "https://github.com/huggingface/huggingface_hub/blob/main/src/huggingface_hub/cli/download.py"
+quote = "Maximum number of workers to use for downloading files. Default is 8."
+
+[configs.p1-fetch-nvfp4.args.exclude-model-card]
+flag = "--exclude"
+value = "README.md"
+why = "モデルカードを取得しない (第三者のレシピそのものでありうる。requirements 8.8、11.3)。コミットしたマニフェストにも載っていない"
+source = "https://github.com/huggingface/huggingface_hub/blob/main/src/huggingface_hub/cli/download.py"
+quote = "Glob patterns to exclude from files to download."
+
+[configs.p1-fetch-nvfp4.env.hf-hub-disable-telemetry]
+flag = "HF_HUB_DISABLE_TELEMETRY"
+value = "1"
+why = "取得の利用の記録を外に出さない。渡す環境変数は、これ 1 つだけである (認証の情報を Spark に置かない。requirements 2.6)"
+source = "https://huggingface.co/docs/huggingface_hub/en/package_reference/environment_variables"
+quote = "You can set `HF_HUB_DISABLE_TELEMETRY=1` as environment variable to globally disable telemetry."
+
+
+# ===========================================================================
+# p1-fetch-nvfp4-probe — 段 0 に要る設定とトークナイザだけを取得する
+# ===========================================================================
+#
+# safetensors を除くので、落ちるのは約 37 MiB である。`probe/` そのものを結び付け、
+# `--local-dir` で下の名前を指す (上と同じ理由)。
+
+[configs.p1-fetch-nvfp4-probe]
+kind = "fetch"
+description = "段 0 の縮小の確認に要る、設定とトークナイザだけを取得する (safetensors を除く)"
+# design.md 「types / config」が、kind = "fetch" の構成を 2 台と定めているので、2 台に置く
+# (段 0 が使うのは head の側だけだが、落ちるのは約 37 MiB で、worker にも置いておけば
+# `serve verify --probe-files` が 2 台で同じことを確かめられる)
+nodes = ["head", "worker"]
+ready_timeout_s = 900
+
+[configs.p1-fetch-nvfp4-probe.image]
+ref = "vllm/vllm-openai@sha256:b0501f99fec5136f248f78d5850977a2ec32d55cd9a665f4a9ffef24cbdf7fe5"
+seen_as = "vllm/vllm-openai:glm53-flash-arm64-cu130"
+size_bytes = 9666567584
+source = "https://hub.docker.com/v2/repositories/vllm/vllm-openai/tags"
+quote = "glm53-flash-arm64-cu130 / linux/arm64 / 9666567584 B / 2026-09-09T13:31:25Z"
+
+[configs.p1-fetch-nvfp4-probe.weights]
+repo = "RedHatAI/GLM-5.3-Flash-NVFP4"
+revision = "18d55bfd5a2194887738da73753975c9d3842f46"
+manifest = "RedHatAI__GLM-5.3-Flash-NVFP4.manifest.json"
+mount_at = "/probe/glm-5-3-flash-nvfp4"
+# ファイルの一覧と大きさと sha256 は、この版の木を列挙する公開の API から匿名で読む
+# (`serve manifest` が呼ぶのは
+# https://huggingface.co/api/models/RedHatAI/GLM-5.3-Flash-NVFP4/tree/18d55bfd5a2194887738da73753975c9d3842f46?recursive=1)。
+# 下の原文は、その口を定めている HF 自身の OpenAPI の、この経路の説明である
+source = "https://huggingface.co/.well-known/openapi.json"
+quote = "List the content of a repository tree, with pagination support."
+
+[configs.p1-fetch-nvfp4-probe.docker.entrypoint]
+flag = "--entrypoint"
+value = "hf"
+why = "このイメージの既定は vllm serve なので、取得の道具に差し替える"
+source = "https://docs.docker.com/reference/cli/docker/container/run/"
+quote = "Overwrite the default ENTRYPOINT of the image"
+
+[configs.p1-fetch-nvfp4-probe.docker.mount-probe]
+flag = "--mount"
+value = "type=bind,source={remote_root}/probe,target=/probe"
+why = "縮小の確認の置き場所を、書き込みできる形で見せる。probe/ そのものを結び付けるのは、最初の取得の前に probe/<slug>/ がまだ無く、置き場所の関門が断ってしまうためである"
+source = "https://docs.docker.com/reference/cli/docker/container/run/"
+quote = "Attach a filesystem mount to the container"
+
+[configs.p1-fetch-nvfp4-probe.args.download]
+value = "download"
+why = "hf の、Hub からファイルを落とすサブコマンド"
+source = "https://github.com/huggingface/huggingface_hub/blob/main/src/huggingface_hub/cli/download.py"
+quote = "Download files from the Hub."
+
+[configs.p1-fetch-nvfp4-probe.args.repo]
+value = "RedHatAI/GLM-5.3-Flash-NVFP4"
+why = "取得するリポジトリ。段 2 と同じリポジトリの、同じ版の設定を読む"
+source = "https://github.com/huggingface/huggingface_hub/blob/main/src/huggingface_hub/cli/_cli_utils.py"
+quote = "The ID of the repo (e.g. `username/repo-name` or `spaces/username/repo-name`)."
+
+[configs.p1-fetch-nvfp4-probe.args.revision]
+flag = "--revision"
+value = "18d55bfd5a2194887738da73753975c9d3842f46"
+why = "版を 40 桁の commit で固定する。短縮形は使えない"
+source = "https://huggingface.co/docs/huggingface_hub/en/guides/download"
+quote = "When using the commit hash, it must be the full-length hash instead of a 7-character commit hash."
+
+[configs.p1-fetch-nvfp4-probe.args.local-dir]
+flag = "--local-dir"
+value = "{weights.mount_at}"
+why = "実体のファイルを平たく置く (シンボリックリンクと CACHEDIR.TAG を避ける)"
+source = "https://github.com/huggingface/huggingface_hub/blob/main/src/huggingface_hub/cli/download.py"
+quote = "If set, the downloaded file will be placed under this directory. …"
+
+[configs.p1-fetch-nvfp4-probe.args.max-workers]
+flag = "--max-workers"
+value = "8"
+why = "既定と同じ値を明示する"
+source = "https://github.com/huggingface/huggingface_hub/blob/main/src/huggingface_hub/cli/download.py"
+quote = "Maximum number of workers to use for downloading files. Default is 8."
+
+[configs.p1-fetch-nvfp4-probe.args.exclude-safetensors]
+flag = "--exclude"
+value = "*.safetensors"
+why = "段 0 は --load-format dummy で重みを作るので、本体は落とさない (184.3 GiB を落とす前に、いちばんの懸念に当たる。requirements 5.1)"
+source = "https://github.com/huggingface/huggingface_hub/blob/main/src/huggingface_hub/cli/download.py"
+quote = "Glob patterns to exclude from files to download."
+
+[configs.p1-fetch-nvfp4-probe.args.exclude-model-card]
+flag = "--exclude"
+value = "README.md"
+why = "モデルカードを取得しない (requirements 8.8、11.3)"
+source = "https://github.com/huggingface/huggingface_hub/blob/main/src/huggingface_hub/cli/download.py"
+quote = "Glob patterns to exclude from files to download."
+
+[configs.p1-fetch-nvfp4-probe.env.hf-hub-disable-telemetry]
+flag = "HF_HUB_DISABLE_TELEMETRY"
+value = "1"
+why = "取得の利用の記録を外に出さない。渡す環境変数は、これ 1 つだけである"
+source = "https://huggingface.co/docs/huggingface_hub/en/package_reference/environment_variables"
+quote = "You can set `HF_HUB_DISABLE_TELEMETRY=1` as environment variable to globally disable telemetry."
+
+
+# ===========================================================================
+# p1-image-licenses — イメージの中のライセンスの表記を読む (requirements 3.8、3.9)
+# ===========================================================================
+#
+# 重みの参照も --mount も持たない。読むファイルの道筋は、位置の引数で渡す。
+#
+# 読む道筋の決め方: 固定したイメージの Dockerfile は、ライセンスのファイルをイメージに
+# 置かず、`org.opencontainers.image.licenses` のラベルも付けない (`docker/Dockerfile` を
+# 全文で確かめた)。したがってイメージの中の表記は、ベースのイメージ
+# (`nvidia/cuda:13.0.3-base-ubuntu24.04`。`docker/versions.json` の FINAL_BASE_IMAGE) 由来
+# のものだけである。そのベースのイメージは、NVIDIA 自身の公開のリポジトリ
+# (`gitlab.com/nvidia/container-images/cuda`) の、版で分かれた道筋
+# `dist/13.0.3/ubuntu2404/base/Dockerfile` から作られ、そこに `COPY NGC-DL-CONTAINER-LICENSE /`
+# の行がある (arm64 と amd64 を束ねた `FROM base-${TARGETARCH}` より後ろの行なので、
+# arm64 (NVARCH=sbsa) のイメージにも入る)。→ 読む道筋は `/NGC-DL-CONTAINER-LICENSE` である。
+#
+# 読むファイルが無ければ、cat は 0 以外で終わり、`serve image-licenses` はその終了コードと
+# 標準エラーを、そのまま計測者に見せる (それも 7.1 の判断の材料になる)。
+
+[configs.p1-image-licenses]
+kind = "inspect"
+description = "固定したイメージの中の、ライセンスの表記を読む (LICENSES.md に書くため)"
+nodes = ["head"]
+# cat を 1 回流すだけなので、数秒で終わる
+ready_timeout_s = 120
+
+[configs.p1-image-licenses.image]
+ref = "vllm/vllm-openai@sha256:b0501f99fec5136f248f78d5850977a2ec32d55cd9a665f4a9ffef24cbdf7fe5"
+seen_as = "vllm/vllm-openai:glm53-flash-arm64-cu130"
+size_bytes = 9666567584
+source = "https://hub.docker.com/v2/repositories/vllm/vllm-openai/tags"
+quote = "glm53-flash-arm64-cu130 / linux/arm64 / 9666567584 B / 2026-09-09T13:31:25Z"
+
+[configs.p1-image-licenses.docker.entrypoint]
+flag = "--entrypoint"
+value = "cat"
+why = "イメージの既定は vllm serve なので、ファイルをそのまま出す道具に差し替える (中身を加工しない)"
+source = "https://docs.docker.com/reference/cli/docker/container/run/"
+quote = "Overwrite the default ENTRYPOINT of the image"
+
+[configs.p1-image-licenses.args.ngc-dl-container-license]
+value = "/NGC-DL-CONTAINER-LICENSE"
+why = "ベースのイメージ (nvidia/cuda:13.0.3-base-ubuntu24.04) の Dockerfile が、この名前のファイルをイメージの根に置いている。vLLM の Dockerfile はライセンスのファイルもラベルも足さないので、イメージの中の表記はこれである。この行は、arm64 と amd64 を束ねた段より後ろにあるので、arm64 のイメージにも入る"
+source = "https://gitlab.com/nvidia/container-images/cuda/-/raw/master/dist/13.0.3/ubuntu2404/base/Dockerfile"
+quote = "COPY NGC-DL-CONTAINER-LICENSE /"
+
+
+# ===========================================================================
+# p1-image-hf-version — イメージの中に、重みの取得の道具 (hf) があるかを確かめる (7.1)
+# ===========================================================================
+#
+# `serve fetch` は、イメージの中の `hf` (huggingface_hub の CLI) で重みを落とす (design.md
+# 「fetch」)。無ければ、ホストに入れずに計測者に尋ねる (tasks.md 7.1)。`kind = "inspect"`
+# の仕組み (`serve image-licenses <この構成>`) で `hf version` を 1 回流し、出力 (版) を読む。
+# 無ければ docker が entrypoint を見つけられずに失敗し、その文面がそのまま材料になる。
+
+[configs.p1-image-hf-version]
+kind = "inspect"
+description = "固定したイメージの中の hf (huggingface_hub の CLI) の有無と版を読む"
+nodes = ["head"]
+# hf version を 1 回流すだけなので、数秒で終わる
+ready_timeout_s = 120
+
+[configs.p1-image-hf-version.image]
+ref = "vllm/vllm-openai@sha256:b0501f99fec5136f248f78d5850977a2ec32d55cd9a665f4a9ffef24cbdf7fe5"
+seen_as = "vllm/vllm-openai:glm53-flash-arm64-cu130"
+size_bytes = 9666567584
+source = "https://hub.docker.com/v2/repositories/vllm/vllm-openai/tags"
+quote = "glm53-flash-arm64-cu130 / linux/arm64 / 9666567584 B / 2026-09-09T13:31:25Z"
+
+[configs.p1-image-hf-version.docker.entrypoint]
+flag = "--entrypoint"
+value = "hf"
+why = "イメージの既定は vllm serve なので、取得の道具そのものに差し替える (p1-fetch-nvfp4 と同じ道具)"
+source = "https://docs.docker.com/reference/cli/docker/container/run/"
+quote = "Overwrite the default ENTRYPOINT of the image"
+
+[configs.p1-image-hf-version.args.version]
+value = "version"
+why = "hf の版を出すだけの副作用のないサブコマンド。出れば道具があり、版がわかる"
+source = "https://raw.githubusercontent.com/huggingface/huggingface_hub/main/docs/source/en/guides/cli.md"
+quote = "version  Print information about the hf version."
+
+
+# ===========================================================================
+# netcheck-bandwidth — 2 台の間の帯域を測る (requirements 4.3、4.4、4.6)
+# ===========================================================================
+#
+# イメージの中の torchrun で、自前の all-reduce の計測 (`payload/allreduce_bench.py`) を
+# 2 台で流す。nccl-tests は MPI が要り、Spark に恒久的な変更を入れることになるので使わない。
+# 合否は、回収した NCCL の記録の経路から出すので、`NCCL_DEBUG` と `NCCL_DEBUG_FILE` が
+# 要る (`netcheck.py` が、無い構成を Spark に触る前に断る)。
+
+[configs.netcheck-bandwidth]
+kind = "job"
+description = "2 台の間の all-reduce の帯域を、イメージの中の torchrun で測る"
+nodes = ["head", "worker"]
+# 1 MiB から 1 GiB まで 6 つの大きさを、温め 5 回 + 計測 20 回。CUDA の初期化を含めて余裕を見る
+ready_timeout_s = 1800
+
+[configs.netcheck-bandwidth.image]
+ref = "vllm/vllm-openai@sha256:b0501f99fec5136f248f78d5850977a2ec32d55cd9a665f4a9ffef24cbdf7fe5"
+seen_as = "vllm/vllm-openai:glm53-flash-arm64-cu130"
+size_bytes = 9666567584
+source = "https://hub.docker.com/v2/repositories/vllm/vllm-openai/tags"
+quote = "glm53-flash-arm64-cu130 / linux/arm64 / 9666567584 B / 2026-09-09T13:31:25Z"
+
+[configs.netcheck-bandwidth.docker.gpus]
+flag = "--gpus"
+value = "all"
+why = "all-reduce の対象のメモリを GPU に置く"
+source = "https://docs.docker.com/reference/cli/docker/container/run/"
+quote = "GPU devices to add to the container ('all' to pass all GPUs)"
+
+[configs.netcheck-bandwidth.docker.ipc]
+flag = "--ipc"
+value = "host"
+why = "PyTorch の分散がプロセスの間で共有メモリを使う。コンテナの既定の /dev/shm では足りない"
+source = "https://docs.vllm.ai/en/latest/deployment/docker/"
+quote = "You can either use the `ipc=host` flag or `--shm-size` flag to allow the container to access the host's shared memory. vLLM uses PyTorch, which uses shared memory to share data between processes under the hood, particularly for tensor parallel inference."
+
+[configs.netcheck-bandwidth.docker.shm-size]
+flag = "--shm-size"
+value = "16g"
+why = "/dev/shm の大きさを明示する。NVIDIA が、NCCL をコンテナの中で使うときに広げるよう求めている"
+source = "https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/troubleshooting/runtime_and_mpi_issues.html"
+quote = "In particular, Docker containers default to limited shared and pinned memory resources. When using NCCL inside a container, please make sure to adjust the shared memory size inside the container, for example by adding the following arguments to the docker launch command line: `--shm-size=1g --ulimit memlock=-1`"
+
+[configs.netcheck-bandwidth.docker.ulimit-memlock]
+flag = "--ulimit"
+value = "memlock=-1"
+why = "NCCL をコンテナの中で使うときに、NVIDIA がこの指定を求めている。コンテナは、共有メモリとピン留めのメモリの資源が既定で絞られていて、RoCE のメモリの登録はピン留めのメモリを使う"
+source = "https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/troubleshooting/runtime_and_mpi_issues.html"
+quote = "In particular, Docker containers default to limited shared and pinned memory resources. When using NCCL inside a container, please make sure to adjust the shared memory size inside the container, for example by adding the following arguments to the docker launch command line: `--shm-size=1g --ulimit memlock=-1`"
+
+[configs.netcheck-bandwidth.docker.network]
+flag = "--network"
+value = "host"
+why = "2 台をまたぐ rendezvous と NCCL が、ホストの直結のインターフェースをそのまま使う"
+source = "https://docs.docker.com/engine/network/drivers/host/"
+quote = "If you use the host network mode for a container, that container's network stack isn't isolated from the Docker host (the container shares the host's networking namespace), and the container doesn't get its own IP-address allocated. …"
+
+[configs.netcheck-bandwidth.docker.entrypoint]
+flag = "--entrypoint"
+value = "torchrun"
+why = "イメージの既定は vllm serve なので、2 台で同じスクリプトを起こす道具に差し替える。イメージには PyTorch と NCCL が入っているので、Spark に何も入れずに済む"
+source = "https://docs.docker.com/reference/cli/docker/container/run/"
+quote = "Overwrite the default ENTRYPOINT of the image"
+
+[configs.netcheck-bandwidth.docker.mount-payload]
+flag = "--mount"
+value = "type=bind,source={remote_root}/payload,target=/payload,readonly"
+why = "配った計測のスクリプトを、書き換えない形で見せる (serve push が payload/ に配る)"
+source = "https://docs.docker.com/engine/storage/bind-mounts/"
+quote = "If present, causes the bind mount to be mounted into the container as read-only."
+
+[configs.netcheck-bandwidth.docker.mount-logs]
+flag = "--mount"
+value = "type=bind,source={remote_root}/logs,target=/logs"
+why = "NCCL の記録を、コンテナが消えても残る場所に書く。合否をこの記録の経路から出すので、**読み取り専用にしない** (読み取り専用だと netcheck が起こす前に断る)"
+source = "https://docs.docker.com/reference/cli/docker/container/run/"
+quote = "Attach a filesystem mount to the container"
+
+[configs.netcheck-bandwidth.args.nnodes]
+flag = "--nnodes"
+value = "2"
+why = "2 台で 1 つの集団通信を作る"
+source = "https://github.com/pytorch/pytorch/blob/v2.13.0/torch/distributed/run.py"
+quote = "Number of nodes, or the range of nodes in form <minimum_nodes>:<maximum_nodes>."
+
+[configs.netcheck-bandwidth.args.nproc-per-node]
+flag = "--nproc-per-node"
+value = "1"
+why = "1 台に GPU が 1 基なので、1 台 1 プロセスにする (world size は 2 になる)"
+source = "https://github.com/pytorch/pytorch/blob/v2.13.0/torch/distributed/run.py"
+quote = "Number of workers per node; supported values: [auto, cpu, gpu, xpu, int]."
+
+[configs.netcheck-bandwidth.args.rdzv-backend]
+flag = "--rdzv-backend"
+value = "static"
+why = "c10d の rendezvous は、複数のノードで名前の解決に失敗することがある。静的な rendezvous にすると、--master-addr と --master-port がそのまま使われる"
+source = "https://docs.vllm.ai/en/latest/usage/troubleshooting/"
+quote = "We use `--rdzv_backend=static` instead of `c10d` because the `c10d` rendezvous backend can fail with DNS resolution errors in multi-node setups …"
+
+[configs.netcheck-bandwidth.args.node-rank]
+flag = "--node-rank"
+value = "{node.rank}"
+why = "構成の nodes に書いた順 (head が 0、worker が 1) を、そのまま順位にする。rank 0 の標準出力の JSON が、帯域の結果である"
+source = "https://github.com/pytorch/pytorch/blob/v2.13.0/torch/distributed/run.py"
+quote = "Rank of the node for multi-node distributed training. It is only used for static rendezvous (i.e., when ``--rdzv-backend=static``)."
+
+[configs.netcheck-bandwidth.args.master-addr]
+flag = "--master-addr"
+value = "{head.fabric_addr}"
+why = "rendezvous の宛先を、2 台の両方で head の直結の側のアドレスにする"
+source = "https://github.com/pytorch/pytorch/blob/v2.13.0/torch/distributed/run.py"
+quote = "Address of the master node (rank 0) that only used for static rendezvous. It should be either the IP address or the hostname of rank 0. …"
+
+[configs.netcheck-bandwidth.args.master-port]
+flag = "--master-port"
+value = "29520"
+is_port = true
+why = "rendezvous の口を明示する。**推論サーバーの --master-port (29501) とも、torchrun の既定 (29500) とも別の番号**にして、どちらが上がっていても衝突しない。is_port を付けて、起動の前に空いているかを見る"
+source = "https://github.com/pytorch/pytorch/blob/v2.13.0/torch/distributed/run.py"
+quote = "Port on the master node (rank 0) to be used for communication during distributed training. It is only used for static rendezvous. Defaults to 29500."
+
+[configs.netcheck-bandwidth.args.script]
+value = "/payload/allreduce_bench.py"
+why = "torchrun の位置の引数は、2 台で動かすスクリプトである。自前の all-reduce の計測で、大きさごとの busbw を 1 行の JSON で出す"
+source = "https://github.com/pytorch/pytorch/blob/v2.13.0/torch/distributed/run.py"
+quote = "Full path to the (single GPU) training program/script to be launched in parallel, followed by all the arguments for the training script."
+
+[configs.netcheck-bandwidth.env.nccl-socket-ifname]
+flag = "NCCL_SOCKET_IFNAME"
+value = "={node.fabric_ifname}"
+why = "NCCL のブートストラップと制御の経路を、直結のインターフェースに固定する。= を付けて名前の完全一致にする"
+source = "https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html"
+quote = "Define to a list of prefixes to filter interfaces to be used by NCCL. Multiple prefixes can be provided, separated by the , symbol. Using the ^ symbol, NCCL will exclude interfaces starting with any prefix in that list. To match (or not) an exact interface name, begin the prefix string with the = character. …"
+
+[configs.netcheck-bandwidth.env.gloo-socket-ifname]
+flag = "GLOO_SOCKET_IFNAME"
+value = "{node.fabric_ifname}"
+why = "静的な rendezvous と CPU の側の集団通信が使う Gloo の経路も、同じ直結のインターフェースに固定する"
+source = "https://docs.pytorch.org/docs/stable/distributed.html"
+quote = "By default, both the NCCL and Gloo backends will try to find the right network interface to use. If the automatically detected interface is not correct, you can override it using the following environment variables (applicable to the respective backend) …"
+
+[configs.netcheck-bandwidth.env.nccl-debug]
+flag = "NCCL_DEBUG"
+value = "INFO"
+why = "経路の確定の行 (Using network …) は INFO の段でしか出ない。合否をこの行から出すので、確認のときは INFO にする (定常の運転では付けない)"
+source = "https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html"
+quote = "The NCCL_DEBUG variable controls the debug information that is displayed from NCCL. This variable is commonly used for debugging."
+
+[configs.netcheck-bandwidth.env.nccl-debug-subsys]
+flag = "NCCL_DEBUG_SUBSYS"
+value = "INIT,BOOTSTRAP,ENV,NET,GRAPH"
+why = "既定では NET と GRAPH が出ないので、HCA の詳細と、1 本のケーブルの 2 つの口を 1 つの論理 NIC に束ねた証拠が読めない"
+source = "https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html"
+quote = "The default value is INIT,BOOTSTRAP,ENV. Supported subsystem names are INIT (stands for initialization), COLL (stands for collectives), P2P (stands for peer-to-peer), SHM (stands for shared memory), NET (stands for network), GRAPH (stands for topology detection and graph search) …"
+
+[configs.netcheck-bandwidth.env.nccl-debug-file]
+flag = "NCCL_DEBUG_FILE"
+# 置き場所 (/logs) が、logs/ の --mount の target の下にあることが要る。ファイルの名前の
+# 部分は、`netcheck.py` が回ごとに上書きする (前の回の記録で今回の失敗を隠さないため)
+value = "/logs/nccl_%h_%p.log"
+why = "2 台ぶんの記録を、取りこぼさずに回収する。標準出力に混ぜると、帯域の結果の JSON と混ざる"
+source = "https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html"
+quote = "The NCCL_DEBUG_FILE variable directs the NCCL debug logging output to a file. The filename format can be set to filename.%h.%p where %h is replaced with the hostname and %p is replaced with the process PID. …"
+
+
+# ===========================================================================
+# netcheck-sanity — 2 台での事前の 4 段の確認 (requirements 4.6)
+# ===========================================================================
+#
+# 推論サーバーを立てる前に、PyTorch の NCCL、PyTorch の GLOO、vLLM 独自の NCCL、
+# **CUDA グラフの中の** vLLM の NCCL の 4 段を確かめる。4 段目が、2 台の DGX Spark で
+# 報告されたデッドロックの場所そのものである。
+
+# ===========================================================================
+# netcheck-bandwidth-ib — 回 2: `--device /dev/infiniband` を足した帯域の計測 (requirements 4.3、4.4、4.6)
+# ===========================================================================
+#
+# イメージの中の torchrun で、自前の all-reduce の計測 (`payload/allreduce_bench.py`) を
+# 2 台で流す。nccl-tests は MPI が要り、Spark に恒久的な変更を入れることになるので使わない。
+# 合否は、回収した NCCL の記録の経路から出すので、`NCCL_DEBUG` と `NCCL_DEBUG_FILE` が
+# 要る (`netcheck.py` が、無い構成を Spark に触る前に断る)。
+
+[configs.netcheck-bandwidth-ib]
+kind = "job"
+description = "netcheck-bandwidth に --device /dev/infiniband を足したもの (回 1 で NCCL が NET/IB : No device found. で Socket に落ちた実測を根拠にする)"
+nodes = ["head", "worker"]
+# 1 MiB から 1 GiB まで 6 つの大きさを、温め 5 回 + 計測 20 回。CUDA の初期化を含めて余裕を見る
+ready_timeout_s = 1800
+
+[configs.netcheck-bandwidth-ib.image]
+ref = "vllm/vllm-openai@sha256:b0501f99fec5136f248f78d5850977a2ec32d55cd9a665f4a9ffef24cbdf7fe5"
+seen_as = "vllm/vllm-openai:glm53-flash-arm64-cu130"
+size_bytes = 9666567584
+source = "https://hub.docker.com/v2/repositories/vllm/vllm-openai/tags"
+quote = "glm53-flash-arm64-cu130 / linux/arm64 / 9666567584 B / 2026-09-09T13:31:25Z"
+
+[configs.netcheck-bandwidth-ib.docker.gpus]
+flag = "--gpus"
+value = "all"
+why = "all-reduce の対象のメモリを GPU に置く"
+source = "https://docs.docker.com/reference/cli/docker/container/run/"
+quote = "GPU devices to add to the container ('all' to pass all GPUs)"
+
+[configs.netcheck-bandwidth-ib.docker.ipc]
+flag = "--ipc"
+value = "host"
+why = "PyTorch の分散がプロセスの間で共有メモリを使う。コンテナの既定の /dev/shm では足りない"
+source = "https://docs.vllm.ai/en/latest/deployment/docker/"
+quote = "You can either use the `ipc=host` flag or `--shm-size` flag to allow the container to access the host's shared memory. vLLM uses PyTorch, which uses shared memory to share data between processes under the hood, particularly for tensor parallel inference."
+
+[configs.netcheck-bandwidth-ib.docker.shm-size]
+flag = "--shm-size"
+value = "16g"
+why = "/dev/shm の大きさを明示する。NVIDIA が、NCCL をコンテナの中で使うときに広げるよう求めている"
+source = "https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/troubleshooting/runtime_and_mpi_issues.html"
+quote = "In particular, Docker containers default to limited shared and pinned memory resources. When using NCCL inside a container, please make sure to adjust the shared memory size inside the container, for example by adding the following arguments to the docker launch command line: `--shm-size=1g --ulimit memlock=-1`"
+
+[configs.netcheck-bandwidth-ib.docker.ulimit-memlock]
+flag = "--ulimit"
+value = "memlock=-1"
+why = "NCCL をコンテナの中で使うときに、NVIDIA がこの指定を求めている。コンテナは、共有メモリとピン留めのメモリの資源が既定で絞られていて、RoCE のメモリの登録はピン留めのメモリを使う"
+source = "https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/troubleshooting/runtime_and_mpi_issues.html"
+quote = "In particular, Docker containers default to limited shared and pinned memory resources. When using NCCL inside a container, please make sure to adjust the shared memory size inside the container, for example by adding the following arguments to the docker launch command line: `--shm-size=1g --ulimit memlock=-1`"
+
+[configs.netcheck-bandwidth-ib.docker.network]
+flag = "--network"
+value = "host"
+why = "2 台をまたぐ rendezvous と NCCL が、ホストの直結のインターフェースをそのまま使う"
+source = "https://docs.docker.com/engine/network/drivers/host/"
+quote = "If you use the host network mode for a container, that container's network stack isn't isolated from the Docker host (the container shares the host's networking namespace), and the container doesn't get its own IP-address allocated. …"
+
+[configs.netcheck-bandwidth-ib.docker.entrypoint]
+flag = "--entrypoint"
+value = "torchrun"
+why = "イメージの既定は vllm serve なので、2 台で同じスクリプトを起こす道具に差し替える。イメージには PyTorch と NCCL が入っているので、Spark に何も入れずに済む"
+source = "https://docs.docker.com/reference/cli/docker/container/run/"
+quote = "Overwrite the default ENTRYPOINT of the image"
+
+[configs.netcheck-bandwidth-ib.docker.mount-payload]
+flag = "--mount"
+value = "type=bind,source={remote_root}/payload,target=/payload,readonly"
+why = "配った計測のスクリプトを、書き換えない形で見せる (serve push が payload/ に配る)"
+source = "https://docs.docker.com/engine/storage/bind-mounts/"
+quote = "If present, causes the bind mount to be mounted into the container as read-only."
+
+[configs.netcheck-bandwidth-ib.docker.mount-logs]
+flag = "--mount"
+value = "type=bind,source={remote_root}/logs,target=/logs"
+why = "NCCL の記録を、コンテナが消えても残る場所に書く。合否をこの記録の経路から出すので、**読み取り専用にしない** (読み取り専用だと netcheck が起こす前に断る)"
+source = "https://docs.docker.com/reference/cli/docker/container/run/"
+quote = "Attach a filesystem mount to the container"
+
+[configs.netcheck-bandwidth-ib.docker.device-infiniband]
+flag = "--device"
+value = "/dev/infiniband"
+why = "回 1 (最小の設定) では、コンテナの中から RDMA のデバイスが見えず、NCCL が `NET/IB : No device found.` で TCP (Socket、16 Gbps) に落ちた。ホストの /dev/infiniband をコンテナに渡して、NCCL が IB (RoCE) の経路を選べるようにする。この 1 つだけを足して、差を測る (A/B)"
+measured = "docs/results/2026-09-22-netcheck-bandwidth.md"
+
+[configs.netcheck-bandwidth-ib.args.nnodes]
+flag = "--nnodes"
+value = "2"
+why = "2 台で 1 つの集団通信を作る"
+source = "https://github.com/pytorch/pytorch/blob/v2.13.0/torch/distributed/run.py"
+quote = "Number of nodes, or the range of nodes in form <minimum_nodes>:<maximum_nodes>."
+
+[configs.netcheck-bandwidth-ib.args.nproc-per-node]
+flag = "--nproc-per-node"
+value = "1"
+why = "1 台に GPU が 1 基なので、1 台 1 プロセスにする (world size は 2 になる)"
+source = "https://github.com/pytorch/pytorch/blob/v2.13.0/torch/distributed/run.py"
+quote = "Number of workers per node; supported values: [auto, cpu, gpu, xpu, int]."
+
+[configs.netcheck-bandwidth-ib.args.rdzv-backend]
+flag = "--rdzv-backend"
+value = "static"
+why = "c10d の rendezvous は、複数のノードで名前の解決に失敗することがある。静的な rendezvous にすると、--master-addr と --master-port がそのまま使われる"
+source = "https://docs.vllm.ai/en/latest/usage/troubleshooting/"
+quote = "We use `--rdzv_backend=static` instead of `c10d` because the `c10d` rendezvous backend can fail with DNS resolution errors in multi-node setups …"
+
+[configs.netcheck-bandwidth-ib.args.node-rank]
+flag = "--node-rank"
+value = "{node.rank}"
+why = "構成の nodes に書いた順 (head が 0、worker が 1) を、そのまま順位にする。rank 0 の標準出力の JSON が、帯域の結果である"
+source = "https://github.com/pytorch/pytorch/blob/v2.13.0/torch/distributed/run.py"
+quote = "Rank of the node for multi-node distributed training. It is only used for static rendezvous (i.e., when ``--rdzv-backend=static``)."
+
+[configs.netcheck-bandwidth-ib.args.master-addr]
+flag = "--master-addr"
+value = "{head.fabric_addr}"
+why = "rendezvous の宛先を、2 台の両方で head の直結の側のアドレスにする"
+source = "https://github.com/pytorch/pytorch/blob/v2.13.0/torch/distributed/run.py"
+quote = "Address of the master node (rank 0) that only used for static rendezvous. It should be either the IP address or the hostname of rank 0. …"
+
+[configs.netcheck-bandwidth-ib.args.master-port]
+flag = "--master-port"
+value = "29520"
+is_port = true
+why = "rendezvous の口を明示する。**推論サーバーの --master-port (29501) とも、torchrun の既定 (29500) とも別の番号**にして、どちらが上がっていても衝突しない。is_port を付けて、起動の前に空いているかを見る"
+source = "https://github.com/pytorch/pytorch/blob/v2.13.0/torch/distributed/run.py"
+quote = "Port on the master node (rank 0) to be used for communication during distributed training. It is only used for static rendezvous. Defaults to 29500."
+
+[configs.netcheck-bandwidth-ib.args.script]
+value = "/payload/allreduce_bench.py"
+why = "torchrun の位置の引数は、2 台で動かすスクリプトである。自前の all-reduce の計測で、大きさごとの busbw を 1 行の JSON で出す"
+source = "https://github.com/pytorch/pytorch/blob/v2.13.0/torch/distributed/run.py"
+quote = "Full path to the (single GPU) training program/script to be launched in parallel, followed by all the arguments for the training script."
+
+[configs.netcheck-bandwidth-ib.env.nccl-socket-ifname]
+flag = "NCCL_SOCKET_IFNAME"
+value = "={node.fabric_ifname}"
+why = "NCCL のブートストラップと制御の経路を、直結のインターフェースに固定する。= を付けて名前の完全一致にする"
+source = "https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html"
+quote = "Define to a list of prefixes to filter interfaces to be used by NCCL. Multiple prefixes can be provided, separated by the , symbol. Using the ^ symbol, NCCL will exclude interfaces starting with any prefix in that list. To match (or not) an exact interface name, begin the prefix string with the = character. …"
+
+[configs.netcheck-bandwidth-ib.env.gloo-socket-ifname]
+flag = "GLOO_SOCKET_IFNAME"
+value = "{node.fabric_ifname}"
+why = "静的な rendezvous と CPU の側の集団通信が使う Gloo の経路も、同じ直結のインターフェースに固定する"
+source = "https://docs.pytorch.org/docs/stable/distributed.html"
+quote = "By default, both the NCCL and Gloo backends will try to find the right network interface to use. If the automatically detected interface is not correct, you can override it using the following environment variables (applicable to the respective backend) …"
+
+[configs.netcheck-bandwidth-ib.env.nccl-debug]
+flag = "NCCL_DEBUG"
+value = "INFO"
+why = "経路の確定の行 (Using network …) は INFO の段でしか出ない。合否をこの行から出すので、確認のときは INFO にする (定常の運転では付けない)"
+source = "https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html"
+quote = "The NCCL_DEBUG variable controls the debug information that is displayed from NCCL. This variable is commonly used for debugging."
+
+[configs.netcheck-bandwidth-ib.env.nccl-debug-subsys]
+flag = "NCCL_DEBUG_SUBSYS"
+value = "INIT,BOOTSTRAP,ENV,NET,GRAPH"
+why = "既定では NET と GRAPH が出ないので、HCA の詳細と、1 本のケーブルの 2 つの口を 1 つの論理 NIC に束ねた証拠が読めない"
+source = "https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html"
+quote = "The default value is INIT,BOOTSTRAP,ENV. Supported subsystem names are INIT (stands for initialization), COLL (stands for collectives), P2P (stands for peer-to-peer), SHM (stands for shared memory), NET (stands for network), GRAPH (stands for topology detection and graph search) …"
+
+[configs.netcheck-bandwidth-ib.env.nccl-debug-file]
+flag = "NCCL_DEBUG_FILE"
+# 置き場所 (/logs) が、logs/ の --mount の target の下にあることが要る。ファイルの名前の
+# 部分は、`netcheck.py` が回ごとに上書きする (前の回の記録で今回の失敗を隠さないため)
+value = "/logs/nccl_%h_%p.log"
+why = "2 台ぶんの記録を、取りこぼさずに回収する。標準出力に混ぜると、帯域の結果の JSON と混ざる"
+source = "https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html"
+quote = "The NCCL_DEBUG_FILE variable directs the NCCL debug logging output to a file. The filename format can be set to filename.%h.%p where %h is replaced with the hostname and %p is replaced with the process PID. …"
+
+
+# ===========================================================================
+# netcheck-sanity — 2 台での事前の 4 段の確認 (requirements 4.6)
+# ===========================================================================
+#
+# 推論サーバーを立てる前に、PyTorch の NCCL、PyTorch の GLOO、vLLM 独自の NCCL、
+# **CUDA グラフの中の** vLLM の NCCL の 4 段を確かめる。4 段目が、2 台の DGX Spark で
+# 報告されたデッドロックの場所そのものである。
+
+[configs.netcheck-sanity]
+kind = "job"
+description = "推論サーバーの前に、2 台で 4 段の通信の確認を流す (vLLM の公式の確認のスクリプト)"
+nodes = ["head", "worker"]
+ready_timeout_s = 1800
+
+[configs.netcheck-sanity.image]
+ref = "vllm/vllm-openai@sha256:b0501f99fec5136f248f78d5850977a2ec32d55cd9a665f4a9ffef24cbdf7fe5"
+seen_as = "vllm/vllm-openai:glm53-flash-arm64-cu130"
+size_bytes = 9666567584
+source = "https://hub.docker.com/v2/repositories/vllm/vllm-openai/tags"
+quote = "glm53-flash-arm64-cu130 / linux/arm64 / 9666567584 B / 2026-09-09T13:31:25Z"
+
+[configs.netcheck-sanity.docker.gpus]
+flag = "--gpus"
+value = "all"
+why = "4 段のうち 3 段が GPU の上の集団通信である"
+source = "https://docs.docker.com/reference/cli/docker/container/run/"
+quote = "GPU devices to add to the container ('all' to pass all GPUs)"
+
+[configs.netcheck-sanity.docker.ipc]
+flag = "--ipc"
+value = "host"
+why = "PyTorch の分散がプロセスの間で共有メモリを使う"
+source = "https://docs.vllm.ai/en/latest/deployment/docker/"
+quote = "You can either use the `ipc=host` flag or `--shm-size` flag to allow the container to access the host's shared memory. vLLM uses PyTorch, which uses shared memory to share data between processes under the hood, particularly for tensor parallel inference."
+
+[configs.netcheck-sanity.docker.shm-size]
+flag = "--shm-size"
+value = "16g"
+why = "/dev/shm の大きさを明示する。NVIDIA が、NCCL をコンテナの中で使うときに広げるよう求めている"
+source = "https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/troubleshooting/runtime_and_mpi_issues.html"
+quote = "In particular, Docker containers default to limited shared and pinned memory resources. When using NCCL inside a container, please make sure to adjust the shared memory size inside the container, for example by adding the following arguments to the docker launch command line: `--shm-size=1g --ulimit memlock=-1`"
+
+[configs.netcheck-sanity.docker.ulimit-memlock]
+flag = "--ulimit"
+value = "memlock=-1"
+why = "NCCL をコンテナの中で使うときに、NVIDIA がこの指定を求めている。コンテナは、共有メモリとピン留めのメモリの資源が既定で絞られていて、RoCE のメモリの登録はピン留めのメモリを使う"
+source = "https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/troubleshooting/runtime_and_mpi_issues.html"
+quote = "In particular, Docker containers default to limited shared and pinned memory resources. When using NCCL inside a container, please make sure to adjust the shared memory size inside the container, for example by adding the following arguments to the docker launch command line: `--shm-size=1g --ulimit memlock=-1`"
+
+[configs.netcheck-sanity.docker.network]
+flag = "--network"
+value = "host"
+why = "2 台をまたぐ rendezvous と NCCL が、ホストの直結のインターフェースをそのまま使う"
+source = "https://docs.docker.com/engine/network/drivers/host/"
+quote = "If you use the host network mode for a container, that container's network stack isn't isolated from the Docker host (the container shares the host's networking namespace), and the container doesn't get its own IP-address allocated. …"
+
+[configs.netcheck-sanity.docker.entrypoint]
+flag = "--entrypoint"
+value = "torchrun"
+why = "イメージの既定は vllm serve なので、2 台で同じスクリプトを起こす道具に差し替える"
+source = "https://docs.docker.com/reference/cli/docker/container/run/"
+quote = "Overwrite the default ENTRYPOINT of the image"
+
+[configs.netcheck-sanity.docker.mount-payload]
+flag = "--mount"
+value = "type=bind,source={remote_root}/payload,target=/payload,readonly"
+why = "配った確認のスクリプトを、書き換えない形で見せる (上流の原文のまま流す)"
+source = "https://docs.docker.com/engine/storage/bind-mounts/"
+quote = "If present, causes the bind mount to be mounted into the container as read-only."
+
+[configs.netcheck-sanity.docker.mount-logs]
+flag = "--mount"
+value = "type=bind,source={remote_root}/logs,target=/logs"
+why = "NCCL の記録を、コンテナが消えても残る場所に書く。読み取り専用にしない"
+source = "https://docs.docker.com/reference/cli/docker/container/run/"
+quote = "Attach a filesystem mount to the container"
+
+[configs.netcheck-sanity.docker.device-infiniband]
+flag = "--device"
+value = "/dev/infiniband"
+why = "コンテナの中から RDMA のデバイスが見えないと、NCCL が `NET/IB : No device found.` で TCP (Socket、16 Gbps) に落ちる。ホストの /dev/infiniband を渡すと、NCCL が IB (RoCE) の経路を選び、1 GiB の all-reduce の busbw が 186.9 Gbps になった (2026-09-22 の A/B。回 1 → 回 2 で 11.7 倍)"
+measured = "docs/results/2026-09-22-netcheck-bandwidth.md"
+
+[configs.netcheck-sanity.args.nnodes]
+flag = "--nnodes"
+value = "2"
+why = "2 台で 1 つの集団通信を作る"
+source = "https://github.com/pytorch/pytorch/blob/v2.13.0/torch/distributed/run.py"
+quote = "Number of nodes, or the range of nodes in form <minimum_nodes>:<maximum_nodes>."
+
+[configs.netcheck-sanity.args.nproc-per-node]
+flag = "--nproc-per-node"
+value = "1"
+why = "1 台に GPU が 1 基なので、1 台 1 プロセスにする"
+source = "https://github.com/pytorch/pytorch/blob/v2.13.0/torch/distributed/run.py"
+quote = "Number of workers per node; supported values: [auto, cpu, gpu, xpu, int]."
+
+[configs.netcheck-sanity.args.rdzv-backend]
+flag = "--rdzv-backend"
+value = "static"
+why = "c10d の rendezvous は、複数のノードで名前の解決に失敗することがある"
+source = "https://docs.vllm.ai/en/latest/usage/troubleshooting/"
+quote = "We use `--rdzv_backend=static` instead of `c10d` because the `c10d` rendezvous backend can fail with DNS resolution errors in multi-node setups …"
+
+[configs.netcheck-sanity.args.node-rank]
+flag = "--node-rank"
+value = "{node.rank}"
+why = "構成の nodes に書いた順 (head が 0、worker が 1) を、そのまま順位にする。4 段の成功の文面は、各 rank が出すので、2 台の出力の両方で見る"
+source = "https://github.com/pytorch/pytorch/blob/v2.13.0/torch/distributed/run.py"
+quote = "Rank of the node for multi-node distributed training. It is only used for static rendezvous (i.e., when ``--rdzv-backend=static``)."
+
+[configs.netcheck-sanity.args.master-addr]
+flag = "--master-addr"
+value = "{head.fabric_addr}"
+why = "rendezvous の宛先を、2 台の両方で head の直結の側のアドレスにする"
+source = "https://github.com/pytorch/pytorch/blob/v2.13.0/torch/distributed/run.py"
+quote = "Address of the master node (rank 0) that only used for static rendezvous. It should be either the IP address or the hostname of rank 0. …"
+
+[configs.netcheck-sanity.args.master-port]
+flag = "--master-port"
+value = "29520"
+is_port = true
+why = "rendezvous の口を明示する。推論サーバーの --master-port (29501) とも、torchrun の既定 (29500) とも別の番号にする。帯域の計測と同時には流さないので、同じ番号でよい"
+source = "https://github.com/pytorch/pytorch/blob/v2.13.0/torch/distributed/run.py"
+quote = "Port on the master node (rank 0) to be used for communication during distributed training. It is only used for static rendezvous. Defaults to 29500."
+
+[configs.netcheck-sanity.args.script]
+value = "/payload/vllm_sanity_check.py"
+why = "torchrun の位置の引数は、2 台で動かすスクリプトである。vLLM の公式のトラブルシュートの文書の 4 段の確認を、原文のまま流す"
+source = "https://github.com/pytorch/pytorch/blob/v2.13.0/torch/distributed/run.py"
+quote = "Full path to the (single GPU) training program/script to be launched in parallel, followed by all the arguments for the training script."
+
+[configs.netcheck-sanity.env.nccl-socket-ifname]
+flag = "NCCL_SOCKET_IFNAME"
+value = "={node.fabric_ifname}"
+why = "NCCL のブートストラップと制御の経路を、直結のインターフェースに固定する"
+source = "https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html"
+quote = "Define to a list of prefixes to filter interfaces to be used by NCCL. Multiple prefixes can be provided, separated by the , symbol. Using the ^ symbol, NCCL will exclude interfaces starting with any prefix in that list. To match (or not) an exact interface name, begin the prefix string with the = character. …"
+
+[configs.netcheck-sanity.env.gloo-socket-ifname]
+flag = "GLOO_SOCKET_IFNAME"
+value = "{node.fabric_ifname}"
+why = "4 段のうち 2 段目 (CPU の GLOO の all-reduce) が、この経路を使う"
+source = "https://docs.pytorch.org/docs/stable/distributed.html"
+quote = "By default, both the NCCL and Gloo backends will try to find the right network interface to use. If the automatically detected interface is not correct, you can override it using the following environment variables (applicable to the respective backend) …"
+
+[configs.netcheck-sanity.env.nccl-debug]
+flag = "NCCL_DEBUG"
+value = "INFO"
+why = "経路の確定の行が INFO の段でしか出ない。合否をこの行から出す"
+source = "https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html"
+quote = "The NCCL_DEBUG variable controls the debug information that is displayed from NCCL. This variable is commonly used for debugging."
+
+[configs.netcheck-sanity.env.nccl-debug-subsys]
+flag = "NCCL_DEBUG_SUBSYS"
+value = "INIT,BOOTSTRAP,ENV,NET,GRAPH"
+why = "既定では NET と GRAPH が出ないので、選ばれたデバイスと、NIC の束ねの証拠が読めない"
+source = "https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html"
+quote = "The default value is INIT,BOOTSTRAP,ENV. Supported subsystem names are INIT (stands for initialization), COLL (stands for collectives), P2P (stands for peer-to-peer), SHM (stands for shared memory), NET (stands for network), GRAPH (stands for topology detection and graph search) …"
+
+[configs.netcheck-sanity.env.nccl-debug-file]
+flag = "NCCL_DEBUG_FILE"
+value = "/logs/nccl_%h_%p.log"
+why = "2 台ぶんの記録を、取りこぼさずに回収する。標準出力に混ぜると、4 段の成功の文面と混ざる"
+source = "https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html"
+quote = "The NCCL_DEBUG_FILE variable directs the NCCL debug logging output to a file. The filename format can be set to filename.%h.%p where %h is replaced with the hostname and %p is replaced with the process PID. …"

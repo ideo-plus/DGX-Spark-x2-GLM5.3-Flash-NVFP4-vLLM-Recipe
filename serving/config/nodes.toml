@@ -1,0 +1,34 @@
+# 2 台の DGX Spark の定義 (design.md Data Models のノードの定義)。
+#
+# この道具が Spark に触るときの宛先は、すべてここから来る。`role` は、テーブルの鍵から
+# 取るので書かない (`config.load_nodes` が断る)。
+#
+# 直結の側の 3 つ (`fabric_addr`、`fabric_ifname`、`fabric_measured`) は、**実測するまで
+# 空のままにする**。見込みの値を書かない (requirements 4.7)。2026-09-22 に 7.3 で実測して埋めた。空のままでも、重みの取得、
+# イメージの中の読み取り、縮小の確認 (段 0) の構成は選べる。2 台にまたがる構成
+# (`kind = "serve"` の `p1-nvfp4-tp2` と、`kind = "job"` の通信の確認) だけが、
+# `serve <コマンド> <構成>` のときに「直結の値がない」と断られる。
+#
+# 埋めるのは、タスク 7.3 (`serve netcheck links` で 2 台のインターフェースを読み取り、
+# 結果の要約を `docs/results/` に書いてから) である。`fabric_measured` には、その要約の
+# 道筋 (`docs/` の下の相対のパス) を書く。
+
+[nodes.head]
+# rank 0。推論サーバーの API を持つ側 (`--headless` を付けない)
+ssh_host = "spark-153d"
+lan_addr = "10.0.1.60"
+remote_root = "/home/j5ik2o/vllm-baseline"
+# 7.3 の実測 (2026-09-22、`serve netcheck links`) で埋めた。根拠は `fabric_measured` の要約
+fabric_addr = "192.168.100.10"
+fabric_ifname = "enp1s0f0np0"
+fabric_measured = "docs/results/2026-09-22-netcheck-links.md"
+
+[nodes.worker]
+# rank 1。API を持たない側 (`--headless` が付く)
+ssh_host = "spark-5083"
+lan_addr = "10.0.1.61"
+remote_root = "/home/j5ik2o/vllm-baseline"
+# 7.3 の実測 (2026-09-22、`serve netcheck links`) で埋めた。根拠は `fabric_measured` の要約
+fabric_addr = "192.168.100.11"
+fabric_ifname = "enp1s0f0np0"
+fabric_measured = "docs/results/2026-09-22-netcheck-links.md"

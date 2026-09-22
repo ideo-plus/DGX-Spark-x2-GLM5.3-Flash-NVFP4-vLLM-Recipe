@@ -30,9 +30,11 @@ Fable 5 のレート制限に早く達してしまうのを避けるため、メ
 | `bench/` の実装と試験 (試験は偽のサーバーを相手にするので、Spark は要らない) | Mac |
 | 計測の実行 (`bench run`)、生データ (`results/`)、要約 | Mac |
 | モデルが書いたコードの隔離の実行 | Mac |
+| `serving/` の実装と試験 (試験は偽の実行役と偽の推論サーバーを相手にするので、Spark は要らない) | Mac |
+| 推論サーバーの起動・停止・配布の実行 (`uv run serve …`) | Mac から。Spark へは rsync で `payload/` を配り、ssh で docker を打つ |
 | 推論サーバーの起動、重み、コンテナのイメージ | Spark |
 | vLLM のビルドやパッチの確認 (必要になった場合) | Spark |
-| `scripts/` (起動・停止・配布) | Mac で書き、rsync で Spark に配って、ssh で実行する |
+| `scripts/spark-precheck.sh` (読み取りだけの独立した道具。起動・停止・配布は `serving/` に移った) | Mac で書き、ssh で Spark を読み取るだけ |
 
 - Spark へのコードの配布は rsync で行う。Spark に GitHub の認証情報を置かない
 - 計測は Mac から流す。Mac と head の間は有線で、往復は平均 1.2 ミリ秒 (2026-09-19 に実測)。`bench/` は純粋な Python なので、ネットワークの影響を切り分けたいときは、あとから head の上でも流せる

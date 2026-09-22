@@ -35,7 +35,7 @@ GLM-5.3-Flash を 2 台の DGX Spark (GB10) で tensor parallel 2 で動かし�
 |---|---|
 | ノード | spark-153d (head、rank 0)、spark-5083 (worker、rank 1)。GB10、ユニファイドメモリ 121.7GiB、sm_121 |
 | OS | DGX OS (Ubuntu 24.04)、カーネル 7.0.0-1019-nvidia、CUDA 13.0 |
-| 直結リンク | 2 本。`rocep1s0f0` (192.168.100.x) と `roceP2p1s0f0` (192.168.101.x)、MTU 9000、RDMA は 1 本あたり約 112Gb/s |
+| 直結リンク | QSFP ケーブル **1 本** (200 Gb/s)。1 つのポートが 2 つの Linux のインターフェース (`enp1s0f0np0` = `rocep1s0f0`、192.168.100.x / `enP2p1s0f0np0` = `roceP2p1s0f0`、192.168.101.x) として見える。MTU 9000。NCCL の all-reduce の busbw は 1 GiB で 186.9 Gbps (2026-09-22 実測、`docs/results/2026-09-22-netcheck-bandwidth.md`)。2 本と書いていたのは誤り (`docs/results/2026-09-22-netcheck-links.md`) |
 | LAN | 10.0.1.60 / .61 (`enP7s7`) |
 | メモリ帯域 | GPU の読み出しで約 234GB/s (公称 273) |
 | 重みの大きさ | GLM-5.3-Flash は 320B (1 トークンで 18B)。BF16 と FP8 は 2 台に載らない。約 4 ビットまで量子化が要る |
@@ -80,7 +80,7 @@ GLM-5.3-Flash を 2 台の DGX Spark (GB10) で tensor parallel 2 で動かし�
 
 - GLM-5.3-Flash に対応した公式の vLLM イメージで、パッチなしで TP=2 を試す
 - 候補の重み: 公開されている約 4 ビットのもの (形式ごとにライセンスとカーネルの対応を確かめる)
-- 通信は NCCL 標準の RDMA から始める (直結リンク 2 本を `NCCL_IB_HCA` に並べる)
+- 通信は NCCL 標準の RDMA から始める (直結は QSFP 1 本。2 つの RoCE のデバイスは NCCL が既定で両方使う。`NCCL_IB_HCA` は要らなかった — 2026-09-22 実測)
 - 上流の vLLM が `/v1/messages` をどこまで扱えるかを確かめる (ツール呼び出し、ストリーミング、長い会話)。
   足りなければ、変換層を自分たちで書くか、上流に返すかを `docs/decisions/` で決める
 - 動かなかった箇所を記録する。これが「自分たちで直す必要がある場所」の一覧になる
@@ -114,7 +114,7 @@ GLM-5.3-Flash を 2 台の DGX Spark (GB10) で tensor parallel 2 で動かし�
 ### P5. 通信と性能の詰め
 
 - 1 ステップの時間を、重みの読み込み、2 台の間の通信、その他に分けて測る
-- 直結リンク 2 本の使い方、NCCL のチャンネル数、CUDA グラフの範囲などを、測りながら詰める
+- 直結 (QSFP 1 本、2 つの RoCE のデバイス) の使い方、NCCL のチャンネル数、CUDA グラフの範囲などを、測りながら詰める
 - 終わりの条件: 残りの伸びしろを見積もり、打ち切るか続けるかを決める
 
 ### P6. 運用
@@ -149,10 +149,15 @@ README.md           使い方
 LICENSE             このリポジトリのライセンス (Apache-2.0)
 LICENSES.md         使っている部品と、それぞれのライセンス
 bench/              計測の手順とスクリプト (P0)
-scripts/            起動・停止・配布のスクリプト
-patches/            上流の vLLM に当てる自前の修正 (必要な場合だけ)
+serving/            Serving Kit (P1〜)。Mac で書き、Spark へは配るだけ。config/ に構成とノードの
+                    定義、weights/ に重みのマニフェスト、payload/ に Spark へ配るスクリプト、
+                    var/ に起動などの記録 (git の管理の外)
+scripts/            spark-precheck.sh など、読み取りだけの独立した道具。起動・停止・配布は
+                    serving/ に移った
+patches/            上流の vLLM に当てる自前の修正 (必要な場合だけ。P1 では使わない。要件 8.6)
 docs/decisions/     判断の記録 (何を試し、何を測り、なぜ決めたか)
 docs/results/       計測の要約 (リポジトリに入れる)
+docs/vllm-baseline/ P1 の手順書、動かなかった箇所の一覧、試行の記録
 results/            計測の生データ (.gitignore。リポジトリには入れない)
 ```
 

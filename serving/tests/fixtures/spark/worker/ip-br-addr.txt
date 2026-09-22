@@ -1,0 +1,9 @@
+lo               UNKNOWN        127.0.0.1/8 ::1/128 
+enP7s7           UP             10.0.1.61/24 2001:db8::4/64 2001:db8::5/64 2001:db8::6/64 fe80::8/64 
+enp1s0f0np0      UP             192.168.100.11/24 fe80::9/64 
+enp1s0f1np1      DOWN           
+enP2p1s0f0np0    UP             192.168.101.11/24 fe80::a/64 
+enP2p1s0f1np1    DOWN           
+wlP9s9           DOWN           
+docker0          DOWN           172.17.0.1/16 fe80::b/64 
+tailscale0       UNKNOWN        100.64.0.2/32 fd00:db8::2/128 fe80::c/64 

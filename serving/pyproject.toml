@@ -1,0 +1,67 @@
+[project]
+name = "serving-kit"
+version = "0.1.0"
+description = "DGX Spark 2 台に vLLM の推論サーバーを立てるためのコマンドラインの道具 (Serving Kit)"
+authors = [
+    { name = "Junichi Kato", email = "j5ik2o@gmail.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "httpx~=0.28.1",
+    "pydantic~=2.13.5",
+]
+
+[project.scripts]
+serve = "serving_kit.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/serving_kit"]
+
+[dependency-groups]
+dev = [
+    "pytest~=9.1.1",
+    "ruff~=0.16.8",
+    "mypy~=2.3.1",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests"]
+# `payload/vllm_sanity_check.py` は、vLLM の公式のトラブルシュートの文書のコードブロックを、
+# 1 文字も変えずに置いたもの (task 4.2)。整形も静的検査も、この上流の原文を書き換えない・
+# 誤りとして指摘しないよう、ruff の対象から外す (`allreduce_bench.py` は自前のコードなので
+# 対象のまま。ruff check / ruff format --check のどちらも通す)。
+extend-exclude = ["payload/vllm_sanity_check.py"]
+# `extend-exclude` は、ディレクトリを歩くときにしか効かない。道筋を明示して渡されたときにも
+# 外すために、`force-exclude` も付ける。ただし、どちらも、ruff を `serving/` の外から呼ぶと
+# 効かない (設定は、作業ディレクトリから探される)。どこから呼ばれても原文を守るのは、
+# `vllm_sanity_check.py` の先頭の `# ruff: noqa` と `# fmt: off` である。
+force-exclude = true
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.ruff.format]
+quote-style = "double"
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+files = ["src", "tests"]
+# tests/ 直下の助け (fake_runner.py、fake_vllm.py。あとのタスクで足す) を、
+# どの試験からも import できるようにする (bench/pyproject.toml と同じ形)
+mypy_path = "tests"
+# `payload/` は、mypy の対象に含めない。`allreduce_bench.py` は `torch` に依存するが、
+# `torch` の型スタブは Mac 側の依存に足さない方針 (task 4.2 のスコープ外) なので、対象に
+# 含めると import-untyped の誤りだけが出る。`vllm_sanity_check.py` は上流の原文なので、
+# なおさら対象にしない。詳しくはタスクの Status Report の CONCERNS を参照
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# tests/ 直下の助けを、どの試験からも import できるようにする
+pythonpath = ["tests"]

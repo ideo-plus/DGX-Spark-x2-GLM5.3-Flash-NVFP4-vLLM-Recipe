@@ -1,7 +1,7 @@
 # LICENSES
 
-`bench-harness` が同梱する、または依存する部品・データ・コンテナイメージの、
-名前、版、入手先、ライセンス、用途を記録する。
+`bench-harness` と `serving-kit` が同梱する、または依存する部品・データ・
+コンテナイメージの、名前、版、入手先、ライセンス、用途を記録する。
 
 ## 方針
 
@@ -15,7 +15,7 @@
   記録する。どちらもリポジトリには同梱せず、版とハッシュ (またはダイジェスト)
   を固定して取得する
 
-## 依存する部品
+## bench-harness の依存する部品
 
 版は `bench/uv.lock` で解決された値。ライセンスは、PyPI の申告
 (`license_expression`) と、公式リポジトリの `LICENSE` で確かめた (2026-09-20)。
@@ -61,6 +61,68 @@
 | uv | 0.12.11 | https://pypi.org/project/uv/ | MIT OR Apache-2.0 | 依存の解決と、仮想環境の管理 (`uv sync`、`uv run`) |
 | hatchling | (版は固定していない。`[build-system] requires`) | https://pypi.org/project/hatchling/ | MIT | パッケージのビルドのバックエンド。`uv.lock` には入らない |
 
+## serving-kit の依存する部品
+
+版は `serving/uv.lock` で解決された値。ライセンスは、PyPI の申告
+(`license_expression`) と、公式リポジトリの `LICENSE` で確かめた (2026-09-21)。
+`bench-harness` と同じ版で解決されたので、確かめた結果も同じである。
+
+### 実行時の依存
+
+| 名前 | 版 | 入手先 | ライセンス | 用途 |
+|---|---|---|---|---|
+| httpx | 0.28.1 | https://pypi.org/project/httpx/ | BSD-3-Clause | `/health`、`/v1/models`、`/metrics`、`/version`、`/v1/messages`、Hugging Face Hub の公開 API を呼ぶ HTTP クライアント |
+| pydantic | 2.13.5 | https://pypi.org/project/pydantic/ | MIT | 構成、ノード、根拠、記録などの型と検証 (`frozen` + `extra="forbid"`) |
+
+### 開発時の依存
+
+| 名前 | 版 | 入手先 | ライセンス | 用途 |
+|---|---|---|---|---|
+| pytest | 9.1.1 | https://pypi.org/project/pytest/ | MIT | 試験 |
+| ruff | 0.16.8 | https://pypi.org/project/ruff/ | MIT | 整形と静的検査 |
+| mypy | 2.3.1 | https://pypi.org/project/mypy/ | MIT | 型の検査 (strict) |
+
+- `uv` と `hatchling` (依存の解決、仮想環境の管理、パッケージのビルド) は、
+  上の「bench-harness の依存する部品」の「開発に使う外部の道具」と同じもの
+  (バージョンは固定していない) を、`serving/` でも使う
+
+### 検討したが採用しなかった部品
+
+タスク 1.1 (`serving/` の骨組み) で、Spark への遠隔の実行 (ssh / rsync) に
+使う候補として検討したが、採用しなかったもの。
+
+| 名前 | ライセンス | 採用しなかった理由 |
+|---|---|---|
+| ansible | GPL-3.0-or-later | 「方針」が許すライセンス (MIT、Apache-2.0、BSD 系、PSF) のいずれでもない。design.md の Technology Stack も、遠隔の実行は「システムの `ssh` / `rsync` を `subprocess` で」と決めており、構成管理の道具そのものが要らない |
+| paramiko | LGPL-2.1 | 同じく「方針」が許すライセンスのいずれでもない。システムの `ssh` を `subprocess` で呼ぶ設計 (design.md `remote`) のため、SSH クライアントライブラリも要らない |
+
+- どちらも、PyPI の申告 (`license` または `license_expression`、2026-09-21 に確認)
+  で上記のライセンスを確かめた
+- ライセンスの理由に加えて、design.md の「遠隔の実行」の技術選定 (システムの
+  `ssh` / `rsync` を引数のリストで呼ぶ) そのものが、これらの部品を要らなくして
+  いる。両方が揃わないと採用を見送った、という話ではない
+
+## serving-kit が配るスクリプト (`serving/payload/`、task 4.2)
+
+Spark に配り、コンテナの中で `torchrun` で動かす 2 つのスクリプト。片方は自前のコード、
+もう片方は上流の文書のコードブロックをそのまま置いたものである。
+
+| 名前 | 出典 | commit | ライセンス | 用途 | 変更の有無 |
+|---|---|---|---|---|---|
+| `vllm_sanity_check.py` (vLLM のトラブルシュートの文書の `test.py`) | https://github.com/vllm-project/vllm/blob/385dce36bcee42309924a5ece951a96db3dce7f2/docs/usage/troubleshooting.md | `385dce36bcee42309924a5ece951a96db3dce7f2` | Apache-2.0 | 2 台の間の PyTorch NCCL / GLOO / vLLM NCCL / CUDA グラフの中の NCCL の事前の確認 (`serve netcheck sanity`) | なし |
+
+- `vllm_sanity_check.py` は、2026-09-22 に、上の commit を指す生のファイルの URL
+  (`raw.githubusercontent.com`) から `curl` で取得した (要約する道具では取っていない)。
+  取り直しの手順は `serving/payload/UPSTREAM.md` に書く
+- 本文 (ファイルの先頭のコメントより下) の SHA-256 をファイルの先頭に記録し、直っていない
+  ことを試験 (`serving/tests/unit/test_payload.py`) で固定している
+- `allreduce_bench.py` (all-reduce の帯域の計測) は、このリポジトリの一部として自分たちで
+  書いたコード (Apache-2.0) であり、第三者の部品ではないので、この表には載せない。
+  `algbw` / `busbw` の**定義**だけを、NCCL の公式の Performance の文書
+  (nccl-tests、BSD ライセンス、`doc/PERFORMANCE.md`) から引用しており (research.md
+  §e-5 が一次資料として引用したものを孫引き)、nccl-tests のソースコードそのものは
+  参照も複製もしていない (要件 11.2、11.3)
+
 ## 公開の課題
 
 計測に使う公開の課題は、HumanEval+ だけである。**リポジトリには同梱せず**、
@@ -104,6 +166,46 @@
   自分のライセンスに従う。** この道具は、イメージを計測の道具として手元で動かす
   だけで、イメージもその中身も再配布しない。イメージに足しているのは numpy だけである
 - numpy のライセンスは、PyPI の申告 (同梱の部品を含む表記) をそのまま写した
+
+## serving-kit が Spark で動かす、推論サーバーのイメージ (P1、task 7.1)
+
+DGX Spark 2 台で vLLM を動かすために取得するイメージである。ダイジェストで固定し、
+`--pull never` で起こす。**手元で作らず、配布も再配布もしない** (Spark の上で動かすだけ)。
+
+| 名前 | 版 | 入手先 | ライセンス | 用途 |
+|---|---|---|---|---|
+| vllm/vllm-openai (`glm53-flash-arm64-cu130` として公開されたもの) | `sha256:b0501f99fec5136f248f78d5850977a2ec32d55cd9a665f4a9ffef24cbdf7fe5` (linux/arm64。vLLM の build commit `385dce36bcee42309924a5ece951a96db3dce7f2`) | https://hub.docker.com/r/vllm/vllm-openai | vLLM 本体は Apache-2.0 (https://github.com/vllm-project/vllm/blob/main/LICENSE) | 2 台の Spark での推論サーバー (P1 の第一の構成、縮小の確認、通信の確認、重みの取得) |
+| nvidia/cuda (`13.0.3-base-ubuntu24.04`。上のイメージのベース) | 上のイメージに含まれる (vLLM の `docker/versions.json` の `FINAL_BASE_IMAGE`) | https://hub.docker.com/r/nvidia/cuda | **NVIDIA Deep Learning Container License** (v. September 14, 2021)。イメージの中の `/NGC-DL-CONTAINER-LICENSE` を、2026-09-22 に `serve image-licenses` で読んだ。CUDA など NVIDIA 独自の部品に掛かる。Ubuntu などの OSS の部品は、それぞれのライセンス | 推論サーバーのイメージの土台 (CUDA の実行環境) |
+
+- **方針との関係 (要件 3.9)**: ベースのイメージの NVIDIA の EULA は、上の方針 (MIT、
+  Apache-2.0、BSD 系) の外にある。ただし、CUDA を使う限り、どのイメージ (自前で作っても)
+  にも同じ条件が付き、これを除くと P1 で試せるイメージがなくなる。EULA が許す範囲
+  (「自分の持つ、または借りる設備に置いて、第三者にサービスを提供する。コンテナ自体を
+  配らず、NVIDIA の API を直接さらさない」「NVIDIA 独自の部品は NVIDIA の GPU の上でだけ
+  動かす」) にこの用途が収まることを確かめたうえで、**計測者の判断 (2026-09-22) で受け入れた**。
+  理由は `docs/decisions/0002-vllm-baseline-image-and-weights.md` に書く
+- 受け入れの条件: イメージを再配布しない、単体の製品として配らない、NVIDIA の後援を
+  うたわない。このリポジトリが配るのは、構成の定義とマニフェストと自前のスクリプトだけである
+- イメージの中の `hf` (huggingface_hub の CLI。重みの取得に使う) は 1.30.0 で、
+  huggingface_hub は Apache-2.0 (https://pypi.org/project/huggingface-hub/)。ほかの
+  Python の部品 (torch、transformers、…) は vLLM のイメージに同梱されたもので、それぞれの
+  ライセンスに従う。この道具は、それらを Spark の上で動かすだけで、再配布しない
+
+### P1 後の NoPE 修正イメージ
+
+2026-09-23 に、固定した vLLM ソースへ上流の修正を適用し、head で縮小検証した。
+イメージと取得した上流ソースはリポジトリに同梱せず、第三者への再配布も行わない。
+
+| 名前 | 版・入手先 | ライセンス | 用途 |
+|---|---|---|---|
+| vLLM と NoPE 修正 | 基準 `0961bbae2894d574be790d219651824eb199318e`、修正元 [#55277](https://github.com/vllm-project/vllm/pull/55277) の head `8d09804c877c48165c6ba69bc9dc02d09bae0b83` | [Apache-2.0](https://github.com/vllm-project/vllm/blob/0961bbae2894d574be790d219651824eb199318e/LICENSE) | NoPE の C++ カーネル修正と回帰テスト。Python 側の変更は適用しない |
+| FlashInfer | 0.7.0、[公式リポジトリ](https://github.com/flashinfer-ai/flashinfer/tree/v0.7.0) | [Apache-2.0](https://github.com/flashinfer-ai/flashinfer/blob/v0.7.0/LICENSE) | GLM53_NOPE 対応。Python・cubin・JIT キャッシュの版を揃える |
+
+両者の LICENSE を 2026-09-23 に確認した。CUDA などの同梱部品は各部品の条件に従い、
+NVIDIA のベースイメージについては上記の受け入れ条件を維持する。
+ビルド用イメージのダイジェスト、生成したイメージ ID と実測結果は
+[検証手順](docs/vllm-baseline/patched-build-procedure.md) と
+[実行結果](docs/results/2026-09-22-nope-build.md) に記録した。
 
 ### コンテナの実行環境
 
