@@ -1,13 +1,20 @@
 # HAND_OFF — P1 (vllm-baseline) の引き継ぎ
 
 書いた日: 2026-09-22。書いた人: Claude (cc-sdd / kiro の `/kiro-impl vllm-baseline` の自律の実行)。
-次の作業は takt のワークフロー (`ideo-plus/takt-workflows`、Apache-2.0) に切り替える予定。
+進め方の更新 (2026-09-23): cc-sdd のスキルは導入しない。計測者の選択により、次の準備作業は
+takt、実機操作と失敗時の判断はこの対話に分ける。先にここまでの変更を Git で統合してから、
+takt の導入と作業依頼の整備へ進む。既存の仕様と実測記録は判断の根拠として使う。
 
 書かないこと (要件 10.5): 送った内容と応答の本文、認証の情報、`exl3-tp2` の中身。
 
 ## 1. いまの状態 (一言で)
 
 **P1 は「パッチなしでは起動できない」で締めた** (計測者の判断、2026-09-22。ADR 0005)。
+
+**その後の進捗 (2026-09-23 JST)**: 自前ビルドで GPU 単独検査と 4 層・ダミー重みの縮小起動に成功した。
+HTTP 200 を確認し、head の検証コンテナと GPU プロセスは 0 件に戻した。
+実重み・TP=2・品質と性能は未検証。[実行結果](docs/results/2026-09-22-nope-build.md) に記録した。
+
 道具 (`serving/`) と根拠つきの構成と記録の土台はできていて、実機では、公式の vLLM のイメージ
 2 つ (固定した 9/9 のものと、9/22 の nightly) が、GB10 (sm_121) の sparse MLA の KV カーネルの
 `pe_dim == 64` の assert で同じ場所で落ちることを再現した。通信の確認 (直結の実測、帯域、
@@ -25,12 +32,13 @@
 
 ## 2. リポジトリ
 
-- ブランチ `feat/vllm-baseline` (`main` から)。**未 push**。public に戻す前に片付ける項目が
-  ある (Kiro のスキルのライセンス、CLAUDE.md の入り方、PLAN.md の名前。リポジトリ直下に
-  `LICENSE` のファイルがまだない)
+- 実装ブランチは `feat/vllm-baseline` (`main` から)。2026-09-23 に private のまま統合する方針。
+  一般公開前には、Kiro のスキルのライセンス、CLAUDE.md の扱い、PLAN.md の名前、
+  リポジトリ直下の LICENSE の追加を整理する
 - 検証: `cd serving && uv run pytest && uv run ruff check . && uv run ruff format --check . && uv run mypy`
-  (2026-09-22 時点で 1,861 件通過、ruff / mypy 通過)
-- `tasks.md`: 1.1〜7.4 は `[x]`。8.1〜8.8 は `_Blocked: 要件 8.7 の打ち切り_`
+  (2026-09-23 時点で 1,873 件通過、ruff / mypy 通過)
+- `tasks.md`: 1.1〜7.4 と 8.8 は `[x]`。8.1〜8.7 は打ち切りにより未実施。
+  P1 の成功条件は未達。打ち切り判断と終了記録の照合は ADR 0005 に記録済み
 
 ## 3. DGX Spark の状態 (2026-09-22 の終わり)
 
@@ -73,6 +81,21 @@
    flashinfer autotune の既定)。ADR 0002 の「見つかった誤りの訂正」に記録
 
 ## 5. 次にやること (順に)
+
+**現在の優先順 (2026-09-23 更新)**: P1 の終了整理と、自前イメージの縮小検証は完了。次は実モデルでの検証を計画する。
+調査の続きは [`docs/vllm-baseline/patch-investigation.md`](docs/vllm-baseline/patch-investigation.md) に記録する。
+ビルドと縮小起動の [手順](docs/vllm-baseline/patched-build-procedure.md) と、
+`experiments/nope-mla/` の補助スクリプトを用意した。Mac での差分の適用検査は合格。
+`serve` は完全なローカルイメージ ID も照合できるように拡張した。
+計測者から一連の実行の了承を得て、Mac でのパッチ適用と head への配布を実施した。
+初回はビルド用イメージの amd64/arm64 不一致で失敗し、2 回目は実質 1 並列だったため中断した。
+3 回目は実質 8 並列でビルド成功。GPU 単独検査、縮小起動、後片付けまで完了した。
+イメージ ID は `sha256:9df45888d2d726a1818be1005ace819808d4a1e8b4ec01a3efa7bc7f10a40c90` (head のみ)。
+経過は [実行記録](docs/results/2026-09-22-nope-build.md)、生ログは `serving/var/nope-build-0961bbae/` にある。
+`pip check` の 2 件は公式 nightly でも同一で、上流の NCCL 版指定と cuSPARSELt の wheel タグに由来する。
+これを依存全体の合格とは扱わず、比較とライブラリ読み込みの根拠を実行記録に残した。
+以下の 1〜5 は引き継ぎ時点の候補として残す。4 の takt 導入は Git での統合後に行う。
+準備するコード・構成・テスト・文書を対象とし、実機操作はこの対話で扱う。
 
 1. **計測者が決めること (未決)**: 上流の issue #57578 に「DGX Spark (GB10) で公式イメージ 2 つで
    再現した」と報告するか (要件 10.4)。`not-working.md` 件 1 の「上流に報告するかの判断」を埋める
