@@ -92,3 +92,8 @@ AGENTS.md で維持する。コード実装を伴う最初の依頼と同じ規�
 takt --pipeline --skip-git --workflow research --task "$(cat docs/tasks/p0-compatibility-research.md)"
 takt --pipeline --skip-git --workflow simple-mini --task "$(cat docs/tasks/tp2-benchmark-target.md)"
 ```
+
+実機の短い応答確認で日本語が既定 64 トークンの上限に達したため、
+[出力上限を指定する変更](../tasks/smoke-token-budget.md) も `simple-mini` で実行した。
+約 26 分でレビュー承認・終了値 0。関連 209 件、ruff、mypy が通過した。
+ログは `.takt/verification/smoke-budget-run.log`。実機での再試行は対話側が担当する。

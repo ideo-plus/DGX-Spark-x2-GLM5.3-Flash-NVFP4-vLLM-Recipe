@@ -48,6 +48,8 @@ uv run serve start p1-nvfp4-tp2 --timeout 3h --yes
 # 7. 確かめる、見張る、片付ける
 uv run serve status
 uv run serve smoke p1-nvfp4-tp2
+# 応答の長さの上限は、既定の 64 のまま。その回だけ上げたいときに --max-tokens を書く
+uv run serve smoke p1-nvfp4-tp2 --max-tokens 512
 uv run serve watch p1-nvfp4-tp2 --duration 2h --interval 30s
 uv run serve logs p1-nvfp4-tp2
 uv run serve stop --yes
@@ -71,7 +73,7 @@ uv run serve stop --yes
 | `serve start <構成> [--timeout <秒>]` | 2 台で起こし、受け付けの開始まで待つ | **変える** |
 | `serve stop` | 自分のコンテナを 2 台とも止めて消し、GPU が空くまで待つ (`kind` を問わない) | **変える** |
 | `serve status` | 2 台と推論サーバーの、いまの状態を示す | 変えない |
-| `serve smoke <構成>` | 英語と日本語の短い要求を 1 つずつ送る | 変えない |
+| `serve smoke <構成> [--max-tokens <数>]` | 英語と日本語の短い要求を 1 つずつ送る (応答の長さの上限は、既定 64。`--max-tokens` は 1 以上の整数で、その回だけ上書きする) | 変えない |
 | `serve logs <構成>` | 2 台の記録を `serving/var/` に写す | 変えない |
 | `serve probe <構成> [--timeout <秒>]` | 1 台の縮小の確認 | **変える** |
 | `serve netcheck links` | 直結のインターフェースを読み、ケーブルの本数を判断する | 変えない |

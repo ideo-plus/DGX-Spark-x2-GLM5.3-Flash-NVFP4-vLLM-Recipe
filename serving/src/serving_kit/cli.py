@@ -20,7 +20,7 @@
 | `serve start <構成> [--timeout]` | 2 台で起こし、受け付けの開始まで待つ | 変える |
 | `serve stop` | 自分のコンテナを 2 台とも止めて消す | 変える |
 | `serve status` | 2 台と推論サーバーの、いまの状態を示す | 変えない |
-| `serve smoke <構成>` | 英語と日本語の短い要求を 1 つずつ送る | 変えない |
+| `serve smoke <構成> [--max-tokens]` | 英語と日本語の短い要求を 1 つずつ送る | 変えない |
 | `serve logs <構成>` | 2 台の記録を `serving/var/` に写す | 変えない |
 | `serve probe <構成> [--timeout]` | 1 台の縮小の確認 | 変える |
 | `serve netcheck links` | 直結のインターフェースを読む | 変えない |
@@ -583,7 +583,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _leaf(subparsers, "stop", "自分のコンテナを 2 台とも止めて消す (kind を問わない)")
     _leaf(subparsers, "status", "2 台と推論サーバーの、いまの状態を示す")
-    _with_config(subparsers, "smoke", "英語と日本語の短い要求を 1 つずつ送る")
+    smoke = _with_config(subparsers, "smoke", "英語と日本語の短い要求を 1 つずつ送る")
+    smoke.add_argument(
+        "--max-tokens",
+        type=count,
+        default=lifecycle.SMOKE_MAX_TOKENS,
+        metavar="<数>",
+        help=f"応答の長さの上限を、その回だけ上書きする (既定: {lifecycle.SMOKE_MAX_TOKENS})",
+    )
     _with_config(subparsers, "logs", "2 台の記録を serving/var/ に写す")
 
     probe_parser = _with_config(subparsers, "probe", "1 台の縮小の確認を流す")
@@ -1080,7 +1087,11 @@ def _cmd_smoke(ctx: _Context) -> int:
     """
     config, nodes = ctx.selected()
     outcome = lifecycle.smoke(
-        config, nodes, client=ctx.client(lifecycle.SMOKE_TIMEOUT_S), report=ctx.show.err
+        config,
+        nodes,
+        client=ctx.client(lifecycle.SMOKE_TIMEOUT_S),
+        report=ctx.show.err,
+        max_tokens=int(ctx.args.max_tokens),
     )
     ctx.show.say("config", config.name)
     ctx.show.say("replies", len(outcome.replies))
