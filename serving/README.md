@@ -16,29 +16,36 @@ uv run serve --version
 
 ## 使い方 (段の順)
 
+段の順の詳細は [`docs/vllm-baseline/procedure.md`](../docs/vllm-baseline/procedure.md) に譲る。
+サブコマンドと引数は、下の「サブコマンド」の表が正である。
+
 ```bash
 # 1. 2 台に置き場所を作って、payload/ を配る (状態を変える)
 uv run serve push --yes
 
-# 2. 構成を検査し、関門をすべて流して結果を見る (読み取りだけ)
-uv run serve check probe-pinned
-
-# 3. イメージを、ダイジェストで 2 台に取得する (状態を変える)
-uv run serve pull-image probe-pinned --yes
+# 2. イメージを、ダイジェストで 2 台に取得する (状態を変える)
+uv run serve pull-image p1-fetch-nvfp4-probe --yes
 uv run serve image-licenses p1-image-licenses --yes
 
-# 4. 重みのマニフェストを Mac で作り、2 台に取得して照合する
+# 3. 重みのマニフェストを Mac で作り、段 0 に要る設定とトークナイザだけを 2 台に取得して照合する
 uv run serve manifest RedHatAI/GLM-5.3-Flash-NVFP4 <40 桁の revision>
-uv run serve fetch p1-fetch-probe-files --probe-files --yes
-uv run serve verify probe-pinned --yes
+uv run serve fetch p1-fetch-nvfp4-probe --probe-files --yes
+uv run serve verify probe-pinned --probe-files --yes
 
-# 5. 1 台の縮小の確認 → 2 台での起動
+# 4. 1 台の縮小の確認
 uv run serve probe probe-pinned --timeout 45m --yes
-uv run serve netcheck links
-uv run serve netcheck sanity p1-netcheck-sanity --yes
-uv run serve start p1-nvfp4-tp2 --timeout 2h --yes
 
-# 6. 確かめる、見張る、片付ける
+# 5. 通信の確認 (links は読み取りだけ)
+uv run serve netcheck links
+uv run serve netcheck bandwidth netcheck-bandwidth --yes
+uv run serve netcheck sanity netcheck-sanity --yes
+
+# 6. 重みの本体を 2 台に取得して照合し、2 台で TP=2 を起動する
+uv run serve fetch p1-fetch-nvfp4 --yes
+uv run serve verify p1-fetch-nvfp4 --yes
+uv run serve start p1-nvfp4-tp2 --timeout 3h --yes
+
+# 7. 確かめる、見張る、片付ける
 uv run serve status
 uv run serve smoke p1-nvfp4-tp2
 uv run serve watch p1-nvfp4-tp2 --duration 2h --interval 30s
@@ -46,9 +53,9 @@ uv run serve logs p1-nvfp4-tp2
 uv run serve stop --yes
 ```
 
-構成の定義 (`serving/config/configs.toml`) とノードの定義 (`serving/config/nodes.toml`) は、
-タスク 6.2 で書く。それまでは、どのコマンドも「定義のファイルが見つからない」で終了コード 1
-になる。
+構成の定義は `serving/config/configs.toml`、ノードの定義は `serving/config/nodes.toml` にある
+(設定の 1 つ 1 つに、値と理由と出典が付いている)。ノードの直結の値 (`fabric_*`) は
+`serve netcheck links` の実測で埋めるまで空で、埋めるまで 2 台の構成は選べない (終了コード 1)。
 
 ## サブコマンド
 

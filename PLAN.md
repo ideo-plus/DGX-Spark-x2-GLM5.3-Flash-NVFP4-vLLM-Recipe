@@ -149,10 +149,15 @@ README.md           使い方
 LICENSE             このリポジトリのライセンス (Apache-2.0)
 LICENSES.md         使っている部品と、それぞれのライセンス
 bench/              計測の手順とスクリプト (P0)
-scripts/            起動・停止・配布のスクリプト
-patches/            上流の vLLM に当てる自前の修正 (必要な場合だけ)
+serving/            Serving Kit (P1〜)。Mac で書き、Spark へは配るだけ。config/ に構成とノードの
+                    定義、weights/ に重みのマニフェスト、payload/ に Spark へ配るスクリプト、
+                    var/ に起動などの記録 (git の管理の外)
+scripts/            spark-precheck.sh など、読み取りだけの独立した道具。起動・停止・配布は
+                    serving/ に移った
+patches/            上流の vLLM に当てる自前の修正 (必要な場合だけ。P1 では使わない。要件 8.6)
 docs/decisions/     判断の記録 (何を試し、何を測り、なぜ決めたか)
 docs/results/       計測の要約 (リポジトリに入れる)
+docs/vllm-baseline/ P1 の手順書、動かなかった箇所の一覧、試行の記録
 results/            計測の生データ (.gitignore。リポジトリには入れない)
 ```
 
