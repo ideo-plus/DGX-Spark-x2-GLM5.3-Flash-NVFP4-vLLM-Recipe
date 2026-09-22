@@ -1,20 +1,96 @@
-# HAND_OFF — P1 (vllm-baseline) の引き継ぎ
+# HAND_OFF — モデル・ハーネス更新前の引き継ぎ
 
-書いた日: 2026-09-22。書いた人: Claude (cc-sdd / kiro の `/kiro-impl vllm-baseline` の自律の実行)。
-進め方の更新 (2026-09-23): cc-sdd のスキルは導入しない。計測者の選択により、次の準備作業は
-takt、実機操作と失敗時の判断はこの対話に分ける。ここまでの変更は
-[PR #2](https://github.com/ideo-plus/DGX-Spark-GLM5.3-Flash-Recipe/pull/2) で統合済み。
-既存の仕様と実測記録は判断の根拠として使う。
+最終更新: 2026-09-23 JST。現在は **計測者によるモデル・ハーネス更新のための区切り**。
+更新対象・更新先の版はまだ指定されていない。次の担当は勝手に更新や実機計測を始めず、更新完了と再開の指示を確認する。
 
-更新前の区切り (2026-09-23): 計測者から「一段落したら知らせてほしい。モデルとハーネスを更新したい」
-との指示があった。実重み TP=2、IB、日本語・英語の短い応答、ログ回収・停止まで完了したところで区切る。
-TAKT の各作業は終了済み。SSE と生成速度の計測はまだ開始していない。
-更新後は [初回計測の手順](docs/vllm-baseline/initial-benchmark-procedure.md) から再開する。
-短い応答を確認し直す場合は `serve smoke ... --max-tokens 512` を使う（既定 64 では日本語本文が空だった）。
+## 最初に読む要約
+
+- 自前イメージで実重み TP=2 の起動、両台の IB、日本語・英語の短い応答まで確認した。
+- 07:41:27 JST に停止を完了。その後の `serve status` でも両台の作業用コンテナは absent、GPU プロセスは 0 件だった。
+  これは最後の観測値であり、再開時には状態を読み直す。
+- SSE、生成速度、ツール呼び出し、品質、長文脈、長時間運転の計測は **未開始**。
+- 最低限の CI は導入済み。作業は [PR #7](https://github.com/ideo-plus/DGX-Spark-GLM5.3-Flash-Recipe/pull/7) までマージ済み。
+  この引き継ぎ追記の基点は `main` の `8dd7d928e9c9cde89701acf92d04b92d1b893fe8`。
+- TAKT の作業はすべて終了し、継続待ちの実行はない。過去の依頼をそのまま再実行する必要はない。
+- cc-sdd は導入しない。準備するコード・構成・試験・文書は Mac の TAKT、実機操作と結果の判断は対話側で担当する。
+- 短い応答の再確認には `serve smoke ... --max-tokens 512` を使う。既定 64 では日本語の本文が空だった。
+- 本セッションでは既存の TAKT モデル割り当てを変更していない。ユーザーが更新する「モデル・ハーネス」を、推論モデルの重みや Spark のイメージの更新と決めつけない。
+
+## 更新後の再開手順
+
+1. 更新が終わったことを確認し、`AGENTS.md`、`CLAUDE.md` とこのファイルを読む。
+   `git status` で、この引き継ぎ追記を含む未コミット差分の有無を確認する。
+2. [実機の最新記録](docs/results/2026-09-23-patched-tp2.md) と
+   [初回計測の手順](docs/vllm-baseline/initial-benchmark-procedure.md) を読む。
+   手順や生成器の「実重みで未確認」という記述は作成時点のもの。現在の実測状態は最新記録を優先する。
+3. 下記の生成済み TOML があるか確認する。これは Git 対象外なので、別の checkout には自動で付いてこない。
+   なければ [生成手順](docs/vllm-baseline/patched-tp2-procedure.md) に従う。生成器は既存出力を上書きしない。
+4. 実機操作は対話側で行う。全関門を再検査し、同じ構成で起動して ready と **今回分**の IB を確認する。
+   `initial-benchmark-procedure.md` の smoke コマンドには `--max-tokens 512` を追加して実行する。
+5. 最初の計測は `--suite decode` を明示する。既定の速度 3 種や concurrency をまとめて実行しない。
+   計測後はログ回収・所有確認・停止まで行い、結果と未確認範囲を記録する。
+
+以下は再開時のコマンドの参照であり、更新前に実行する指示ではない。作業ディレクトリはリポジトリ直下。
+
+```bash
+uv run --directory serving serve check p2-nope-tp2-smoke --configs var/nope-build-0961bbae/tp2.toml
+# 全関門通過と実行条件を確認してから起動する。以後は手順書の ready・IB 確認を省かない。
+uv run --directory serving serve start p2-nope-tp2-smoke --configs var/nope-build-0961bbae/tp2.toml --timeout 3h --yes
+uv run --directory serving serve smoke p2-nope-tp2-smoke --configs var/nope-build-0961bbae/tp2.toml --max-tokens 512
+uv run --directory bench bench run --target p2-nope-tp2-smoke --suite decode --profile quick
+```
+
+同時実行は 1、文脈長は 4096。長文脈や並列性能の結果と混同しない。
+`quality` は toolcall だけを選択できず、code・needle も計画する。`quality.code_problem_limit=0` は無効。
+`serving` は本文を保存しない。一方、`bench` は PLAN.md の方針に従い、合成データの本文を Git 対象外の
+`results/` に保存する。公開記録には本文を含めない。
+
+## 使用する構成と保存場所
+
+| 項目 | 値・場所 |
+|---|---|
+| 構成名 / bench の対象名 | `p2-nope-tp2-smoke` |
+| 生成済みの構成 | `serving/var/nope-build-0961bbae/tp2.toml`（Git 対象外） |
+| イメージ ID | `sha256:9df45888d2d726a1818be1005ace819808d4a1e8b4ec01a3efa7bc7f10a40c90`（両台に存在。タグではなく ID で照合） |
+| 重み | `RedHatAI/GLM-5.3-Flash-NVFP4@18d55bfd5a2194887738da73753975c9d3842f46` |
+| 重みの配置 | 両台の `~/vllm-baseline/models/glm-5-3-flash-nvfp4/`。各 19 ファイル・197,881,153,655 B、照合済み |
+| 構成ハッシュ | `9bd65ac3e94c8690db3861bee46c7c22fe4985d317d01995c9ee5096072d61cd` |
+| API | `http://10.0.1.60:8000`、モデル名 `glm-5-3-flash`（ドットではなくハイフン） |
+| 実測の要約 | `docs/results/2026-09-23-patched-tp2.md` |
+| 操作の生ログ | `serving/var/nope-build-0961bbae/tp2-*.log`、`*-result.json`、`*-verdict.json` |
+| 初回の応答後の回収ログ | `serving/var/20260922T215658Z-logs-p2-nope-tp2-smoke/` |
+| 512 トークン再試行後の回収ログ | `serving/var/20260922T223912Z-logs-p2-nope-tp2-smoke/` |
+
+NCCL のログは古いものも回収される。所有確認済みコンテナの hostname・開始時刻と照合する。
+この環境では hostname はホスト名と同じだった。PID の再利用や同名ファイルの上書きがあるため、
+過去のログに IB が書いてあるだけでは今回の合格にしない。
+
+## TAKT と CI
+
+使っていた TAKT は 0.66.0。固定したワークフローの導入元、使い分け、検証結果は
+[開発手順](docs/development/takt-preparation.md) を参照する。
+`.takt/runtime.yaml` は profile 名の割り当て、モデル・接続先の実体は `~/.takt/runtime.yaml` にある。
+更新後は現在の設定を確認し、古いモデル名やセッションを前提に再開しない。
+`--pipeline --skip-git` で実行しており、worktree は作っていない。今後 worktree を使う場合は `mise trust` を実行する。
+
+| 作業 | 結果 | ログ（Git 対象外） |
+|---|---|---|
+| TP=2 準備 / spark-preparation | 修正検証の残件を対話側が引き取り、終了値 130。残件は修正・検証・統合済み | `.takt/verification/tp2-run.log` |
+| API 調査 / research | 正常終了 | `.takt/verification/p0-research-run.log` |
+| 初回計測の準備 / simple-mini | レビュー承認・正常終了 | `.takt/verification/benchmark-target-run.log` |
+| smoke の出力上限 / simple-mini | レビュー承認・正常終了 | `.takt/verification/smoke-budget-run.log` |
+
+初回 TP=2 準備の依頼を固定した `scripts/run-takt-preparation.sh` を、次の計測を始めるつもりで再実行しない。
+TAKT 0.66.0 の `takt prompt` は未変更の上流ワークフローでもプレビューに失敗したが、実行自体はできた。
+
+[CI 設定](.github/workflows/ci.yml) は `bench` / `serving` の locked sync、pytest、ruff、mypy を実行する。
+直近は serving 1,904 件、bench 1,437 件成功・27 件 skip。skip を実機や隔離環境の合格とは扱わない。
+Spark 接続やモデル取得は CI に含めない。
+
 
 書かないこと (要件 10.5): 送った内容と応答の本文、認証の情報、`exl3-tp2` の中身。
 
-## 1. いまの状態 (一言で)
+## 背景: P1 の終了とパッチ検証
 
 **P1 は「パッチなしでは起動できない」で締めた** (計測者の判断、2026-09-22。ADR 0005)。
 
@@ -39,7 +115,7 @@ SSE、ツール呼び出し、品質・性能、長文脈は未確認。[最新�
 | 道具の使い方 | `serving/README.md` (サブコマンドの表が正) |
 | 生の記録 (git の外) | `serving/var/<UTC>-<コマンド>-<構成>/` |
 
-## 2. リポジトリ
+## リポジトリと過去の仕様
 
 - `feat/vllm-baseline` は 2026-09-23 に private のまま `main` へ統合済み
   (`0da9a774873711b3cb711af0b1b99844c7b7b7bb`)。
@@ -50,7 +126,7 @@ SSE、ツール呼び出し、品質・性能、長文脈は未確認。[最新�
 - `tasks.md`: 1.1〜7.4 と 8.8 は `[x]`。8.1〜8.7 は打ち切りにより未実施。
   P1 の成功条件は未達。打ち切り判断と終了記録の照合は ADR 0005 に記録済み
 
-## 3. DGX Spark の状態 (2026-09-22 の終わり)
+## 参考: 2026-09-22 終了時点の状態（現在の状態ではない）
 
 | 項目 | head (spark-153d, 10.0.1.60) | worker (spark-5083, 10.0.1.61) |
 |---|---|---|
@@ -71,13 +147,16 @@ SSE、ツール呼び出し、品質・性能、長文脈は未確認。[最新�
 - 状態を変える操作は、毎回、計測者の了承を取る (2026-09-22 の包括的な了承は、このセッションの
   残りタスクに限ったもの)
 
-## 4. 実機で分かったこと (要点)
+## 過去の調査で分かったこと
 
 1. **GB10 では、公式の vLLM で GLM-5.3-Flash を起動できない** (2 つのイメージで同じ場所)。
    `FLASHINFER_MLA_SPARSE_SM120` が唯一の候補で、KV を `fp8_ds_mla` に強制し、そのカーネルが
    `pe_dim == 64` を要求する。このモデルは `qk_rope_head_dim = 0`。`--kv-cache-dtype` /
    `--attention-backend` では回避できない (research.md §d-1)。上流の issue #57578 / #55773 は open。
-   候補の PR: #55277、#55778、#53969、#54929 (どれも open。題名と状態しか見ていない)
+   当時の候補: [PR #55277](https://github.com/vllm-project/vllm/pull/55277)、
+   [PR #55778](https://github.com/vllm-project/vllm/pull/55778)、
+   [PR #53969](https://github.com/vllm-project/vllm/pull/53969)、
+   [PR #54929](https://github.com/vllm-project/vllm/pull/54929)。当時の状態であり、最新状態は未照合
 2. **直結は QSFP ケーブル 1 本** (PLAN.md の「2 本」は誤りだった。訂正済み)。1 つのポートが
    2 つの Linux のインターフェース / 2 つの RoCE のデバイスとして見える
 3. **コンテナには `--device /dev/infiniband` が要る**。ないと NCCL が TCP に落ちて 16 Gbps。
@@ -90,64 +169,24 @@ SSE、ツール呼び出し、品質・性能、長文脈は未確認。[最新�
 6. design.md と research.md に誤りを 2 つ見つけた (`--ulimit memlock=-1` の quote の帰属、
    flashinfer autotune の既定)。ADR 0002 の「見つかった誤りの訂正」に記録
 
-## 5. 次にやること (順に)
+## 再開時の選択肢と保留事項
 
-**現在の優先順 (2026-09-23 更新)**: P1 の終了整理と、自前イメージの縮小検証は完了。実モデルの TP=2 起動と短い応答まで確認済み。計測者によるモデル・ハーネスの更新後に、初回の生成速度計測へ進む。
-調査の続きは [`docs/vllm-baseline/patch-investigation.md`](docs/vllm-baseline/patch-investigation.md) に記録する。
-ビルドと縮小起動の [手順](docs/vllm-baseline/patched-build-procedure.md) と、
-`experiments/nope-mla/` の補助スクリプトを用意した。Mac での差分の適用検査は合格。
-`serve` は完全なローカルイメージ ID も照合できるように拡張した。
-計測者から一連の実行の了承を得て、Mac でのパッチ適用と head への配布を実施した。
-初回はビルド用イメージの amd64/arm64 不一致で失敗し、2 回目は実質 1 並列だったため中断した。
-3 回目は実質 8 並列でビルド成功。GPU 単独検査、縮小起動、後片付けまで完了した。
-イメージ ID は `sha256:9df45888d2d726a1818be1005ace819808d4a1e8b4ec01a3efa7bc7f10a40c90` (head のみ)。
-経過は [実行記録](docs/results/2026-09-22-nope-build.md)、生ログは `serving/var/nope-build-0961bbae/` にある。
-`pip check` の 2 件は公式 nightly でも同一で、上流の NCCL 版指定と cuSPARSELt の wheel タグに由来する。
-これを依存全体の合格とは扱わず、比較とライブラリ読み込みの根拠を実行記録に残した。
-以下の 1〜5 は引き継ぎ時点の候補として残す。4 の takt 導入は済み、
-[準備用の実行方法](docs/development/takt-preparation.md) と
-[TP=2 の依頼](docs/tasks/tp2-preparation.md) を用意した。
-準備するコード・構成・テスト・文書を対象とし、実機操作はこの対話で扱う。
-計測者から、準備完了後の統合、最低限の CI の追加、その後の PLAN.md に沿った続行を了承済み。
-準備と CI は [PR #3](https://github.com/ideo-plus/DGX-Spark-GLM5.3-Flash-Recipe/pull/3)、
-[PR #4](https://github.com/ideo-plus/DGX-Spark-GLM5.3-Flash-Recipe/pull/4) で統合した。
-TAKT による API 調査と初回計測の準備も
-[PR #5](https://github.com/ideo-plus/DGX-Spark-GLM5.3-Flash-Recipe/pull/5) で統合した。
-起動試行後に使う [計測手順](docs/vllm-baseline/initial-benchmark-procedure.md) と bench の対象定義がある。
-その後、worker へ自前イメージを移送し、両台の固定 ID と全 42 レイヤーの一致を確認した。
-実重みの取得・照合は 2026-09-23 06:45:59 JST に完了。両台とも 19 ファイルの不一致は 0 件。
-起動前の全関門を通過し、06:55:53 JST に実重み TP=2 が ready に到達。両台の IB も確認した。
-最初は日本語が出力上限 64 で本文なしだったため、TAKT で上限指定を追加し、
-[PR #6](https://github.com/ideo-plus/DGX-Spark-GLM5.3-Flash-Recipe/pull/6) で統合した。
-別試行の `--max-tokens 512` では両言語が HTTP 200 / end_turn、意味の通る回答となった。
-ログ回収・停止を終え、07:41:27 JST に両台の自分たちのコンテナと GPU プロセスは 0 件。
-続きは [実行記録](docs/results/2026-09-23-patched-tp2.md) を参照する。
-TP=2 の生成器と [実行手順](docs/vllm-baseline/patched-tp2-procedure.md) は準備済み。
-初回の TP=2 準備で残った手順の問題は対話側で修正した。この最初のワークフローは途中引き取りであり、
-takt の最終承認済みではない。引き取り後に serving の 1,898 件、ruff、mypy が通過した。
+1. **推奨: モデル・ハーネス更新後、準備済みの初回計測へ進む。** 更新によって準備コードの変更が必要なら、範囲を絞った依頼を TAKT に渡す。
+2. **更新を保留する場合: 現在の停止状態を維持する。** 計測の再開指示があるまで、新しい実機操作を始めない。
 
-1. **計測者が決めること (未決)**: 上流の issue #57578 に「DGX Spark (GB10) で公式イメージ 2 つで
-   再現した」と報告するか (要件 10.4)。`not-working.md` 件 1 の「上流に報告するかの判断」を埋める
-2. **パッチを当てたイメージでの再開** (別の仕様として起票): PR #55277 などを当てた自前の
-   イメージを Spark で作り、同じ `serve probe` を流す。決めておくこと — (a) クリーンルームの
-   扱い (PR の中身を読むことになる。公開時の由来の記述)、(b) 要件 8.6 の例外、(c) イメージの
-   ビルドの場所 (Spark。`docker build` は道具の経路にないので、手順は別に書く)。起動できたら、
-   `procedure.md` の関門 B (重みの取得 184 GiB × 2) → 段 2 から再開できる。構成 `p1-nvfp4-tp2`
-   は根拠つきで用意済み (`--device /dev/infiniband` も入っている)。段 2 の最初の起動は NCCL の
-   記録の 3 変数を足す (`procedure.md` 2.1)
-3. **P1 の成果の要約を `docs/results/` に 1 本** (任意): 上の 4 の要点を、公開する形で
-4. **takt への切り替え**: `.takt/` の導入 (`ja`)、`~/.takt/runtime.yaml` の T0 = Ollama Cloud
-   など (Spark は T0 に入れない)、`LICENSES.md` に takt-workflows (Apache-2.0) の行。**先に
-   `CLAUDE.md` に「このリポジトリの試験の方針の例外」を書く**: `testing-lite` の「内部構造を
-   契約化しない」「完全一致文字列の不在で判断しない」は、安全の決まり (`tests/e2e/test_safety.py`)
-   と根拠の固定 (`test_config_committed.py` の argv と sha、`test_procedure_doc.py`、
-   `test_records_doc.py`) には当てはめない (意図して文字列で契約している)。`coding-lite` の
-   「必須データへのフォールバックは REJECT」も、`cli.repo_facts` の `("unknown", True)` のような
-   意図した既定値には当てはめない。実機の操作 (状態を変える操作と計測者の了承) はワークフローに
-   載せず対話で行い、派生するコードの変更だけを takt に渡す
-5. public に戻す前の片付け (上の 2 節)
+別途判断する事項:
 
-## 6. 道具 (`serving/`) について、次の人が知っておくとよいこと
+- 上流への不具合報告。投稿は未実施であり、計測者の指示なしに送らない。
+- 一般公開前の Kiro 関連ライセンス、CLAUDE.md の扱い、PLAN.md の名前、ルート LICENSE の整理。リポジトリは private のまま。
+- 公式のパッチなし P1 の成功条件は未達のまま。自前イメージでの成功を理由に、過去の打ち切りタスクを実施済みに書き換えない。
+
+パッチの来歴・ビルド・既知の依存検査の例外は
+[ビルド記録](docs/results/2026-09-22-nope-build.md) と
+[調査記録](docs/vllm-baseline/patch-investigation.md) に残している。
+`pip check` の 2 件は公式 nightly と同じだったが、依存全体の合格とは扱っていない。
+自前イメージのビルドや重み取得、TAKT 導入は完了済みなので、最初からやり直さない。
+
+## 道具 (`serving/`) の変更時に守る契約
 
 - 安全の決まりは `tests/e2e/test_safety.py` が 9 つの決まりとして固定している (対象は自分の
   コンテナだけ、名前とラベルのない起動なし、前面・自動削除の起動なし、配布の宛先、許可の一覧、
