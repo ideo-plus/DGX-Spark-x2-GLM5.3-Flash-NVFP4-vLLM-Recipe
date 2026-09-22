@@ -50,9 +50,8 @@ NVIDIA の 2 台直結の公式手順は、渡す環境変数がきわめて少�
 | `GLOO_SOCKET_IFNAME` | `NCCL_SOCKET_IFNAME` と同じインターフェース名 (`=` は付けない。Gloo は完全一致の書式が文書化されていない) | PyTorch distributed docs: "you can override it using the following environment variables … `GLOO_SOCKET_IFNAME`" |
 
 `NCCL_IB_HCA`、`NCCL_IB_MERGE_NICS`、`NCCL_IB_GID_INDEX` はどれも設定しない (既定のまま)。
-値は `nodes.toml` の `fabric_addr` / `fabric_ifname` を根拠にするが、**この 2 つは実測
-(タスク 7.3) まで空のままにしてある**ので、この記録の時点では、2 台にまたがる構成
-(`p1-nvfp4-tp2`、`netcheck-bandwidth`、`netcheck-sanity`) はまだ読み込めない (要件 4.7)。
+値は `nodes.toml` の `fabric_addr` / `fabric_ifname` を根拠にする。
+設計時は未設定だったが、7.3 の実測を反映済みで、2 台にまたがる構成も読み込める。
 
 ### 2. ケーブルの本数の判断と PLAN.md の訂正 (要件 4.2)
 
@@ -67,10 +66,8 @@ busbw は 186.9 Gbps」に直した。判定の基準は、下のとおり。
 - **判定の基準**: つながっている直結のインターフェースが 2 つなら「ケーブル 1 本」、4 つなら
   「ケーブル 2 本」(NVIDIA の公式資料: 1 つの QSFP ポートが 2 つのインターフェースとして
   見えるため)
-- **PLAN.md の訂正の要否**: PLAN.md 38 行の「直結リンク 2 本」「1 本あたり約 112Gb/s」
-  「MTU 9000」は、上の「背景」に書いたとおり、NVIDIA の公式資料と食い違う疑いが強い。
-  実測のあとに、`fabric_measured` の要約を根拠にして PLAN.md を直す (7.3 の仕事。ここでは
-  まだ直さない)
+- **PLAN.md の訂正**: 7.3 の実測を根拠に、ケーブル本数と帯域の記述を訂正済み。
+  MTU 9000 は実測と一致した。
 
 ### 3. NVIDIA の参照点 (表示だけに使い、合否には入れない)
 
