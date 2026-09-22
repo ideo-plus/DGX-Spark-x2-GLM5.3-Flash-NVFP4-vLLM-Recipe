@@ -133,7 +133,6 @@ _CONFIG_LIKE: Final[re.Pattern[str]] = re.compile(
 """構成の名前らしい語 (この 3 つの接頭辞が、`configs.toml` の 7 つの名前を覆う)。"""
 
 _PLANNED_CONFIGS: Final[dict[str, str]] = {
-    "probe-nightly": "段 1",
     "p1-nvfp4-tp2-x<連番>": "段 3",
     "p1-w4a16-tp2": "段 4",
 }

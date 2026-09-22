@@ -37,7 +37,7 @@
 | 段 | 構成の名前 | いま | 台 | 主なコマンド |
 |---|---|---|---|---|
 | 段 0 | `probe-pinned` | ある | 1 (head) | `serve probe probe-pinned` |
-| 段 1 | `probe-nightly` | この段で作る | 1 (head) | `serve probe <段 1 の構成>` |
+| 段 1 | `probe-nightly` | 2026-09-22 に作った (段 0 の失敗を受けて) | 1 (head) | `serve probe probe-nightly` |
 | 段 2 | `p1-nvfp4-tp2` | ある | 2 | `serve start p1-nvfp4-tp2` |
 | 段 3 | `p1-nvfp4-tp2-x<連番>` | この段で作る (足した指定ごとに 1 つ) | 2 | `serve start <段 3 の構成>` |
 | 段 4 | `p1-w4a16-tp2` | この段で作る (第二の候補の重み) | 2 | `serve start <段 4 の構成>` |
@@ -46,15 +46,15 @@
 
 | 関門 | 構成の名前 | いま | 主なコマンド |
 |---|---|---|---|
-| 関門 A: 通信の確認 | `netcheck-bandwidth`、`netcheck-sanity` | ある | `serve netcheck links` / `bandwidth` / `sanity` / `ab` |
+| 関門 A: 通信の確認 | `netcheck-bandwidth`、`netcheck-bandwidth-ib`、`netcheck-sanity` | ある | `serve netcheck links` / `bandwidth` / `sanity` / `ab` |
 | 関門 B: 重みの取得 | `p1-fetch-nvfp4` | ある | `serve fetch p1-fetch-nvfp4` |
 
 段より前の準備に使う構成は、`p1-fetch-nvfp4-probe` (段 0 に要る設定とトークナイザだけの取得)
 と `p1-image-licenses` (イメージの中のライセンスの表記の読み取り) である。
 
 要件 8.1 が定める順序は 5 つ (段 0〜段 4) で、そのあとの「打ち切り」と「まとめ」は段ではない。
-まだない構成 (段 1、段 3、段 4) は、**その段に進むと決まってから作る**。作るときの決まりは、
-それぞれの段の節にある。
+まだない構成 (段 3、段 4) は、**その段に進むと決まってから作る**。作るときの決まりは、それぞれの
+段の節にある (段 1 の `probe-nightly` は、段 0 の失敗を受けて 2026-09-22 に作った)。
 
 ## 全体の順序
 
@@ -301,27 +301,32 @@ uv run serve probe probe-pinned --timeout 45m --yes
 - 失敗なら `not-working.md` の 1 件目 (`known_failure` と、誤りの文面の前後)
 - 上流の issue に当たる現象を再現したら、再現の事実と条件を書き、⚠ 計測者に尋ねる (報告するか)
 
-## 段 1: `probe-nightly` — より新しい公式のイメージで、同じ確認をする (この段で作る)
+## 段 1: `probe-nightly` — より新しい公式のイメージで、同じ確認をする (2026-09-22 に作った (段 0 の失敗を受けて))
 
 **前提**: 段 0 が `failed` (終了コード 2) だった。`attempts.md` を読んだ。
 
-**この段で作る構成**: 段 0 と同じ形で、**イメージのダイジェストだけ**を、その時点の上流の
-公式の新しいものに固定した構成を足す。`configs.toml` の段 0 の節を写して、名前とイメージの
-節だけを変える。
+**作った構成 (`probe-nightly`)**: 段 0 (`probe-pinned`) と同じ形で、**イメージのダイジェスト
+だけ**を、2026-09-22 時点の上流の公式の nightly (commit
+`0961bbae2894d574be790d219651824eb199318e`) に固定した構成である。`configs.toml` の段 0 の節を
+写し、名前とイメージの節だけを変えた。
 
-作るときの決まり:
+作ったときの決まり:
 
-1. 値は、**6.2 と同じクリーンルームの決まり**で書く。設定の 1 つ 1 つに、値、理由 (`why`)、
-   根拠 (`source` + 原文の `quote`、または実測の `measured`) を添える。公式の手引きの
-   **コマンドを写さず**、道具の一次の資料を引く (要件 11.2)
-2. 第三者のレシピ、ブログ、フォーラムを開かない (要件 11.3)。モデルカードの本文も開かない
-3. **この会話の文脈を持たない新しい作業者**に、research.md と公式の資料だけを渡して書かせる
+1. 値は、**6.2 と同じクリーンルームの決まり**で書いた。設定の 1 つ 1 つに、値、理由 (`why`)、
+   根拠 (`source` + 原文の `quote`、または実測の `measured`) を添えている。公式の手引きの
+   **コマンドを写さず**、道具の一次の資料を引いている (要件 11.2)
+2. 第三者のレシピ、ブログ、フォーラムを開いていない (要件 11.3)。モデルカードの本文も開いて
+   いない
+3. **この会話の文脈を持たない新しい作業者**に、research.md と公式の資料だけを渡して書かせた
    (要件 11.4)。レビューで、根拠に辿れない設定を差し戻す (要件 11.5)
-4. 新しいイメージのダイジェストが決まったら、⚠ 計測者に尋ねる (取得は状態を変える)
+4. nightly はまだ採用の候補ではなく、段 1 の確認に使うだけである (`hf-version` /
+   `image-licenses` の構成は作っていない)。採用するときは、準備 2〜3 (tasks.md 7.1 と同じ
+   手順) でイメージの中の表記を読み直す
+5. イメージのダイジェストは決まっているので、⚠ 計測者に尋ねる (取得は状態を変える)
 
 ```bash
-uv run serve pull-image <段 1 の構成> --yes
-uv run serve probe <段 1 の構成> --timeout 45m --yes
+uv run serve pull-image probe-nightly --yes
+uv run serve probe probe-nightly --timeout 45m --yes
 ```
 
 **→ 進む条件**: 終了コード 0 (`ready`) → 関門 A へ。
@@ -330,7 +335,7 @@ uv run serve probe <段 1 の構成> --timeout 45m --yes
 取り方にも依らないと、起動の記録と上流のソースから示せる場合は、重みの取得に進まずに、
 下の「打ち切りの手順」へ** (要件 8.7)。
 
-**記録**: `attempts.md` に 1 行 (段 1、作った構成の名前、イメージのダイジェスト、結果)。
+**記録**: `attempts.md` に 1 行 (段 1、`probe-nightly`、イメージのダイジェスト、結果)。
 `not-working.md` の該当の件に、2 つのイメージで同じかどうかを足す。`LICENSES.md` に、新しい
 イメージの行を足す。
 
@@ -384,6 +389,17 @@ uv run serve netcheck bandwidth netcheck-bandwidth --yes
 **✋ 止める条件**: `status=failed` (2)。ふつうのネットワークの経路に落ちた
 (`network.<役割>` が `Socket`)、記録が読めなかった、`busbw > 0` の大きさが 1 つもない。
 `not-working.md` に書き、A.4 の A/B に進む。
+
+**2026-09-22 の実測**: 最小の設定では `NET/IB : No device found.` で Socket に落ちた (16 Gbps)。
+docker の設定 (`--device /dev/infiniband`) は `serve netcheck ab --env` では足せないので、
+`netcheck-bandwidth` を写して、その 1 つを実測の根拠 (`measured`) つきで足した
+**`netcheck-bandwidth-ib`** を作り、同じ計測を流す (A/B の B に当たる):
+
+⚠ 計測者に尋ねる (状態を変える)。
+
+```bash
+uv run serve netcheck bandwidth netcheck-bandwidth-ib --yes
+```
 
 ### A.3 事前の確認を流す
 

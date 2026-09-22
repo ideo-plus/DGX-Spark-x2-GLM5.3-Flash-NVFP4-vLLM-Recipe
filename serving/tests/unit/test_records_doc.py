@@ -144,8 +144,9 @@ def _table_header_cells(text: str) -> list[str]:
 def test_the_attempts_table_header_has_every_field_of_requirement_8_2() -> None:
     """`attempts.md` の表の見出しが、要件 8.2 の項目をすべて、この順で持つ。"""
     text = _read_text(ATTEMPTS_PATH)
-    # 「1 行の書式」の節の表 (説明用) ではなく、「表 (まだ空)」の節の、書き足す表を見る。
-    heading = "## 表 (まだ空。試すたびに 1 行足す)"
+    # 「1 行の書式」の節の表 (説明用) ではなく、「表 (…試すたびに 1 行足す)」の節の、
+    # 書き足す表を見る (見出しの括弧の中は、行が増えると変わるので、先頭だけで探す)。
+    heading = "## 表 ("
     start = text.find(heading)
     assert start >= 0, f"見出しが見つからない: {heading}"
     header = _table_header_cells(text[start:])

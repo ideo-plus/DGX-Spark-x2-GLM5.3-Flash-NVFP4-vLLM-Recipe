@@ -1,8 +1,8 @@
 # 0003. 通信の設定の採否と、直結のインターフェースの実測
 
-状態: 検討中 (骨組み、2026-09-22)。最初の通信の設定 (Decision 10) は決めて
-`serving/config/configs.toml` に反映した。ケーブルの本数の判断、PLAN.md の訂正、帯域の
-A/B の実測は、タスク 7.3〜7.4 (実機) で埋める。
+状態: 採用 (2026-09-22)。最初の通信の設定 (Decision 10) に加え、7.3〜7.4 の実機の
+実測で、ケーブルの本数 (1 本)、`nodes.toml` の直結の値、`--device /dev/infiniband` の採用、
+PLAN.md の訂正を確定した (下の「実機で確かめたこと」)。
 
 関係する要件: 2.8、3.6、3.7、4.1、4.2、4.3、4.4、4.5、4.6、4.7、10.3、11.1、11.2、11.4、
 11.5、11.6。仕様は `.kiro/specs/vllm-baseline/`。手順は
@@ -56,8 +56,13 @@ NVIDIA の 2 台直結の公式手順は、渡す環境変数がきわめて少�
 
 ### 2. ケーブルの本数の判断と PLAN.md の訂正 (要件 4.2)
 
-この節は、7.3 (`serve netcheck links` の実測) で埋める。分かっている事実 (研究段階、
-research.md §e-1) だけ、ここに記録する。
+2026-09-22 の実測 (`docs/results/2026-09-22-netcheck-links.md`) で確定した: **QSFP ケーブルは
+1 本**。2 台とも、つながっている直結のインターフェースは `enp1s0f0np0` と `enP2p1s0f0np0` の
+2 つ (どちらも UP、MTU 9000、200000 Mb/s、RoCE は `rocep1s0f0` / `roceP2p1s0f0`) で、`f1np1`
+(2 つめの QSFP ポート) は 2 台とも DOWN (ケーブルなし)。`nodes.toml` には `enp1s0f0np0`
+(192.168.100.10 / .11) を書いた。PLAN.md の「直結リンク 2 本、1 本あたり約 112Gb/s」は、
+「QSFP ケーブル 1 本 (200 Gb/s) が 2 つの RoCE のデバイスとして見える。NCCL の all-reduce の
+busbw は 186.9 Gbps」に直した。判定の基準は、下のとおり。
 
 - **判定の基準**: つながっている直結のインターフェースが 2 つなら「ケーブル 1 本」、4 つなら
   「ケーブル 2 本」(NVIDIA の公式資料: 1 つの QSFP ポートが 2 つのインターフェースとして
@@ -133,11 +138,33 @@ Sources Consulted)。
 
 ## 実機で確かめたこと
 
-この節は、実機の段 (7.3〜7.4) で埋める。予定している内容:
+### 7.3 (2026-09-22): 直結のインターフェース (要件 4.1、4.2)
 
-- `serve netcheck links` が読んだ、2 台のインターフェースの名前・状態・MTU・速さ・
-  RoCE デバイスとの対応 (要件 4.1)
-- ケーブルの本数の判断と、PLAN.md の訂正の実物の差分 (要件 4.2)
-- `serve netcheck bandwidth` の帯域の実測と、上の参照点との比較 (要件 4.3)
-- `serve netcheck sanity` の 4 段の合否 (要件 4.6)
-- 最初の A/B (`NCCL_SOCKET_IFNAME` の直結側 / 管理側) の採否と、実測の根拠 (要件 4.5)
+- `serve netcheck links` (読み取りだけ) の結果は `docs/results/2026-09-22-netcheck-links.md`。
+  2 台とも 4 つのインターフェース (UP 2 つ、DOWN 2 つ)。読み取りの道具は揃っていた
+- ケーブルの本数: 1 本。`nodes.toml` の `fabric_ifname = "enp1s0f0np0"`、`fabric_addr` は
+  192.168.100.10 (head) / .11 (worker)、`fabric_measured` はその要約
+- PLAN.md の訂正: 「ハードウェアと環境」の直結リンクの行と、P1 / P5 の「直結リンク 2 本」の
+  2 か所を、実測に合わせた
+
+### 7.4 (2026-09-22): 帯域、事前の確認、A/B (要件 4.3〜4.6)
+
+- **回 1 (`netcheck-bandwidth`、最小の設定)**: 不合格。NCCL 2.30.7 が `NET/IB : No device found.`
+  で Socket に落ち、1 GiB の busbw は 16 Gbps
+- **回 2 (`netcheck-bandwidth-ib` = 回 1 + `--device /dev/infiniband`)**: 合格。`NET/IB : Using
+  [0]rocep1s0f0:1/RoCE [1]roceP2p1s0f0:1/RoCE`、`Using network IB`。1 GiB の busbw **186.9 Gbps**
+  (1 MiB 9.9、16 MiB 136.0、256 MiB 161.6)。NVIDIA のしきい値 175 Gbps を上回り、公表の
+  189.85 Gbps (ib_write_bw) に近い (道具が違うので参考)。**採用**: `--device /dev/infiniband` を
+  `p1-nvfp4-tp2` と `netcheck-sanity` にも `measured` つきで足した
+- **A/B の形**: docker の設定は `serve netcheck ab --env` では変えられないので、構成を写して
+  1 つだけ足した B (`netcheck-bandwidth-ib`) を `serve netcheck bandwidth` で流す形にした
+  (回ごとの NCCL の記録は、道具が回の札で分けて回収する)
+- **事前の確認 (`netcheck-sanity`、`--device` つき)**: 4 段 (PyTorch の NCCL、GLOO、vLLM の
+  NCCL、CUDA グラフの中の NCCL) すべて合格。2 台とも IB の経路
+- **足さなかったもの**: `--cap-add IPC_LOCK`、`--cap-add SYS_NICE`、`NCCL_IB_HCA`、
+  `NCCL_IB_MERGE_NICS`、`NCCL_IB_GID_INDEX` (既定のままで、2 つの RoCE のデバイスが両方使われ、
+  しきい値を上回った。足す根拠がない)
+- `NCCL_SOCKET_IFNAME` の直結側 / 管理側の A/B は行っていない (直結側で IB の経路が取れ、
+  管理側 (10 GbE) を試す理由がない)
+- 記録: `serving/var/20260922T123252Z-netcheck-netcheck-bandwidth/` (回 1)、
+  `20260922T123535Z-netcheck-netcheck-bandwidth-ib/` (回 2)、`20260922T123720Z-netcheck-netcheck-sanity/`

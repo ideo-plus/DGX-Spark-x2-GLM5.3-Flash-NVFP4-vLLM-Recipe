@@ -736,7 +736,7 @@ def test_the_debug_switch_shows_the_traceback(
 
 
 def test_the_default_config_paths_point_into_serving(
-    capsys: pytest.CaptureFixture[str],
+    capsys: pytest.CaptureFixture[str], tmp_path: Path
 ) -> None:
     """`--configs` / `--nodes` を省くと、`serving/config/` の下を見る (design.md cli)。
 
@@ -746,16 +746,14 @@ def test_the_default_config_paths_point_into_serving(
     (i) argparse が既定を決めずに `None` のままにすること、(ii) 2 つの引数の説明が既定の道筋を
     名指しすること、(iii) その道筋が `serving_dir()` の下に実在すること、の 3 つで見る。
 
-    (iv) として、**既定の場所から実際に読んだ証拠**も 1 つ置く: 既定のまま `check` を呼ぶと、
-    コミットした `nodes.toml` の直結の値が空なので `nodes.head.fabric_addr` を理由に断られる。
-    この断りは `config.select_config` が出すもので、`_cmd_check` が `ctx.runner()` に触るより
-    前である。
+    (iv) として、**既定の場所から実際に読んだ証拠**も 1 つ置く: 既定の `--configs` のまま、
+    `--nodes` にだけ直結の値を落とした写しを渡して `check` を呼ぶと、`nodes.head.fabric_addr`
+    を理由に断られる。この断りは `config.select_config` が出すもので、`_cmd_check` が
+    `ctx.runner()` に触るより前である (7.3 でコミットした `nodes.toml` は埋まっているので、
+    既定の `--nodes` のままでは関門に進んでしまう。写しで止める)。
 
     **Spark に触らないことは、構造で保証する**: 遠隔の実行役の工場を、呼ばれたら落ちるものに
-    差し替えて渡す。いまは `select_config` が先に断るので工場は呼ばれない。7.3 が直結の値を
-    実測で埋めたら、`select_config` が通って `_cmd_check` が関門に進むので、**本物の ssh が
-    出る代わりに、この試験が大きな音で落ちる** (7.3 が (iv) を直す合図になる。そのときは
-    (i)〜(iii) だけでも、既定の道筋の意図は守れる)。
+    差し替えて渡す。
     """
     parser = cli.build_parser()
     args = parser.parse_args(["check", SERVE_CONFIG])
@@ -780,7 +778,14 @@ def test_the_default_config_paths_point_into_serving(
     def no_spark(var_root: Path) -> RemoteRunner:
         raise AssertionError("既定の道筋の試験は、Spark に触らない")
 
-    assert cli.main(["check", SERVE_CONFIG], runner_factory=no_spark) == cli.EXIT_PRECONDITION
+    unmeasured = tmp_path / "nodes.toml"
+    committed = (cli.serving_dir() / "config" / "nodes.toml").read_text(encoding="utf-8")
+    unmeasured.write_text(
+        "\n".join(line for line in committed.splitlines() if not line.startswith("fabric_")) + "\n",
+        encoding="utf-8",
+    )
+    code = cli.main(["check", SERVE_CONFIG, "--nodes", str(unmeasured)], runner_factory=no_spark)
+    assert code == cli.EXIT_PRECONDITION
     assert "nodes.head.fabric_addr" in capsys.readouterr().err
 
 

@@ -51,7 +51,7 @@ MOUNT_AT = "/models/glm-5-3-flash-nvfp4"
 STARTED_AT = datetime(2026, 9, 22, 0, 0, 0, tzinfo=UTC)
 STARTED_LABEL = "2026-09-22T00:00:00Z"
 
-CONFIG_SHA256 = "daf24e95a3e04e6902408abe2d2c97bd8082fad68ae783c27dc855eef931d7ab"
+CONFIG_SHA256 = "9222dc58e8a54e27fbea342c653312df9d15bd8b778879f7e56da727d3e0ddc6"
 """`p1-nvfp4-tp2` の `config-sha256`。
 
 構成の値 (フラグ、値、イメージ、重み、ノードの値) を 1 つでも変えると変わるので、この
@@ -62,12 +62,14 @@ CONFIG_SHA256 = "daf24e95a3e04e6902408abe2d2c97bd8082fad68ae783c27dc855eef931d7a
 EXPECTED_NAMES = frozenset(
     {
         "probe-pinned",
+        "probe-nightly",
         "p1-nvfp4-tp2",
         "p1-fetch-nvfp4",
         "p1-fetch-nvfp4-probe",
         "p1-image-licenses",
         "p1-image-hf-version",
         "netcheck-bandwidth",
+        "netcheck-bandwidth-ib",
         "netcheck-sanity",
     }
 )
@@ -123,12 +125,21 @@ def test_committed_files_load_as_they_are() -> None:
     assert nodes["worker"].remote_root == REMOTE_ROOT
 
 
-def test_committed_nodes_leave_the_fabric_values_empty() -> None:
-    """直結の値は、7.3 の実測まで空のままである (見込みの値を書かない)。"""
-    for node in _load_nodes().values():
-        assert node.fabric_addr is None
-        assert node.fabric_ifname is None
-        assert node.fabric_measured is None
+def test_committed_nodes_carry_the_measured_fabric_values() -> None:
+    """直結の値は、7.3 の実測 (2026-09-22) で埋まっていて、根拠の要約が実在する。
+
+    見込みの値を書かない (requirements 4.7) という決まりは、`fabric_measured` が指す
+    `docs/results/` の要約が実在すること、2 台が同じインターフェースの名前と同じサブネットを
+    指すことで確かめる (値そのものは、その要約の表と一致させる)。
+    """
+    nodes = _load_nodes()
+    assert nodes["head"].fabric_ifname == "enp1s0f0np0"
+    assert nodes["worker"].fabric_ifname == "enp1s0f0np0"
+    assert nodes["head"].fabric_addr == IPv4Address("192.168.100.10")
+    assert nodes["worker"].fabric_addr == IPv4Address("192.168.100.11")
+    for node in nodes.values():
+        assert node.fabric_measured == "docs/results/2026-09-22-netcheck-links.md"
+        assert (SERVING_DIR.parent / node.fabric_measured).is_file()
 
 
 # --- 固定した引数の列 --------------------------------------------------
@@ -174,6 +185,10 @@ _DOCKER_ARGV: tuple[str, ...] = (
     f"type=bind,source={REMOTE_ROOT}/cache,target=/root/.cache",
     "--mount",
     f"type=bind,source={REMOTE_ROOT}/logs,target=/logs",
+    # 2026-09-22 の A/B (docs/results/2026-09-22-netcheck-bandwidth.md) で採用した。無いと NCCL が
+    # TCP に落ちる (16 Gbps)。あると IB の経路で 186.9 Gbps
+    "--device",
+    "/dev/infiniband",
 )
 
 _TAIL_ARGV: tuple[str, ...] = (
@@ -316,7 +331,13 @@ def test_the_two_nodes_differ_only_where_they_must() -> None:
 
 @pytest.mark.parametrize(
     "name",
-    ["probe-pinned", "p1-fetch-nvfp4", "p1-fetch-nvfp4-probe", "p1-image-licenses"],
+    [
+        "probe-pinned",
+        "probe-nightly",
+        "p1-fetch-nvfp4",
+        "p1-fetch-nvfp4-probe",
+        "p1-image-licenses",
+    ],
 )
 def test_configs_selectable_before_the_fabric_is_measured(name: str) -> None:
     """縮小の確認、取得、読み取りの構成は、直結の値が空のままでも選べる。"""
@@ -345,9 +366,18 @@ _FABRIC_FIELDS = ("fabric_addr", "fabric_ifname", "fabric_measured")
 
 @pytest.mark.parametrize("name", ["p1-nvfp4-tp2", "netcheck-bandwidth", "netcheck-sanity"])
 def test_two_node_configs_are_refused_only_for_the_missing_fabric(name: str) -> None:
-    """2 台の構成が選べない理由が、直結の値がないことだけである (ほかの誤りがない)。"""
+    """直結の値を空に戻すと、2 台の構成が選べない理由は、それだけである (ほかの誤りがない)。
+
+    7.3 でコミットした `nodes.toml` は埋まっているので、ここでは 3 つの値を落とした写しで
+    確かめる (requirements 4.7 の関門が、いまも効いていることの見張り)。
+    """
     configs = _load_configs()
-    nodes = _load_nodes()
+    nodes = {
+        role: node.model_copy(
+            update={"fabric_addr": None, "fabric_ifname": None, "fabric_measured": None}
+        )
+        for role, node in _load_nodes().items()
+    }
     with pytest.raises(c.ConfigError) as caught:
         c.select_config(configs, name, nodes)
     lines = str(caught.value).splitlines()[1:]
