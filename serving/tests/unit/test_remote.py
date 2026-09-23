@@ -430,12 +430,18 @@ def test_ethtool_outside_the_read_only_forms_is_refused(
         ["cat", f"{REMOTE_ROOT}/state/p1.launch.json", f"{REMOTE_ROOT}/logs/a.log"],
         ["cat", f"/sys/class/net/{IF}/mtu"],
         ["cat", "/sys/class/infiniband/rocep1s0f0/ports/1/state"],
+        # /proc/stat は完全一致で通る
+        ["cat", "/proc/stat"],
+        # 熱区域と hwmon の下は前方一致で通り、複数の道筋も通る
+        ["cat", "/sys/class/thermal/thermal_zone0/temp", "/sys/class/thermal/thermal_zone4/temp"],
+        ["cat", "/sys/class/hwmon/hwmon3/temp1_label"],
     ],
 )
 def test_cat_reads_only_the_allowed_places(
     runner: SshRunner, sent: Recorder, argv: list[str]
 ) -> None:
-    """`cat` は、Spark の置き場所の下と、インターフェースの読み取りの場所だけを読める。"""
+    """`cat` は、Spark の置き場所の下、インターフェースの読み取りの場所、熱区域と hwmon の
+    下 (前方一致)、`/proc/stat` (完全一致) だけを読める。"""
     runner.run(HEAD, argv, timeout_s=10.0, mutating=False)
 
     assert sent.calls, f"{argv} が流れていない"
@@ -452,15 +458,45 @@ def test_cat_reads_only_the_allowed_places(
         ["cat", "-n", f"{REMOTE_ROOT}/logs/a.log"],
         ["cat", f"{REMOTE_ROOT}/logs/a.log", "/etc/passwd"],
         ["cat"],
+        # /proc は完全一致 (/proc/stat) だけ許すので、他の場所はすべて拒否する
+        ["cat", "/proc/statx"],
+        ["cat", "/proc/stats"],
+        ["cat", "/proc/stat/"],
+        ["cat", "/proc/stat/.."],
+        ["cat", "/proc/stat/../1/environ"],
+        ["cat", "/proc/self/stat"],
+        ["cat", "/proc/1/environ"],
+        ["cat", "/proc"],
+        # 前方一致の場所からの遡りと、許可と非許可の混在も拒否する
+        ["cat", "/sys/class/thermal/../../kernel/hostname"],
+        ["cat", "/sys/class/thermalx/a"],
+        ["cat", "/proc/stat", "/etc/passwd"],
+        ["cat", "-n", "/proc/stat"],
     ],
 )
 def test_cat_outside_the_allowed_places_is_refused(
     runner: SshRunner, sent: Recorder, argv: list[str]
 ) -> None:
-    """よその場所、認証の情報、別の構成の記録を読む `cat` は断る (requirements 2.4、2.6)。"""
+    """よその場所、認証の情報、別の構成の記録を読む `cat` は断る (requirements 2.4、2.6)。
+    `/proc` は `/proc/stat` の完全一致だけを許し、前方一致では許さない。"""
     with pytest.raises(RuntimeError, match="cat"):
         runner.run(HEAD, argv, timeout_s=10.0, mutating=False)
 
+    assert sent.calls == []
+
+
+def test_cat_refusal_message_separates_prefix_and_exact_places(
+    runner: SshRunner, sent: Recorder
+) -> None:
+    """cat を拒否する文が、前方一致の場所と完全一致の場所を分けて示す (`/proc/stat` を
+    「の下」には含めない)。文言の完全一致では確かめず、`/proc/stat` が完全一致の場所として
+    示されることだけを確かめる。"""
+    with pytest.raises(RuntimeError) as caught:
+        runner.run(HEAD, ["cat", "/proc/statx"], timeout_s=10.0, mutating=False)
+
+    message = str(caught.value)
+    assert "完全一致で /proc/stat" in message
+    assert "/proc/stat の下" not in message
     assert sent.calls == []
 
 
