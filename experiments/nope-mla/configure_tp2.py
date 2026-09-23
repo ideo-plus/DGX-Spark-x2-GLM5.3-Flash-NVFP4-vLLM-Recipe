@@ -1,4 +1,4 @@
-"""確認済みの自前イメージから TP=2 の縮小構成を生成する。"""
+"""確認済みの自前イメージから TP=2 の構成を生成する (初回確認用の smoke と計測用の full)。"""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ import re
 import tomllib
 from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 ROOT = Path(__file__).resolve().parents[2]
 CONFIGS_PATH = ROOT / "serving/config/configs.toml"
@@ -17,7 +17,84 @@ IMAGE_SEEN_AS = "vllm-nope:0961bbae-fi070"
 IMAGE_MEASURED = "docs/results/2026-09-22-nope-build.md"
 SOURCE_NAME = "p1-nvfp4-tp2"
 TARGET_NAME = "p2-nope-tp2-smoke"
+FULL_TARGET_NAME = "p2-nope-tp2-full"
 NCCL_SOURCE_NAME = "netcheck-bandwidth"
+
+
+class Variant(NamedTuple):
+    """生成する構成の違いをまとめたもの。
+
+    `arg_overrides` は `(args の鍵, 旧値, 新値, why)` の並びで、`render` が
+    `[configs.{SOURCE_NAME}.args.{鍵}]` の `value` と `why` をこの順に置き換える。
+    空なら置き換えず、p1 の値と根拠をそのまま残す。
+    """
+
+    name: str
+    description: str
+    env_comment: str
+    nccl_debug_why: str
+    arg_overrides: tuple[tuple[str, str, str, str], ...]
+
+
+SMOKE = Variant(
+    name=TARGET_NAME,
+    description=(
+        "NoPE 修正イメージ (vllm-nope:0961bbae-fi070) で、"
+        "2 台 TP=2 の初回の起動と短い応答だけを確かめる。"
+        "短い文脈 (4096) と同時実行 1。実重みでの起動は未確認"
+    ),
+    env_comment=(
+        "# --- 環境変数 (p1-nvfp4-tp2 の 3 つ + 初回の起動だけに付ける NCCL の記録の 3 つ) -----"
+    ),
+    nccl_debug_why=(
+        "初回の起動だけ、NCCL の記録を採る (手順書 2.1)。"
+        "経路の確定の行 (Using network …) は INFO の段でしか出ない。"
+        "2 台とも IB であることを、この記録から確かめる"
+    ),
+    arg_overrides=(
+        (
+            "max-model-len",
+            "163840",
+            "4096",
+            (
+                "初回は起動と短い応答だけを確かめる運用上の選択。"
+                "文脈長の上限を 4096 に絞り、初回に必要な KV 容量の条件を抑える。"
+                "長文脈は次の段階で確かめる"
+            ),
+        ),
+        (
+            "max-num-seqs",
+            "16",
+            "1",
+            (
+                "初回は同時に 1 本しか送らない運用上の選択。"
+                "線形アテンションの状態は同時の本数に比例するので、起動と応答の確認に要らないぶんを取らない。"
+                "同時実行は次の段階で確かめる"
+            ),
+        ),
+    ),
+)
+
+FULL = Variant(
+    name=FULL_TARGET_NAME,
+    description=(
+        "NoPE 修正イメージ (vllm-nope:0961bbae-fi070) で、"
+        "2 台 TP=2 の prefill・並列・長文脈の計測を行う。"
+        "文脈長 163840 と同時実行 16 は p1-nvfp4-tp2 のまま。実機では未確認"
+    ),
+    env_comment=(
+        "# --- 環境変数 (p1-nvfp4-tp2 の 3 つ + IB の確認のために"
+        "起動のたびに付ける NCCL の記録の 3 つ) -----"
+    ),
+    nccl_debug_why=(
+        "起動のたびに NCCL の記録を採る。"
+        "経路の確定の行 (Using network …) は INFO の段でしか出ない。"
+        "2 台とも IB であることを、この記録から毎回確かめる"
+    ),
+    arg_overrides=(),
+)
+
+VARIANTS: Mapping[str, Variant] = {"smoke": SMOKE, "full": FULL}
 
 
 def load_image(inspect_json: Path) -> dict[str, Any]:
@@ -53,8 +130,8 @@ def _replace_in_table(block: str, header: str, old_value: str, new_value: str, n
     return block[:start] + table + block[end:]
 
 
-def render(configs_text: str, image: Mapping[str, Any]) -> str:
-    """configs.toml の p1 構成から生成する TOML を返す。"""
+def render(configs_text: str, image: Mapping[str, Any], variant: Variant = SMOKE) -> str:
+    """configs.toml の p1 構成から `variant` に応じた構成の TOML を返す。"""
     start = configs_text.index(f"[configs.{SOURCE_NAME}]")
     end = configs_text.index("# ====", start)
     block = configs_text[start:end].rstrip() + "\n"
@@ -69,44 +146,25 @@ def render(configs_text: str, image: Mapping[str, Any]) -> str:
         f"measured = {json.dumps(IMAGE_MEASURED)}\n\n"
     )
     block = block[:image_start] + image_section + block[image_end:]
-    block = _replace_in_table(
-        block,
-        f"[configs.{SOURCE_NAME}.args.max-model-len]",
-        "163840",
-        "4096",
-        (
-            "初回は起動と短い応答だけを確かめる運用上の選択。"
-            "文脈長の上限を 4096 に絞り、初回に必要な KV 容量の条件を抑える。"
-            "長文脈は次の段階で確かめる"
-        ),
-    )
-    block = _replace_in_table(
-        block,
-        f"[configs.{SOURCE_NAME}.args.max-num-seqs]",
-        "16",
-        "1",
-        (
-            "初回は同時に 1 本しか送らない運用上の選択。"
-            "線形アテンションの状態は同時の本数に比例するので、起動と応答の確認に要らないぶんを取らない。"
-            "同時実行は次の段階で確かめる"
-        ),
-    )
-    description = (
-        "NoPE 修正イメージ (vllm-nope:0961bbae-fi070) で、"
-        "2 台 TP=2 の初回の起動と短い応答だけを確かめる。"
-        "短い文脈 (4096) と同時実行 1。実重みでの起動は未確認"
-    )
-    block = block.replace(f"configs.{SOURCE_NAME}", f"configs.{TARGET_NAME}")
+    for key, old_value, new_value, why in variant.arg_overrides:
+        block = _replace_in_table(
+            block,
+            f"[configs.{SOURCE_NAME}.args.{key}]",
+            old_value,
+            new_value,
+            why,
+        )
+    block = block.replace(f"configs.{SOURCE_NAME}", f"configs.{variant.name}")
     block = re.sub(
         r"^description = .*$",
-        f"description = {json.dumps(description, ensure_ascii=False)}",
+        f"description = {json.dumps(variant.description, ensure_ascii=False)}",
         block,
         count=1,
         flags=re.MULTILINE,
     )
     block = block.replace(
         "# --- 環境変数 (最初の 3 つだけ。A/B で足すものは docs/results/ の実測を根拠にする) -----",
-        "# --- 環境変数 (p1-nvfp4-tp2 の 3 つ + 初回の起動だけに付ける NCCL の記録の 3 つ) -----",
+        variant.env_comment,
     )
     data = tomllib.loads(configs_text)
     source_env = data["configs"][NCCL_SOURCE_NAME]["env"]
@@ -115,11 +173,7 @@ def render(configs_text: str, image: Mapping[str, Any]) -> str:
             "nccl-debug",
             "NCCL_DEBUG",
             "INFO",
-            (
-                "初回の起動だけ、NCCL の記録を採る (手順書 2.1)。"
-                "経路の確定の行 (Using network …) は INFO の段でしか出ない。"
-                "2 台とも IB であることを、この記録から確かめる"
-            ),
+            variant.nccl_debug_why,
         ),
         (
             "nccl-debug-subsys",
@@ -143,7 +197,7 @@ def render(configs_text: str, image: Mapping[str, Any]) -> str:
     for key, flag, value, why in additions:
         origin = source_env[key]
         block += (
-            f"\n[configs.{TARGET_NAME}.env.{key}]\n"
+            f"\n[configs.{variant.name}.env.{key}]\n"
             f"flag = {json.dumps(flag)}\n"
             f"value = {json.dumps(value)}\n"
             f"why = {json.dumps(why, ensure_ascii=False)}\n"
@@ -155,19 +209,25 @@ def render(configs_text: str, image: Mapping[str, Any]) -> str:
     return result
 
 
-def generate(inspect_json: Path, output: Path) -> None:
+def generate(inspect_json: Path, output: Path, variant: Variant = SMOKE) -> None:
     """inspect JSON から構成を生成し、既存の出力を保護して保存する。"""
-    result = render(CONFIGS_PATH.read_text(encoding="utf-8"), load_image(inspect_json))
+    result = render(CONFIGS_PATH.read_text(encoding="utf-8"), load_image(inspect_json), variant)
     with output.open("x", encoding="utf-8") as stream:
         stream.write(result)
 
 
 def main(argv: Sequence[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--variant",
+        choices=tuple(VARIANTS),
+        default="smoke",
+        help="生成する構成 (smoke: 初回確認用 4096/1、full: 計測用 163840/16)",
+    )
     parser.add_argument("inspect_json", type=Path)
     parser.add_argument("output", type=Path)
     args = parser.parse_args(argv)
-    generate(args.inspect_json, args.output)
+    generate(args.inspect_json, args.output, VARIANTS[args.variant])
 
 
 if __name__ == "__main__":

@@ -97,3 +97,32 @@ takt --pipeline --skip-git --workflow simple-mini --task "$(cat docs/tasks/tp2-b
 [出力上限を指定する変更](../tasks/smoke-token-budget.md) も `simple-mini` で実行した。
 約 26 分でレビュー承認・終了値 0。関連 209 件、ruff、mypy が通過した。
 ログは `.takt/verification/smoke-budget-run.log`。実機での再試行は対話側が担当する。
+
+## モデル割り当ての更新 (2026-09-23)
+
+マシン側の `~/.takt/` の割り当てを次のように変えた。リポジトリの `.takt/runtime.yaml` は profile 名だけなので変更していない。
+
+- T2 を `claude-opus-5-5` にした。
+- 実装の T0（`t0-production-code`）は codex / `gpt-6-luna` にした。
+  OpenCode Go には `gpt-6-luna` がなく、`Model not found` で失敗したため。
+- レート制限時の切り替え先を `claude-opus-5-5` → codex / `gpt-6-sol` にした。
+
+codex を使う profile を動かすため、`~/.takt/config.yaml` に `codex_cli_path` を加え、mise の codex 0.156.0 を指定した。
+TAKT 0.66.0 に同梱の codex 0.153.4 は、ChatGPT アカウントで `gpt-6-luna`・`gpt-6-sol` を HTTP 400 で拒否した。
+`gpt-6-astra` は通った。手元の CLI での単体確認では気づけないので、TAKT 経由の実行ログで確かめる。
+
+リポジトリの外の使い捨てプロジェクトで、`flash-default` を使って小さなタスクを流した。
+実行ログの `step_start` に記録された provider・model で割り当てを確かめた。
+
+| 回 | 結果 |
+|---|---|
+| 1 | 同梱の codex で implement が HTTP 400。replan を 2 回繰り返して停止 |
+| 2 | 全 step が割り当てどおりに動いた。final-gate で Codex の利用上限に達して停止 |
+| 3 | report phase で `ReportPhaseToolCallError` が起き、TAKT のプロセスが異常終了 |
+| 4 | plan から final-gate まで通過。16 分 39 秒、`Result: Success` |
+
+2 回目の Codex の利用上限では、「You've hit your usage limit」という文言が TAKT のレート制限の判定パターンに合わなかった。
+そのため `rate_limit_fallback` が働かず、そのまま止まった。
+上限が戻る 2026-09-27 19:38 までは、`t0-production-code` を `claude-sonnet-5`、`t3-judge` を `claude-opus-5-5` に移している。
+切り替え先の `gpt-6-sol` も外した。戻すための記述は `~/.takt/` の各ファイルにコメントで残した。
+3 回目の異常終了は 1 回だけで、同じ設定の再実行では起きなかった。

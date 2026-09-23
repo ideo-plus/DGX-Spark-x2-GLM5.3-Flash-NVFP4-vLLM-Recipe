@@ -1,0 +1,394 @@
+{
+  "schema_version": 1,
+  "conditions": {
+    "schema_version": 1,
+    "run_id": "20260923T020741Z-p2-nope-tp2-smoke-fmdayl",
+    "status": "completed",
+    "target": {
+      "name": "p2-nope-tp2-smoke",
+      "base_url": "http://10.0.1.60:8000/",
+      "model": "glm-5-3-flash",
+      "notes": "自前イメージの TP=2 の初回確認 (短い文脈 4096、同時実行 1)。実重みでの起動は未確認",
+      "api_key_env": null,
+      "metrics_url": null,
+      "max_context_tokens": 4096,
+      "metric_map": {},
+      "tool_markup_markers": [
+        "<tool_call>",
+        "</tool_call>",
+        "<arg_key>",
+        "<arg_value>"
+      ]
+    },
+    "server_model": "glm-5-3-flash",
+    "server_version": "0.1.dev1+g0961bbae2.d20260922",
+    "started_at": "2026-09-23T02:07:41.666715Z",
+    "finished_at": "2026-09-23T03:06:15.176880Z",
+    "suites": [
+      "decode"
+    ],
+    "profile_name": "quick",
+    "profile": {
+      "name": "quick",
+      "seed": 0,
+      "sampling": {
+        "temperature": 0.0,
+        "top_p": null,
+        "top_k": null,
+        "thinking": "server_default"
+      },
+      "chars_per_token": {
+        "prose_en": 4.831,
+        "prose_ja": 1.794,
+        "code": 3.505,
+        "log": 2.316
+      },
+      "timeout": {
+        "connect_s": 10.0,
+        "first_event_s": 120.0,
+        "idle_s": 60.0,
+        "total_s": 900.0
+      },
+      "min_successes": 5,
+      "max_consecutive_failures": 5,
+      "length_tolerance": 0.05,
+      "compare_tolerance": 0.02,
+      "metrics_interval_s": 1.0,
+      "output_sanity": {
+        "repeat_min_chars": 12,
+        "repeat_min_count": 8
+      },
+      "sandbox": {
+        "runtime": "auto",
+        "image": "bench-sandbox:py3.13-numpy2.5.3",
+        "image_digest": "sha256:f75a1d43009306248ecbe68c0cc992b700a472037ba6ea336e519404ec1d1de6",
+        "timeout_s": 20.0,
+        "memory_mb": 512,
+        "cpus": 1.0,
+        "pids_limit": 64
+      },
+      "decode": {
+        "trials": 10,
+        "warmup_trials": 2,
+        "max_tokens": 1024
+      },
+      "prefill": {
+        "trials": 5,
+        "warmup_trials": 1,
+        "max_tokens": 16,
+        "target_input_tokens": [
+          8000,
+          32000,
+          128000
+        ]
+      },
+      "concurrency": {
+        "levels": [
+          1,
+          2,
+          4,
+          8
+        ],
+        "rounds": 5,
+        "max_tokens": 256,
+        "input_tokens": 2000
+      },
+      "quality": {
+        "toolcall_tasks": 50,
+        "needle_lengths": [
+          8000,
+          32000,
+          128000
+        ],
+        "needle_depths": [
+          0,
+          25,
+          50,
+          75,
+          100
+        ],
+        "trials_per_cell": 2,
+        "code_max_tokens": 1024,
+        "code_problem_limit": 40
+      },
+      "agent": {
+        "start_tokens": 20000,
+        "end_tokens": 120000,
+        "step_tokens": 20000,
+        "trials_per_stage": 50,
+        "conversations_per_stage": 5,
+        "threshold": 0.01,
+        "max_tokens": 256
+      }
+    },
+    "harness_version": "0.1.0+g504a59c7",
+    "generator_version": 1,
+    "context_limit": 4096,
+    "warnings": [],
+    "skipped": [],
+    "datasets": []
+  },
+  "incomplete": false,
+  "results": [
+    {
+      "condition": "decode/code/en",
+      "metric": "decode_tps",
+      "tier": "primary",
+      "continuous": {
+        "n": 10,
+        "mean": 14.162393839423482,
+        "median": 14.165136431056974,
+        "min": 14.118399642344917,
+        "max": 14.194255761254421,
+        "stdev": 0.02339557255924324,
+        "iqr": 0.029525215265945093,
+        "cv": 0.001651950427625985
+      },
+      "proportion": null,
+      "failures": 0,
+      "flags": [],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0
+      }
+    },
+    {
+      "condition": "decode/code/en",
+      "metric": "ttft_s",
+      "tier": "primary",
+      "continuous": {
+        "n": 10,
+        "mean": 0.5195670542,
+        "median": 0.5182423334999999,
+        "min": 0.487719666,
+        "max": 0.579309542,
+        "stdev": 0.029058638906705302,
+        "iqr": 0.03260210399999991,
+        "cv": 0.05592856335251693
+      },
+      "proportion": null,
+      "failures": 0,
+      "flags": [],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0
+      }
+    },
+    {
+      "condition": "decode/code/ja",
+      "metric": "decode_tps",
+      "tier": "primary",
+      "continuous": {
+        "n": 10,
+        "mean": 14.147602534447852,
+        "median": 14.18604704503753,
+        "min": 13.971341104399535,
+        "max": 14.20556190061543,
+        "stdev": 0.0776835075149798,
+        "iqr": 0.07742914677206691,
+        "cv": 0.0054909308715613845
+      },
+      "proportion": null,
+      "failures": 0,
+      "flags": [],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0
+      }
+    },
+    {
+      "condition": "decode/code/ja",
+      "metric": "ttft_s",
+      "tier": "primary",
+      "continuous": {
+        "n": 10,
+        "mean": 0.522391775,
+        "median": 0.5207907915,
+        "min": 0.496880541,
+        "max": 0.559271125,
+        "stdev": 0.017440019129557276,
+        "iqr": 0.01376044774999996,
+        "cv": 0.03338494203810402
+      },
+      "proportion": null,
+      "failures": 0,
+      "flags": [],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0
+      }
+    },
+    {
+      "condition": "decode/prose/en",
+      "metric": "decode_tps",
+      "tier": "primary",
+      "continuous": {
+        "n": 10,
+        "mean": 14.168053073679241,
+        "median": 14.17209053546403,
+        "min": 14.12760222958421,
+        "max": 14.212929143192321,
+        "stdev": 0.02978467903009809,
+        "iqr": 0.049806230284698216,
+        "cv": 0.002102242197654574
+      },
+      "proportion": null,
+      "failures": 0,
+      "flags": [],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0
+      }
+    },
+    {
+      "condition": "decode/prose/en",
+      "metric": "ttft_s",
+      "tier": "primary",
+      "continuous": {
+        "n": 10,
+        "mean": 0.4832496708,
+        "median": 0.4883297915,
+        "min": 0.460168833,
+        "max": 0.500564667,
+        "stdev": 0.015077044646011851,
+        "iqr": 0.025670239500000025,
+        "cv": 0.03119928591167465
+      },
+      "proportion": null,
+      "failures": 0,
+      "flags": [],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0
+      }
+    },
+    {
+      "condition": "decode/prose/ja",
+      "metric": "decode_tps",
+      "tier": "primary",
+      "continuous": {
+        "n": 10,
+        "mean": 13.933428124253235,
+        "median": 13.966077096107599,
+        "min": 13.54153253546214,
+        "max": 14.047308812921612,
+        "stdev": 0.14527712116774016,
+        "iqr": 0.059252376329236967,
+        "cv": 0.010426516710188745
+      },
+      "proportion": null,
+      "failures": 0,
+      "flags": [],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0
+      }
+    },
+    {
+      "condition": "decode/prose/ja",
+      "metric": "ttft_s",
+      "tier": "primary",
+      "continuous": {
+        "n": 10,
+        "mean": 0.7147231748999999,
+        "median": 0.5190037295000001,
+        "min": 0.490734833,
+        "max": 2.44457375,
+        "stdev": 0.6082435754975448,
+        "iqr": 0.038198384999999946,
+        "cv": 0.8510198029924619
+      },
+      "proportion": null,
+      "failures": 0,
+      "flags": [],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0
+      }
+    }
+  ],
+  "agent": null,
+  "server_metrics": {
+    "decode/code/en": {
+      "spec_acceptance_rate": null,
+      "mean_acceptance_length": null,
+      "decode_steps": 12288.0,
+      "tokens_per_step": 1.20361328125,
+      "prefix_cache_hit_rate": 0.0,
+      "kv_usage_peak": 0.01151631477927062,
+      "preemptions": 0.0,
+      "missing": [
+        "spec_drafts",
+        "spec_draft_tokens",
+        "spec_accepted_tokens"
+      ]
+    },
+    "decode/code/ja": {
+      "spec_acceptance_rate": null,
+      "mean_acceptance_length": null,
+      "decode_steps": 12288.0,
+      "tokens_per_step": 1.2664388020833333,
+      "prefix_cache_hit_rate": 0.0,
+      "kv_usage_peak": 0.01151631477927062,
+      "preemptions": 0.0,
+      "missing": [
+        "spec_drafts",
+        "spec_draft_tokens",
+        "spec_accepted_tokens"
+      ]
+    },
+    "decode/prose/en": {
+      "spec_acceptance_rate": null,
+      "mean_acceptance_length": null,
+      "decode_steps": 12288.0,
+      "tokens_per_step": 1.1646321614583333,
+      "prefix_cache_hit_rate": 0.0,
+      "kv_usage_peak": 0.01151631477927062,
+      "preemptions": 0.0,
+      "missing": [
+        "spec_drafts",
+        "spec_draft_tokens",
+        "spec_accepted_tokens"
+      ]
+    },
+    "decode/prose/ja": {
+      "spec_acceptance_rate": null,
+      "mean_acceptance_length": null,
+      "decode_steps": 12288.0,
+      "tokens_per_step": 1.2042643229166667,
+      "prefix_cache_hit_rate": 0.0,
+      "kv_usage_peak": 0.01151631477927062,
+      "preemptions": 0.0,
+      "missing": [
+        "spec_drafts",
+        "spec_draft_tokens",
+        "spec_accepted_tokens"
+      ]
+    }
+  },
+  "datasets": []
+}

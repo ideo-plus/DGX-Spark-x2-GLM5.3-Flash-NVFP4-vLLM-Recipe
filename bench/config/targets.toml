@@ -39,6 +39,17 @@ model = "glm-5-3-flash"
 max_context_tokens = 4096
 notes = "自前イメージの TP=2 の初回確認 (短い文脈 4096、同時実行 1)。実重みでの起動は未確認"
 
+# 自前イメージ (vllm-nope:0961bbae-fi070) を、p1-nvfp4-tp2 の文脈長 163840 と同時実行 16 の
+# まま 2 台 TP=2 で起動したときの、prefill・並列・長文脈の計測用 (起動側の構成の名前も
+# p2-nope-tp2-full。experiments/nope-mla/configure_tp2.py --variant full が生成する)。
+# 実機では未確認。max_context_tokens は /v1/models が max_model_len を答えないときの予備の
+# 値で、起動側の --max-model-len と同じ 163840 にする。
+[targets.p2-nope-tp2-full]
+base_url = "http://10.0.1.60:8000"
+model = "glm-5-3-flash"
+max_context_tokens = 163840
+notes = "自前イメージの TP=2 の prefill・並列・長文脈の計測 (文脈長 163840、同時実行 16。起動側の構成名も p2-nope-tp2-full)。実機では未確認"
+
 # 自前で立てた対象サーバーの例。認証の情報 (api_key_env) と、対象サーバー固有の
 # 内部指標の名前への上書き (metric_map) の書き方を示す (コメントアウトしてある
 # ので、そのままでは読み込まれない)。
