@@ -110,6 +110,11 @@ ProbeStatus = Literal["ready", "failed", "inconclusive"]
 WatchFinding = Literal["unresponsive", "stalled"]
 """見張りの判定 (design.md 「watch」)。"""
 
+ThermalFinding = Literal["thermal"]
+"""熱の判定。`WatchFinding` とは別に持つ: `WatchFinding` (`unresponsive`/`stalled`) は
+推論サーバー側の判定で記録の回収を伴うが、`thermal` は熱の判定で、推論サーバーは壊れて
+いないため記録の回収を伴わない。"""
+
 ThinkingVariant = Literal[
     "none",
     "output_config_low",
@@ -735,6 +740,11 @@ class WatchSample(_Frozen):
 
     `gpu_utilization_pct` が読めない (GB10 で `utilization.gpu` が出ない) ときは、値を空に
     して、判定を生成のトークンの数だけで行う。
+
+    `thermal_zones_c` は熱区域の番号 (`int`) から℃への対応、`hwmon_temps_c` は
+    `"hwmon<N>/temp<M>"` の識別子から℃への対応 (どちらも、見張りの開始時に発見した一覧の
+    ぶんだけ持つ)。`cpu_utilization_pct` はコア番号からコアごとの使用率 (%) への対応で、
+    初回や直前の観察が読めなかった回は空になる。
     """
 
     taken_at_utc: datetime
@@ -743,16 +753,23 @@ class WatchSample(_Frozen):
     running_requests: int | None = None
     waiting_requests: int | None = None
     gpu_utilization_pct: dict[NodeRole, int | None] = Field(default_factory=dict)
+    gpu_temperature_c: dict[NodeRole, int | None] = Field(default_factory=dict)
+    gpu_sm_clock_mhz: dict[NodeRole, int | None] = Field(default_factory=dict)
+    gpu_power_w: dict[NodeRole, float | None] = Field(default_factory=dict)
+    thermal_zones_c: dict[NodeRole, dict[int, float | None]] = Field(default_factory=dict)
+    hwmon_temps_c: dict[NodeRole, dict[str, float | None]] = Field(default_factory=dict)
+    cpu_utilization_pct: dict[NodeRole, dict[int, float]] = Field(default_factory=dict)
 
 
 class WatchEvent(_Frozen):
     """見張りが見つけたこと (design.md 「watch」の判定)。
 
     `unresponsive` は応答の確認が 3 回続けて失敗したとき、`stalled` は処理中の要求が
-    あるのに生成のトークンの数が 5 分増えないときである。時刻と、その前後の観察を残す。
+    あるのに生成のトークンの数が 5 分増えないときである。`thermal` は、いずれかの熱区域が
+    しきい値以上になったとき (記録の回収を伴わない)。時刻と、その前後の観察を残す。
     """
 
-    finding: WatchFinding
+    finding: WatchFinding | ThermalFinding
     at_utc: datetime
     context: tuple[WatchSample, ...] = ()
     detail: str = ""
@@ -761,7 +778,8 @@ class WatchEvent(_Frozen):
 class WatchOutcome(_Frozen):
     """見張りの要約 (requirements 7.7)。
 
-    見張りは、何も止めず、起こし直さず、決めた時間まで続ける。
+    見張りは、何も止めず、起こし直さず、決めた時間まで続ける。台ごと・項目ごとの最大値
+    (`*_max_*`) は、読めた値だけから計算し、1 度も読めなければ空にする。
     """
 
     config_name: str = Field(min_length=1)
@@ -772,6 +790,17 @@ class WatchOutcome(_Frozen):
     events: tuple[WatchEvent, ...] = ()
     gpu_utilization_available: bool = True
     detail: str = ""
+    thermal_threshold_c: float = 90.0
+    thermal_zones_found: dict[NodeRole, tuple[int, ...]] = Field(default_factory=dict)
+    hwmon_chip_names: dict[NodeRole, dict[str, str]] = Field(default_factory=dict)
+    hwmon_sensors_found: dict[NodeRole, dict[str, str | None]] = Field(default_factory=dict)
+    gpu_temperature_max_c: dict[NodeRole, int | None] = Field(default_factory=dict)
+    gpu_sm_clock_range_mhz: dict[NodeRole, tuple[int, int] | None] = Field(default_factory=dict)
+    gpu_power_max_w: dict[NodeRole, float | None] = Field(default_factory=dict)
+    thermal_zone_max_c: dict[NodeRole, dict[int, float]] = Field(default_factory=dict)
+    hwmon_temp_max_c: dict[NodeRole, dict[str, float]] = Field(default_factory=dict)
+    thermal_over_threshold_samples: NonNegativeInt = 0
+    thermal_over_threshold_span: tuple[datetime, datetime] | None = None
 
     @model_validator(mode="after")
     def _check_range(self) -> Self:

@@ -155,6 +155,7 @@ __all__ = [
     "UNREADABLE_MARK",
     "PushError",
     "build_parser",
+    "celsius",
     "count",
     "env_pair",
     "main",
@@ -269,6 +270,21 @@ def percent(text: str) -> int:
         raise argparse.ArgumentTypeError(f"0 から 100 の整数にする: {text!r}") from None
     if not 0 <= value <= 100:
         raise argparse.ArgumentTypeError(f"0 から 100 の整数にする: {text!r}")
+    return value
+
+
+def celsius(text: str) -> float:
+    """摂氏の温度を読む (`--thermal-threshold`)。正で有限の値だけを受ける。
+
+    `percent` (0〜100 の割合) も `count` (回数) も意味が合わないので、専用の型にする。
+    片側だけの比較では NaN と inf が通るので、`math.isfinite` で見る (`seconds` と同じ decision)。
+    """
+    try:
+        value = float(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"摂氏の温度は、数値にする: {text!r}") from None
+    if not math.isfinite(value) or value <= 0.0:
+        raise argparse.ArgumentTypeError(f"摂氏の温度は、正で有限の数にする: {text!r}")
     return value
 
 
@@ -675,6 +691,13 @@ def _add_watch(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) 
         default=watch.DEFAULT_UNRESPONSIVE_THRESHOLD,
         metavar="<回>",
         help="「応答しない」と判定する、続けての失敗の回数",
+    )
+    parser.add_argument(
+        "--thermal-threshold",
+        type=celsius,
+        default=watch.DEFAULT_THERMAL_THRESHOLD_C,
+        metavar="<℃>",
+        help="熱区域の温度が、この値以上になった観察で thermal の出来事を出す (既定 90)",
     )
 
 
@@ -1344,6 +1367,7 @@ def _cmd_watch(ctx: _Context) -> int:
         unresponsive_threshold=int(ctx.args.unresponsive_threshold),
         stall_window_s=float(ctx.args.stall_window),
         stall_gpu_threshold_pct=int(ctx.args.stall_gpu_threshold),
+        thermal_threshold_c=float(ctx.args.thermal_threshold),
         client=ctx.client(watch.DEFAULT_HEALTH_TIMEOUT_S),
         sleep=ctx.sleep,
         clock=ctx.clock,
