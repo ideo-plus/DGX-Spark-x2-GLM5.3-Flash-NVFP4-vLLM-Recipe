@@ -1,6 +1,6 @@
-# HAND_OFF — GPU クロック上限と初回の decode・品質計測の後
+# HAND_OFF — GPU クロック上限と、smoke・full 構成での計測の後
 
-最終更新: 2026-09-23 13:20 JST。モデル・ハーネス更新後に再開し、GPU クロック上限を決め、初回の decode 計測と quality 計測を完了した。
+最終更新: 2026-09-23 16:30 JST。GPU クロック上限を決め、smoke 構成で decode・quality を、full 構成（文脈長 163840、同時実行 16）で prefill・concurrency・quality を計測した。
 推論サーバーは停止済み。次の実機操作は計測者の指示を待つ。
 
 ## 最初に読む要約
@@ -9,15 +9,22 @@
   結果は [GPU クロック上限と初回 decode 計測](docs/results/2026-09-23-decode-gpu-clock-cap.md)。
 - decode（同時実行 1、文脈長 4096、`quick`）は 4 条件とも約 13.9〜14.2 tok/s、失敗 0。
 - quality（`quick`）: toolcall 37/50（解釈は 50 件とも成功。不正解は下調べのツールを先に呼んだもの）。
-  code 26/40（不正解 14 件はすべて出力上限 1024 に達した打ち切り）。needle は文脈長 4096 のため未実施。
+  code 26/40（不正解 14 件はすべて出力上限 1024 に達した打ち切り）。
+- full 構成（[記録](docs/results/2026-09-23-full-context.md)）:
+  - KV は 1,708,119 トークン
+  - cold prefill は約 1,500 tok/s（128k で最初のトークンまで 86 秒）
+  - concurrency の合計は 8 本で約 51 tok/s
+  - needle は 128k まで 15 条件すべて正解（各 2 試行）
+- full 構成の head の prefill で、ACPI 熱区域 0・4 が 89.8℃ に達した（90℃ まで 0.2℃）。
+  X925 の 1 コアが常に 100% だが、それだけでは説明できない。agent のような長時間の cold prefill は熱の余裕が乏しい。
 - **両台に `nvidia-smi -lgc 300,1800` を手動で設定している。** 全力負荷で ACPI 熱区域 80℃・電力ピーク約 54 W に収まった。
   既定クロックでは 92.6℃ まで上がった。再起動で消えるので、計測前に毎回確認する。
   上限で decode は約 3.3% 下がった（参考値）。行列積は約 15% 下がる。
 - 両台の `/etc/sudoers.d/nvidia-clock` で、`nvidia-smi -lgc *` と `nvidia-smi -rgc` だけを NOPASSWD で許可した。
   そのほかの sudo にはパスワードが要る。
 - GB10 の減速の理由（clocks_event_reasons）とカウンタは当てにならない。クロック・TFLOPS・温度の実測で判断する。
-- 13:11 JST の停止後、両台ともコンテナは absent、GPU プロセスは 0 件だった。再開時は状態を読み直す。
-- prefill、並列、長文脈、長時間運転は未確認。
+- 16:07 JST の停止後、両台ともコンテナは absent、GPU プロセスは 0 件だった。再開時は状態を読み直す。
+- agent（長い会話）と長時間運転は未確認。
 - TAKT の割り当てを変更し、Codex の利用上限（9/27 19:38 まで）のあいだは codex の割り当てを Claude に移している（下記「TAKT と CI」）。
 - 短い応答の確認には `serve smoke ... --max-tokens 512` を使う。既定の 64 では日本語の本文が空だった。
 
@@ -54,7 +61,7 @@ uv run --directory bench bench run --target p2-nope-tp2-smoke --suite quality --
 | 項目 | 値・場所 |
 |---|---|
 | 構成名 / bench の対象名 | `p2-nope-tp2-smoke` |
-| 生成済みの構成 | `serving/var/nope-build-0961bbae/tp2.toml`（Git 対象外） |
+| 生成済みの構成 | `serving/var/nope-build-0961bbae/tp2.toml`（smoke）、`tp2-full.toml`（full、`configure_tp2.py --variant full`）。Git 対象外 |
 | イメージ ID | `sha256:9df45888d2d726a1818be1005ace819808d4a1e8b4ec01a3efa7bc7f10a40c90`（両台に存在。タグではなく ID で照合） |
 | 重み | `RedHatAI/GLM-5.3-Flash-NVFP4@18d55bfd5a2194887738da73753975c9d3842f46` |
 | 重みの配置 | 両台の `~/vllm-baseline/models/glm-5-3-flash-nvfp4/`。各 19 ファイル・197,881,153,655 B、照合済み |
@@ -186,12 +193,13 @@ SSE、ツール呼び出し、品質・性能、長文脈は未確認。[最新�
 
 ## 再開時の選択肢と保留事項
 
-1. **推奨: prefill・並列・長文脈へ進むための構成を用意する。** 文脈長と `--max-num-seqs` を広げた構成が要る。
-   構成の追加は根拠付きの argv と SHA-256 の固定の契約に触れるので、TAKT に範囲を絞って依頼する。
-   上限 1800 の影響は decode より大きいと見込む。
-2. code の出力上限を上げて比べる（`--set` で変えられるかを先に確かめる）。今の 0.650 は打ち切りの影響が大きい。
-3. 上限 1800 を再起動後も保つ systemd サービスにする。Spark の設定を長く変えるので、計測者の了承が要る。
-4. ACPI 熱区域 0・2・4 の熱源を調べる。CPU 負荷は低く、GPU は 58℃ 以下なので、CPU ガバナの変更は優先度が低い。
+1. **推奨: 熱の余裕を確かめてから agent に進む。**
+   ACPI 熱区域 0・4 の熱源を探す。例えば、張り付いた X925 のコアや CPU の上限を変えて、cold 128k の prefill だけを比べる。
+   そのうえで `--suite agent --set agent.end_tokens=20000` から段階的に始める（`full-context-procedure.md` §5）。
+2. 上限 1800 を再起動後も保つ systemd サービスにする。Spark の設定を長く変えるので、計測者の了承が要る。
+3. code の出力上限を上げて比べる。`--set` で変えられるかを先に確かめる。
+4. concurrency を `--set concurrency.rounds=20` で測り直し、再現性を確かめる。
+   入力が狙いより 7〜9% 長い原因も調べる。
 
 別途判断する事項:
 
