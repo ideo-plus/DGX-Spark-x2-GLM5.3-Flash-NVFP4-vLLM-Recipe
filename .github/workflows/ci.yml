@@ -64,10 +64,10 @@ jobs:
       - name: Check the apply script syntax
         run: sh -n ops/spark-power-caps/spark-power-caps-apply
       - name: Verify the systemd unit
+        # --root に空のディレクトリを渡すと sysinit.target などの標準の unit が見つからず失敗する。
+        # 使い捨ての runner の実際の置き場所に ExecStart の実行ファイルを置き、unit のファイルを直接検査する。
         run: |
-          root="$RUNNER_TEMP/spark-power-caps-root"
-          install -D -m 0755 ops/spark-power-caps/spark-power-caps-apply "$root/usr/local/sbin/spark-power-caps-apply"
-          install -D -m 0644 ops/spark-power-caps/spark-power-caps.service "$root/etc/systemd/system/spark-power-caps.service"
-          systemd-analyze verify --root="$root" spark-power-caps.service
+          sudo install -D -m 0755 ops/spark-power-caps/spark-power-caps-apply /usr/local/sbin/spark-power-caps-apply
+          systemd-analyze verify ops/spark-power-caps/spark-power-caps.service
       - name: Check the sudoers fragment
         run: visudo -cf ops/spark-power-caps/spark-power-caps.sudoers
