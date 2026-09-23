@@ -7,6 +7,7 @@ lock と pyproject が一致しなければ `uv sync --locked` が失敗する�
 
 両方で pytest、ruff check、ruff format の確認、mypy を実行する。
 serving 側では `experiments/nope-mla/` の静的検査と、takt 起動スクリプトの構文検査も行う。
+独立した `ops` ジョブが、`ops/spark-power-caps/` のシェルの構文（`sh -n`）、systemd の unit（`systemd-analyze verify`）、sudoers の断片（`visudo -cf`）を検査する。
 Actions はコミット SHA で固定し、リポジトリへの権限は読み取りだけにする。
 
 Spark 接続、モデル取得、GPU 検証、takt のモデル呼び出しは含めない。

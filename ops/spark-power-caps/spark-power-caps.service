@@ -1,0 +1,24 @@
+[Unit]
+Description=Apply the GPU clock cap and the X925 frequency cap used for measurements
+# nvidia-smi -lgc は nvidia カーネルモジュールとデバイスノードを要する。
+# systemd-modules-load.service は modules-load.d のモジュールを読み込む。
+# nvidia-persistenced.service は、あればドライバの初期化を先に済ませる (無い環境では順序の指定だけが無視される)。
+# どちらも順序の指定だけにし、停止中のサービスを起こす要求は書かない。
+After=systemd-modules-load.service nvidia-persistenced.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+EnvironmentFile=/etc/default/spark-power-caps
+# EnvironmentFile の値は利用者が書けるため、動的ローダーに効く変数を含められる。
+# UnsetEnvironment は EnvironmentFile より後に効く (systemd の仕様) ので、ここに列挙した
+# 名前は、EnvironmentFile にあっても root の apply/reset には渡らない。ここで一次情報を
+# 確かめられたのは glibc の unsecvars の一覧ではなく、動的ローダーに直接効くことが知られて
+# いる代表的な変数だけなので、列挙は最小限にとどめる (漏れは README の「実機で未確認の
+# こと」に記す)。
+UnsetEnvironment=LD_PRELOAD LD_LIBRARY_PATH LD_AUDIT GLIBC_TUNABLES PATH
+ExecStart=/usr/local/sbin/spark-power-caps-apply apply
+ExecStop=/usr/local/sbin/spark-power-caps-apply reset
+
+[Install]
+WantedBy=multi-user.target

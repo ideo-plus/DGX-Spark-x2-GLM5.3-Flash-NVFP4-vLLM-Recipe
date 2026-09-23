@@ -1,0 +1,5 @@
+# /etc/sudoers.d/spark-power-caps: 値の写しと反映だけを、パスワードなしで許す (visudo -cf で検査してから置く)。
+# install は写し先を 0600 (root だけが読める) にする。restart は先に reset (ExecStop) を実行してから apply (ExecStart) を行う。
+# 値が不正なら、GPU と X925 の両方の上限が既定に戻ったまま ExecStart が失敗し、spark-power-caps.service が failed になる。
+# 正しい値で入れ直すまで、計測は full-context-procedure.md §2 の確認で止まる (詳しくは README.md)。
+j5ik2o ALL=(root) NOPASSWD: /usr/bin/install -m 0600 -o root -g root /home/j5ik2o/vllm-baseline/payload/spark-power-caps.default /etc/default/spark-power-caps, /usr/bin/systemctl restart spark-power-caps.service

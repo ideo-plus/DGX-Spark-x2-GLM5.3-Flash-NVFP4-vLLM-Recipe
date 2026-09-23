@@ -2228,3 +2228,261 @@ def test_thermal_condition_does_not_change_the_unresponsive_judgement(
     assert [event.finding for event in outcome.events] == ["thermal", "unresponsive"]
     unresponsive = next(event for event in outcome.events if event.finding == "unresponsive")
     assert unresponsive.at_utc == STARTED_WALL + timedelta(seconds=2)
+
+
+# --- cpufreq のコアの発見と、周波数の上限の観察 ------------------------------------
+
+
+def test_cpufreq_cores_are_discovered_once_and_read_per_observation(
+    tmp_path: Path, fake_vllm: FakeVllm
+) -> None:
+    """cpufreq のコアは、見張りの開始時に 1 回だけ発見し、観察ごとに 1 回の `cat` で読む。
+
+    存在確認が通ったコアだけが `cpufreq_cores_found` に出る (上限 32 の手前まで)。発見した
+    一覧のぶんの値が、`samples.jsonl` の各行の `cpu_scaling_max_freq_khz` に、台ごと・
+    コア番号つきの kHz の整数で出る。
+    """
+    fake_vllm.set_metrics(MetricsSample(running_requests=0, generation_tokens_total=1))
+    config = config_for(port_of(fake_vllm))
+    clock = WatchClock()
+    core0 = ("cat", f"{w.CPU_DIR}cpu0/cpufreq/scaling_max_freq")
+    core5 = ("cat", f"{w.CPU_DIR}cpu5/cpufreq/scaling_max_freq")
+    # `Rule(prefix=core0)` は、発見 (1 道筋) と観察 (2 道筋) の両方に当たる。返事は、
+    # 発見 → 観察 (2 行) の順に消費する。観察は 2 回で、2 回目は最後の返事が繰り返される
+    script = [
+        Rule(
+            prefix=core0,
+            node="head",
+            replies=(Reply(stdout="2808000\n"), Reply(stdout="2808000\n3000000\n")),
+        ),
+        Rule(prefix=core5, node="head", replies=(Reply(stdout="3000000\n"),)),
+    ]
+    runner = FakeRunner(var_root=tmp_path, script=script, default=Reply(exit_code=1))
+
+    outcome = w.watch(
+        runner,
+        config,
+        NODES,
+        var_root=tmp_path,
+        duration_s=1.0,
+        interval_s=1.0,
+        sleep=clock.sleep,
+        clock=clock.monotonic,
+        now=clock.now,
+        report=io.StringIO(),
+    )
+
+    result = json.loads(
+        (outcome.samples_path.parent / w.RESULT_FILE_NAME).read_text(encoding="utf-8")
+    )
+    assert result["cpufreq_cores_found"]["head"] == [0, 5]
+
+    lines = [
+        json.loads(line) for line in outcome.samples_path.read_text(encoding="utf-8").splitlines()
+    ]
+    assert outcome.sample_count == 2
+    assert lines[0]["cpu_scaling_max_freq_khz"]["head"] == {"0": 2808000, "5": 3000000}
+    assert lines[1]["cpu_scaling_max_freq_khz"]["head"] == {"0": 2808000, "5": 3000000}
+
+    shown = [" ".join(call.argv) for call in runner.calls]
+    assert not any("cpu32" in one for one in shown), "コアの上限 (32) を超えて試している"
+    # 観察 1 回あたり、台ごとに cpufreq の `cat` は 1 回 (複数の道筋を 1 つに並べる)
+    observation_cats = [
+        call
+        for call in runner.calls
+        if call.node == "head"
+        and len(call.argv) > 2
+        and call.argv[0] == "cat"
+        and any(path.endswith("scaling_max_freq") for path in call.argv[1:])
+    ]
+    assert len(observation_cats) == 2, (
+        "観察 1 回あたり、台ごとの cpufreq の `cat` は 1 回 (コアごとに別々に流していない)"
+    )
+    # `observation_cats` (道筋が 2 つ以上の呼び出し) は、コア 5 だけの単独の呼び出しを数えない。
+    # コア 5 の単独の呼び出しが 1 回だけであることを別に確かめ、観察のたびに発見をやり直して
+    # いないことを検出できるようにする (発見をやり直す実装でも、観察の回数ぶん増える)。
+    core5_calls = [call for call in runner.calls if call.node == "head" and call.argv == core5]
+    assert len(core5_calls) == 1, "発見は開始時の 1 回だけのはずが、観察のたびに繰り返している"
+
+
+def test_an_unreadable_cpufreq_round_empties_every_key_and_the_watch_continues(
+    tmp_path: Path, fake_vllm: FakeVllm
+) -> None:
+    """行数が発見したコアの数と合わない回は、その項目の全キーを空にし、CPU の使用率
+    (`cpu_utilization_pct`) と見張りは続く。"""
+    fake_vllm.set_metrics(MetricsSample(running_requests=0, generation_tokens_total=1))
+    config = config_for(port_of(fake_vllm))
+    clock = WatchClock()
+    core0 = ("cat", f"{w.CPU_DIR}cpu0/cpufreq/scaling_max_freq")
+    core5 = ("cat", f"{w.CPU_DIR}cpu5/cpufreq/scaling_max_freq")
+    # 発見 (1 道筋) → 観察 1 (2 行。どちらも数) → 観察 2 (1 行だけ。行数の不一致)
+    script = [
+        Rule(
+            prefix=core0,
+            node="head",
+            replies=(
+                Reply(stdout="2808000\n"),
+                Reply(stdout="2808000\n3000000\n"),
+                Reply(stdout="2808000\n"),
+            ),
+        ),
+        Rule(prefix=core5, node="head", replies=(Reply(stdout="3000000\n"),)),
+    ]
+    runner = FakeRunner(var_root=tmp_path, script=script, default=Reply(exit_code=1))
+
+    outcome = w.watch(
+        runner,
+        config,
+        NODES,
+        var_root=tmp_path,
+        duration_s=1.0,
+        interval_s=1.0,
+        sleep=clock.sleep,
+        clock=clock.monotonic,
+        now=clock.now,
+        report=io.StringIO(),
+    )
+
+    lines = [
+        json.loads(line) for line in outcome.samples_path.read_text(encoding="utf-8").splitlines()
+    ]
+    assert outcome.sample_count == 2
+    assert lines[1]["cpu_scaling_max_freq_khz"]["head"] == {"0": None, "5": None}
+    assert lines[1]["cpu_utilization_pct"]["head"] == {}
+
+
+def test_a_single_unparseable_cpufreq_line_empties_only_that_key(
+    tmp_path: Path, fake_vllm: FakeVllm
+) -> None:
+    """行数は合うが、1 行だけ整数に変えられないときは、そのキーだけを空にし、ほかのキーの
+    値は残す (行数が合わず全キーを空にする場合とは違う経路)。"""
+    fake_vllm.set_metrics(MetricsSample(running_requests=0, generation_tokens_total=1))
+    config = config_for(port_of(fake_vllm))
+    clock = WatchClock()
+    core0 = ("cat", f"{w.CPU_DIR}cpu0/cpufreq/scaling_max_freq")
+    core5 = ("cat", f"{w.CPU_DIR}cpu5/cpufreq/scaling_max_freq")
+    script = [
+        Rule(
+            prefix=core0,
+            node="head",
+            replies=(
+                Reply(stdout="2808000\n"),
+                Reply(stdout="2808000\nabc\n"),
+            ),
+        ),
+        Rule(prefix=core5, node="head", replies=(Reply(stdout="3000000\n"),)),
+    ]
+    runner = FakeRunner(var_root=tmp_path, script=script, default=Reply(exit_code=1))
+
+    outcome = w.watch(
+        runner,
+        config,
+        NODES,
+        var_root=tmp_path,
+        duration_s=1.0,
+        interval_s=1.0,
+        sleep=clock.sleep,
+        clock=clock.monotonic,
+        now=clock.now,
+        report=io.StringIO(),
+    )
+
+    first = json.loads(outcome.samples_path.read_text(encoding="utf-8").splitlines()[0])
+    assert first["cpu_scaling_max_freq_khz"]["head"] == {"0": 2808000, "5": None}
+
+
+def test_summary_records_the_cluster_maxima_across_all_samples(
+    tmp_path: Path, fake_vllm: FakeVllm
+) -> None:
+    """`result.json` に、台ごとの X925 と A725 の上限の最大値が出る。
+
+    観察の途中で最大になった値が、最後の観察の値で上書きされないこと (全観察の最大) と、
+    発見のない台に空でないキーを出さないことを確かめる。X925 のコア (5) の上限が途中で
+    3900000 に上がっても、最大値は 3900000 のまま残る。
+    """
+    fake_vllm.set_metrics(MetricsSample(running_requests=0, generation_tokens_total=1))
+    config = config_for(port_of(fake_vllm))
+    clock = WatchClock()
+    core0 = ("cat", f"{w.CPU_DIR}cpu0/cpufreq/scaling_max_freq")
+    core5 = ("cat", f"{w.CPU_DIR}cpu5/cpufreq/scaling_max_freq")
+    # 観察 1: X925 (コア 5) が 3000000、A725 (コア 0) が 2808000
+    # 観察 2: X925 が 3900000 (上限が外れた) — これが最大として残る
+    # 観察 3: 1 行だけ (行数の不一致 → 全キー空) — 最大値は 3900000 のまま
+    # 観察 4: X925 が 3000000 に戻る
+    script = [
+        Rule(
+            prefix=core0,
+            node="head",
+            replies=(
+                Reply(stdout="2808000\n"),
+                Reply(stdout="2808000\n3000000\n"),
+                Reply(stdout="2808000\n3900000\n"),
+                Reply(stdout="2808000\n"),
+                Reply(stdout="2808000\n3000000\n"),
+            ),
+        ),
+        Rule(prefix=core5, node="head", replies=(Reply(stdout="3000000\n"),)),
+    ]
+    runner = FakeRunner(var_root=tmp_path, script=script, default=Reply(exit_code=1))
+
+    outcome = w.watch(
+        runner,
+        config,
+        NODES,
+        var_root=tmp_path,
+        duration_s=4.0,
+        interval_s=1.0,
+        sleep=clock.sleep,
+        clock=clock.monotonic,
+        now=clock.now,
+        report=io.StringIO(),
+    )
+
+    result = json.loads(
+        (outcome.samples_path.parent / w.RESULT_FILE_NAME).read_text(encoding="utf-8")
+    )
+    assert result["cpu_cluster_max_freq_khz"]["head"] == {"x925": 3900000, "a725": 2808000}
+
+    # 発見のない台 (worker は 1 つも発見できない台本) は、キーを持たない
+    assert "worker" not in result["cpu_cluster_max_freq_khz"]
+    assert result["cpufreq_cores_found"]["worker"] == []
+
+
+def test_a_cluster_that_was_never_read_has_no_key_in_the_summary(
+    tmp_path: Path, fake_vllm: FakeVllm
+) -> None:
+    """X925 のコアだけが発見した台は、`a725` のキーを持たない (空の値を作らない)。"""
+    fake_vllm.set_metrics(MetricsSample(running_requests=0, generation_tokens_total=1))
+    config = config_for(port_of(fake_vllm))
+    clock = WatchClock()
+    core5 = ("cat", f"{w.CPU_DIR}cpu5/cpufreq/scaling_max_freq")
+    script = [
+        Rule(
+            prefix=core5,
+            node="head",
+            replies=(
+                Reply(stdout="3000000\n"),
+                Reply(stdout="3000000\n"),
+            ),
+        ),
+    ]
+    runner = FakeRunner(var_root=tmp_path, script=script, default=Reply(exit_code=1))
+
+    outcome = w.watch(
+        runner,
+        config,
+        NODES,
+        var_root=tmp_path,
+        duration_s=1.0,
+        interval_s=1.0,
+        sleep=clock.sleep,
+        clock=clock.monotonic,
+        now=clock.now,
+        report=io.StringIO(),
+    )
+
+    result = json.loads(
+        (outcome.samples_path.parent / w.RESULT_FILE_NAME).read_text(encoding="utf-8")
+    )
+    assert result["cpu_cluster_max_freq_khz"]["head"] == {"x925": 3000000}
+    assert result["cpufreq_cores_found"]["head"] == [5]

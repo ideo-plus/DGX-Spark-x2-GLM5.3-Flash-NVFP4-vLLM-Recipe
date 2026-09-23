@@ -80,7 +80,7 @@ uv run serve stop --yes
 | `serve netcheck bandwidth <構成>` | 自前の all-reduce で、2 台の間の帯域を測る | **変える** |
 | `serve netcheck sanity <構成>` | 推論サーバーの公式の資料が示す、事前の確認を流す | **変える** |
 | `serve netcheck ab <構成> --env K=V [--repeat <回>]` | 足す設定の A/B を、交互に流して比べる | **変える** |
-| `serve watch <構成> [--thermal-threshold <℃>]` | 連続の負荷の間、外から見張る (読み取りだけ。GPU の温度・SM クロック・電力・使用率、ACPI 熱区域、hwmon (`mlx5`/`nvme`/`acpitz`) の温度、コアごとの CPU 使用率を観察し、`unresponsive`/`stalled`/`thermal` の出来事を見つける) | 変えない |
+| `serve watch <構成> [--thermal-threshold <℃>]` | 連続の負荷の間、外から見張る (読み取りだけ。GPU の温度・SM クロック・電力・使用率、ACPI 熱区域、hwmon (`mlx5`/`nvme`/`acpitz`) の温度、コアごとの CPU 使用率、コアごとの周波数の上限 (`scaling_max_freq`) を観察し、`unresponsive`/`stalled`/`thermal` の出来事を見つける) | 変えない |
 | `serve thinking <構成>` | thinking の深さの渡し方を確かめる (HTTP だけ) | 変えない |
 
 すべてのコマンドに共通の引数:
@@ -98,13 +98,18 @@ uv run serve stop --yes
 
 `serve watch` の `--thermal-threshold <℃>` は、摂氏の温度で、既定は 90。いずれかの熱区域が
 この値以上になった観察の立ち上がりで `thermal` の出来事を 1 件にする (`unresponsive`/`stalled`
-と違い、記録の回収はしない。熱では推論サーバーは壊れていないため)。熱区域と hwmon の一覧は、
-見張りの開始時に 1 回だけ発見する。台ごとに、熱区域の番号 32 個と hwmon の番号 32 個を順に
-`cat` するので少なくとも 64 回、さらに `mlx5`/`nvme`/`acpitz` の名前が採用された hwmon 1 つ
-ごとに、温度センサーの番号を最大 32 回 (見つかった分は、ラベルの読み取りも加わる) 試す。
+と違い、記録の回収はしない。熱では推論サーバーは壊れていないため)。熱区域・hwmon・cpufreq の
+コアの一覧は、見張りの開始時に 1 回だけ発見する (`result.json` の `cpufreq_cores_found` に
+台ごとの一覧が残る)。台ごとに、熱区域の番号 32 個・hwmon の番号 32 個・cpufreq のコアの番号
+32 個 (`/sys/devices/system/cpu/cpu<N>/cpufreq/scaling_max_freq`。issue #10: GPU クロックの
+上限とあわせて、計測中の CPU の上限を記録から確かめるため) を順に `cat` するので少なくとも
+96 回、さらに `mlx5`/`nvme`/`acpitz` の名前が採用された hwmon 1 つごとに、温度センサーの番号
+を最大 32 回 (見つかった分は、ラベルの読み取りも加わる) 試す。
 **最初の観察は、この発見が終わってから始まる**ので、少し時間がかかる。台に届かなければ、
 その台の発見だけを打ち切り、`detail` に記録して見張りは続ける (README の「終了コード」の表
-は変わらない)。
+は変わらない)。要約 (`result.json`) の `cpu_cluster_max_freq_khz` には、台ごとの X925/A725
+(GB10 固有のコア群) の周波数の上限の最大値 (kHz) が出る。GPU クロックの上限は既存の
+`gpu_sm_clock_range_mhz` で確かめる。
 
 ## ローカルでビルドしたイメージ
 
@@ -145,7 +150,7 @@ traceback を出さずに、`エラー: <1 行>` として標準エラーに出�
 
 | 置き場所 | 何を置くか | 配布の宛先にできるか |
 |---|---|---|
-| `payload/` | Spark で流すスクリプト (`serving/payload/` の中身) | できる |
+| `payload/` | Spark で流すスクリプト、`spark-power-caps.default` (`serving/payload/` の中身) | できる |
 | `models/` | 重み (本体) | できない |
 | `probe/` | 縮小の確認用の、設定とトークナイザ | できない |
 | `cache/` | JIT などのキャッシュ | できない |

@@ -52,3 +52,22 @@ jobs:
           sh -n ../scripts/run-takt-preparation.sh
           sh -n ../scripts/hooks/load-rules.sh
           CLAUDE_PROJECT_DIR="$GITHUB_WORKSPACE" sh ../scripts/hooks/load-rules.sh | grep -q '<!-- docs/rules/'
+
+  ops:
+    name: Ops / spark-power-caps
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check the apply script syntax
+        run: sh -n ops/spark-power-caps/spark-power-caps-apply
+      - name: Verify the systemd unit
+        # --root に空のディレクトリを渡すと sysinit.target などの標準の unit が見つからず失敗する。
+        # 使い捨ての runner の実際の置き場所に ExecStart の実行ファイルを置き、unit のファイルを直接検査する。
+        run: |
+          sudo install -D -m 0755 ops/spark-power-caps/spark-power-caps-apply /usr/local/sbin/spark-power-caps-apply
+          systemd-analyze verify ops/spark-power-caps/spark-power-caps.service
+      - name: Check the sudoers fragment
+        run: visudo -cf ops/spark-power-caps/spark-power-caps.sudoers

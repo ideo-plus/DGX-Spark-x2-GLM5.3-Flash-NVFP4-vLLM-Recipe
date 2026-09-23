@@ -18,18 +18,18 @@ uv run --directory serving serve check p2-nope-tp2-full \
 
 生成はネットワークや `subprocess` を使わず、既存出力があれば上書きしません。`--max-model-len` と `--max-num-seqs` の値と根拠は `p1-nvfp4-tp2` のままです。`serve check` は `patched-tp2-procedure.md` §6 と同じ 8 関門です。**前の試行で通ったことを根拠に省かず、全関門をもう一度検査します。**
 
-## 2. GPU クロック上限の確認
+## 2. GPU と X925 の上限の確認
 
-GB10 の `nvidia-smi` には上限の設定状態が出ません。負荷中の SM クロックで確かめます（[記録](../results/2026-09-23-decode-gpu-clock-cap.md) の実測値は 1768〜1781 MHz、上限 1800）。§3 の `serve smoke --max-tokens 512` の間、またはその前の慣らし負荷で SM を読み、上限が入っていることを確認します。
-
-外れていれば、⚠ 計測者の了承を得てから、両台に入れ直します。
+GPU クロックの上限（`nvidia-smi -lgc 300,1800`）と X925 の周波数の上限（`cpupower -c 5-9,15-19 frequency-set -u 3000MHz`）は、どちらも再起動で既定に戻ります。issue #10 で、両台の起動のたびに入れ直す systemd の oneshot サービス（`spark-power-caps.service`）を用意しました。計測の前に、このサービスが両台で有効・実行中であることを、読み取りだけで確かめます。
 
 ```bash
-ssh -o BatchMode=yes -o ConnectTimeout=5 spark-153d 'sudo -n nvidia-smi -lgc 300,1800'
-ssh -o BatchMode=yes -o ConnectTimeout=5 spark-5083 'sudo -n nvidia-smi -lgc 300,1800'
+ssh -o BatchMode=yes -o ConnectTimeout=5 spark-153d 'systemctl is-enabled spark-power-caps.service; systemctl is-active spark-power-caps.service'
+ssh -o BatchMode=yes -o ConnectTimeout=5 spark-5083 'systemctl is-enabled spark-power-caps.service; systemctl is-active spark-power-caps.service'
 ```
 
-入れ直した後も、負荷中の SM クロックで確認し直します。この上限値 (1800) を、今回の計測の条件として記録します。
+両台とも `enabled` と `active` であれば進みます。`inactive`／`failed`／unit がないのいずれかなら、⚠ 計測者の了承を得たうえで、`ops/spark-power-caps/README.md` の手順（初回の設置、または値の変更）で入れます（上限がないまま計測してしまうおそれがあるため、了承なしには進みません）。
+
+GB10 の `nvidia-smi` には GPU クロックの上限の設定状態が出ません。計測が終わったあと（§7 のログ回収より前）に、`serve watch` の記録（§5）から、`result.json` の `gpu_sm_clock_range_mhz`（最大値が 1800 以下。[記録](../results/2026-09-23-decode-gpu-clock-cap.md) の実測値は 1768〜1781 MHz）と `cpu_cluster_max_freq_khz.x925`（3000000 以下）で、計測中に両方の上限が効いていたことを確かめます。この 2 つの値を、今回の計測の条件として記録します。
 
 ## 3. 起動、今回分の IB、短い応答
 
@@ -76,7 +76,7 @@ uv run --directory serving serve smoke p2-nope-tp2-full \
 2. `serving/var/<起動した時刻>-watch-p2-nope-tp2-full/samples.jsonl` に 1 行目が書かれたことを確かめます。熱区域と hwmon の一覧を発見してから最初の観察をするため（`serving/README.md` の watch の節）、起動直後は少し待ちます。
 3. 1 行目を確かめてから、suite ごとの `bench run` を始めます。suite が終わったら、`serve watch` を Ctrl-C で止めます（中断でも、そこまでの要約は `result.json` に書かれます）。
 
-見るのは `result.json` の `thermal_zone_max_c`、`gpu_temperature_max_c`、`gpu_sm_clock_range_mhz`（上限 1800 が効いているか）、`gpu_power_max_w`、`hwmon_temp_max_c`、`thermal_over_threshold_samples`／`thermal_over_threshold_span`、`events` の `finding = thermal` と `detail`（台に届かず発見を打ち切った場合は、ここに記録されます）です。**ACPI 熱区域が 90℃ に達した区間は、基準値として扱いません。** `thermal` の出来事は終了コード 2 にもなりますが、計測そのものは止まりません。止めるかどうかは、要約と出来事を見て計測者が決めます。
+見るのは `result.json` の `thermal_zone_max_c`、`gpu_temperature_max_c`、`gpu_sm_clock_range_mhz`（上限 1800 が効いているか）、`gpu_power_max_w`、`hwmon_temp_max_c`、`cpu_cluster_max_freq_khz`（X925 の上限 3000 が効いているか。§2）、`thermal_over_threshold_samples`／`thermal_over_threshold_span`、`events` の `finding = thermal` と `detail`（台に届かず発見を打ち切った場合は、ここに記録されます）です。**ACPI 熱区域が 90℃ に達した区間は、基準値として扱いません。** `thermal` の出来事は終了コード 2 にもなりますが、計測そのものは止まりません。止めるかどうかは、要約と出来事を見て計測者が決めます。
 
 suite ごとに、別々の計測ランとして、prefill → concurrency → quality（needle）の順で流します。
 

@@ -13,7 +13,9 @@
 - rsync の遠隔の道筋 (`push` の宛先、`pull` の元、`remote_root`、`ssh_host`) は、遠隔の
   シェルに素で渡るので、使える文字を絞る。Mac の側の道筋は絞らず、1 つの引数のまま渡る
 - `ip` と `ethtool` は読み取りの形だけ (requirements 2.7)、`cat` は `remote_root` の下と
-  インターフェースの読み取りの場所だけ (requirements 2.4、2.6)
+  インターフェースの読み取りの場所だけ (requirements 2.4、2.6)。`scaling_max_freq` の読み取り
+  (CPU の上限の観察) は、正規表現の完全一致の 1 種類だけを追加で許し、`/sys/devices/system/cpu/`
+  の前方一致は許さない
 - 時間切れと接続の失敗は `RemoteError`、遠隔の 0 以外の終了は `CommandResult`
 - `remote` は `types` だけを読み込む (依存の向き)
 
@@ -435,6 +437,17 @@ def test_ethtool_outside_the_read_only_forms_is_refused(
         # 熱区域と hwmon の下は前方一致で通り、複数の道筋も通る
         ["cat", "/sys/class/thermal/thermal_zone0/temp", "/sys/class/thermal/thermal_zone4/temp"],
         ["cat", "/sys/class/hwmon/hwmon3/temp1_label"],
+        # scaling_max_freq は、正規表現の完全一致で通る (コアの番号は 1 桁でも 2 桁でも)
+        ["cat", "/sys/devices/system/cpu/cpu0/cpufreq/scaling_max_freq"],
+        ["cat", "/sys/devices/system/cpu/cpu19/cpufreq/scaling_max_freq"],
+        # 1 回の cat に、複数のコアの道筋を並べても通る
+        [
+            "cat",
+            "/sys/devices/system/cpu/cpu5/cpufreq/scaling_max_freq",
+            "/sys/devices/system/cpu/cpu15/cpufreq/scaling_max_freq",
+        ],
+        # /proc/stat との併記も通る
+        ["cat", "/proc/stat", "/sys/devices/system/cpu/cpu0/cpufreq/scaling_max_freq"],
     ],
 )
 def test_cat_reads_only_the_allowed_places(
@@ -472,6 +485,20 @@ def test_cat_reads_only_the_allowed_places(
         ["cat", "/sys/class/thermalx/a"],
         ["cat", "/proc/stat", "/etc/passwd"],
         ["cat", "-n", "/proc/stat"],
+        # scaling_max_freq は、正規表現の完全一致だけを許す。/sys/devices/system/cpu/ の
+        # 前方一致は許さない (兄弟のファイル、他の cpufreq の場所、変形の道筋はすべて拒否)
+        ["cat", "/sys/devices/system/cpu/cpu0/cpufreq/scaling_min_freq"],
+        ["cat", "/sys/devices/system/cpu/cpu0/cpufreq/cpuinfo_max_freq"],
+        ["cat", "/sys/devices/system/cpu/cpu0/cpufreq/scaling_setspeed"],
+        ["cat", "/sys/devices/system/cpu/cpu0/cpufreq/scaling_max_freq/"],
+        ["cat", "/sys/devices/system/cpu/cpu0/cpufreq/scaling_max_freqx"],
+        ["cat", "/sys/devices/system/cpu/cpufreq/policy0/scaling_max_freq"],
+        ["cat", "/sys/devices/system/cpu/online"],
+        ["cat", "/sys/devices/system/cpu/cpu/cpufreq/scaling_max_freq"],
+        ["cat", "/sys/devices/system/cpu/cpu-1/cpufreq/scaling_max_freq"],
+        ["cat", "/sys/devices/system/cpu/cpu0/../cpu1/cpufreq/scaling_max_freq"],
+        ["cat", "/sys/devices/system/cpu/"],
+        ["cat", "/sys/devices/system/cpu/cpu0/cpufreq/scaling_max_freq", "/etc/passwd"],
     ],
 )
 def test_cat_outside_the_allowed_places_is_refused(
@@ -495,6 +522,32 @@ def test_cat_refusal_message_separates_prefix_and_exact_places(
         runner.run(HEAD, ["cat", "/proc/statx"], timeout_s=10.0, mutating=False)
 
     message = str(caught.value)
+    assert "完全一致で /proc/stat" in message
+    assert "/proc/stat の下" not in message
+    assert sent.calls == []
+
+
+def test_cat_refusal_message_lists_the_regex_place_separately(
+    runner: SshRunner, sent: Recorder
+) -> None:
+    """cat を拒否する文が、正規表現の完全一致の場所を、別の枠で示す。
+
+    既存の「完全一致で /proc/stat」の文はそのまま残し、`/proc/stat` を「の下」には含めない
+    (既存の試験 `test_cat_refusal_message_separates_prefix_and_exact_places` と同じ形)。
+    文言の完全一致では確かめず、`scaling_max_freq` が正規表現の場所として示されることだけを
+    確かめる。
+    """
+    with pytest.raises(RuntimeError) as caught:
+        runner.run(
+            HEAD,
+            ["cat", "/sys/devices/system/cpu/cpu0/cpufreq/scaling_min_freq"],
+            timeout_s=10.0,
+            mutating=False,
+        )
+
+    message = str(caught.value)
+    assert "正規表現の完全一致で" in message
+    assert "scaling_max_freq" in message
     assert "完全一致で /proc/stat" in message
     assert "/proc/stat の下" not in message
     assert sent.calls == []
