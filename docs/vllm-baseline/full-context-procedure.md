@@ -64,7 +64,19 @@ uv run --directory serving serve smoke p2-nope-tp2-full \
 
 ## 5. 計測 (suite ごとに別ラン)
 
-両台で GPU の温度・SM クロック・電力と ACPI 熱区域の最高値を、10 秒ごとに**読み取りで**記録します（計測者が用意した読み取り専用のスクリプト。例: `serving/var/thermal-20260923/sample.sh`）。**ACPI 熱区域が 90℃ に達した区間は、基準値として扱いません。**
+両台の GPU の温度・SM クロック・電力・使用率、ACPI 熱区域、hwmon（`mlx5`/`nvme`/`acpitz`）の温度、コアごとの CPU 使用率を、`serve watch` で**読み取りだけで**記録します。次の順で進めます。
+
+1. 別の端末で、`serve watch` を先に起動します。
+
+   ```bash
+   uv run --directory serving serve watch p2-nope-tp2-full \
+     --configs var/nope-build-0961bbae/tp2-full.toml --interval 10s --duration 2h
+   ```
+
+2. `serving/var/<起動した時刻>-watch-p2-nope-tp2-full/samples.jsonl` に 1 行目が書かれたことを確かめます。熱区域と hwmon の一覧を発見してから最初の観察をするため（`serving/README.md` の watch の節）、起動直後は少し待ちます。
+3. 1 行目を確かめてから、suite ごとの `bench run` を始めます。suite が終わったら、`serve watch` を Ctrl-C で止めます（中断でも、そこまでの要約は `result.json` に書かれます）。
+
+見るのは `result.json` の `thermal_zone_max_c`、`gpu_temperature_max_c`、`gpu_sm_clock_range_mhz`（上限 1800 が効いているか）、`gpu_power_max_w`、`hwmon_temp_max_c`、`thermal_over_threshold_samples`／`thermal_over_threshold_span`、`events` の `finding = thermal` と `detail`（台に届かず発見を打ち切った場合は、ここに記録されます）です。**ACPI 熱区域が 90℃ に達した区間は、基準値として扱いません。** `thermal` の出来事は終了コード 2 にもなりますが、計測そのものは止まりません。止めるかどうかは、要約と出来事を見て計測者が決めます。
 
 suite ごとに、別々の計測ランとして、prefill → concurrency → quality（needle）の順で流します。
 

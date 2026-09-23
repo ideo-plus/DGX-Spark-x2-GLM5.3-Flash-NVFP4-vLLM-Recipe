@@ -50,8 +50,11 @@
    (requirements 2.7 の「ネットワークの恒久的な設定を変えない」を、構造で守る)
 6. **`cat` の読み取り先を絞る**。引数はすべて道筋で (オプションを通さない)、
    `<remote_root>/` の下 (`..` を含まない)、`/sys/class/net/` の下、
-   `/sys/class/infiniband/` の下のどれかだけ。認証の情報、`/proc`、ほかのコンテナの記録に
-   届かなくする (requirements 2.4、2.6)
+   `/sys/class/infiniband/` の下、`/sys/class/thermal/` の下、`/sys/class/hwmon/` の下
+   (熱区域と hwmon の温度センサーの読み取り) のどれか、または `/proc/stat` (CPU の使用率の
+   読み取り。完全一致だけで許し、`/proc` の他の場所には前方一致で届かないようにする) だけ。
+   認証の情報、`/proc/stat` 以外の `/proc`、ほかのコンテナの記録には届かなくする
+   (requirements 2.4、2.6)
 """
 
 from __future__ import annotations
@@ -148,8 +151,18 @@ _IP_OBJECTS: Final[frozenset[str]] = frozenset({"link", "addr", "address"})
 _ETHTOOL_OPTIONS: Final[frozenset[str]] = frozenset({"-i", "-S"})
 """`ethtool` に渡せるオプション (ドライバの情報と、統計。どちらも読み取り)。"""
 
-_CAT_PREFIXES: Final[tuple[str, ...]] = ("/sys/class/net/", "/sys/class/infiniband/")
-"""`remote_root` の下のほかに、`cat` で読める場所 (インターフェースの読み取り)。"""
+_CAT_PREFIXES: Final[tuple[str, ...]] = (
+    "/sys/class/net/",
+    "/sys/class/infiniband/",
+    "/sys/class/thermal/",
+    "/sys/class/hwmon/",
+)
+"""`remote_root` の下のほかに、`cat` で前方一致で読める場所 (インターフェース、熱区域、
+hwmon の温度センサーの読み取り)。"""
+
+_CAT_EXACT_PATHS: Final[frozenset[str]] = frozenset({"/proc/stat"})
+"""`cat` で完全一致だけで読める場所 (CPU の使用率の読み取り)。`/proc` は他の場所に前方一致
+で広げない (認証の情報やほかのプロセスの記録に届かないようにする)。"""
 
 
 # --- 遠隔のシェルに渡る道筋の、文字の絞り込み ---------------------------
@@ -317,8 +330,9 @@ def _check_ethtool(rest: tuple[str, ...]) -> None:
 def _check_cat(node: NodeDef, rest: tuple[str, ...]) -> None:
     """`cat` の読み取り先を絞る (requirements 2.4、2.6)。
 
-    引数はすべて道筋で (オプションを通さない)、`remote_root` の下か、インターフェースの
-    読み取りの場所だけを読める。認証の情報、`/proc`、ほかのコンテナの記録には届かない。
+    引数はすべて道筋で (オプションを通さない)、`remote_root` の下、インターフェース・熱区域・
+    hwmon の読み取りの場所 (前方一致)、または `/proc/stat` (完全一致) だけを読める。認証の
+    情報、`/proc/stat` 以外の `/proc`、ほかのコンテナの記録には届かない。
     """
     if not rest:
         raise RuntimeError("cat には、読むファイルの道筋が要る")
@@ -326,11 +340,17 @@ def _check_cat(node: NodeDef, rest: tuple[str, ...]) -> None:
     for value in rest:
         if value.startswith("-"):
             raise RuntimeError(f"cat にオプションは渡せない (道筋だけを書く): {value}")
-        allowed_place = value.startswith(inside_root) or value.startswith(_CAT_PREFIXES)
+        allowed_place = (
+            value.startswith(inside_root)
+            or value.startswith(_CAT_PREFIXES)
+            or value in _CAT_EXACT_PATHS
+        )
         if not allowed_place or ".." in PurePosixPath(value).parts:
-            places = ", ".join((inside_root, *_CAT_PREFIXES))
+            prefix_places = ", ".join((inside_root, *_CAT_PREFIXES))
+            exact_places = ", ".join(sorted(_CAT_EXACT_PATHS))
             raise RuntimeError(
-                f"cat で読めるのは {places} の下だけ"
+                f"cat で読めるのは、前方一致で {prefix_places} の下、"
+                f"完全一致で {exact_places} だけ"
                 f" (よその場所、認証の情報、別の構成の記録を読まない): {value}"
             )
 

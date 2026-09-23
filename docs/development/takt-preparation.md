@@ -126,3 +126,18 @@ TAKT 0.66.0 に同梱の codex 0.153.4 は、ChatGPT アカウントで `gpt-6-l
 上限が戻る 2026-09-27 19:38 までは、`t0-production-code` を `claude-sonnet-5`、`t3-judge` を `claude-opus-5-5` に移している。
 切り替え先の `gpt-6-sol` も外した。戻すための記述は `~/.takt/` の各ファイルにコメントで残した。
 3 回目の異常終了は 1 回だけで、同じ設定の再実行では起きなかった。
+
+## pipeline で PR まで作るとき (2026-09-23)
+
+`takt --pipeline --auto-pr -b <ブランチ>` は、ブランチの作成、全変更のステージとコミット、push、PR の作成まで行う。
+ただし TAKT 0.66.0 では、`--task` で依頼文を渡すと、依頼文の全文が次の 2 つにそのまま使われる。
+
+- コミットメッセージ (`takt: <依頼文>`)
+- PR のタイトル
+
+[PR #13](https://github.com/ideo-plus/DGX-Spark-GLM5.3-Flash-Recipe/pull/13) の作業では、タイトルが 256 文字を超えて PR の作成に失敗した。
+`pipeline.commit_message_template` は、issue を渡したときにしか効かない。
+
+そのため、PR まで作る依頼は GitHub issue の本文に書き、`--issue <番号>` で渡す。
+このとき PR のタイトルは `[#番号] <issue のタイトル>`、コミットメッセージは `feat: <issue のタイトル> (#番号)` になる。
+PR へのレビューコメントは、`takt --pr <番号>` で取り込む。

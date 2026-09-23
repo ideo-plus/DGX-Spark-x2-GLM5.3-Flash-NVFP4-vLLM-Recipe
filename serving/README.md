@@ -80,7 +80,7 @@ uv run serve stop --yes
 | `serve netcheck bandwidth <構成>` | 自前の all-reduce で、2 台の間の帯域を測る | **変える** |
 | `serve netcheck sanity <構成>` | 推論サーバーの公式の資料が示す、事前の確認を流す | **変える** |
 | `serve netcheck ab <構成> --env K=V [--repeat <回>]` | 足す設定の A/B を、交互に流して比べる | **変える** |
-| `serve watch <構成>` | 連続の負荷の間、外から見張る (読み取りだけ) | 変えない |
+| `serve watch <構成> [--thermal-threshold <℃>]` | 連続の負荷の間、外から見張る (読み取りだけ。GPU の温度・SM クロック・電力・使用率、ACPI 熱区域、hwmon (`mlx5`/`nvme`/`acpitz`) の温度、コアごとの CPU 使用率を観察し、`unresponsive`/`stalled`/`thermal` の出来事を見つける) | 変えない |
 | `serve thinking <構成>` | thinking の深さの渡し方を確かめる (HTTP だけ) | 変えない |
 
 すべてのコマンドに共通の引数:
@@ -95,6 +95,16 @@ uv run serve stop --yes
 秒を受ける引数 (`--timeout`、`--duration`、`--interval`、`--stall-window`) は、単位を付けて
 書ける (`30`、`30s`、`5m`、`2h`)。正で有限の値だけを受け、`nan`、`inf`、0、負は、Spark に
 触る前に断る。
+
+`serve watch` の `--thermal-threshold <℃>` は、摂氏の温度で、既定は 90。いずれかの熱区域が
+この値以上になった観察の立ち上がりで `thermal` の出来事を 1 件にする (`unresponsive`/`stalled`
+と違い、記録の回収はしない。熱では推論サーバーは壊れていないため)。熱区域と hwmon の一覧は、
+見張りの開始時に 1 回だけ発見する。台ごとに、熱区域の番号 32 個と hwmon の番号 32 個を順に
+`cat` するので少なくとも 64 回、さらに `mlx5`/`nvme`/`acpitz` の名前が採用された hwmon 1 つ
+ごとに、温度センサーの番号を最大 32 回 (見つかった分は、ラベルの読み取りも加わる) 試す。
+**最初の観察は、この発見が終わってから始まる**ので、少し時間がかかる。台に届かなければ、
+その台の発見だけを打ち切り、`detail` に記録して見張りは続ける (README の「終了コード」の表
+は変わらない)。
 
 ## ローカルでビルドしたイメージ
 

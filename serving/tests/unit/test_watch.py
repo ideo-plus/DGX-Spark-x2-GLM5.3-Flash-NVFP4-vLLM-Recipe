@@ -228,7 +228,7 @@ def test_stalled_event_has_a_timestamp_when_gpu_utilization_is_available(
     clock = WatchClock()
     runner = FakeRunner(
         var_root=tmp_path,
-        script=[Rule(prefix=w.GPU_UTIL_ARGV, replies=(Reply(stdout="97 %\n"),))],
+        script=[Rule(prefix=w.GPU_UTIL_ARGV, replies=(Reply(stdout="65, 1781, 28.90, 97\n"),))],
         default=Reply(),
     )
 
@@ -259,7 +259,7 @@ def test_no_stalled_event_when_no_requests_are_running(tmp_path: Path, fake_vllm
     clock = WatchClock()
     runner = FakeRunner(
         var_root=tmp_path,
-        script=[Rule(prefix=w.GPU_UTIL_ARGV, replies=(Reply(stdout="97 %\n"),))],
+        script=[Rule(prefix=w.GPU_UTIL_ARGV, replies=(Reply(stdout="65, 1781, 28.90, 97\n"),))],
         default=Reply(),
     )
 
@@ -286,10 +286,11 @@ def test_gpu_unavailable_falls_back_to_token_only_judgement(
     fake_vllm.set_metrics(MetricsSample(running_requests=1, generation_tokens_total=50))
     config = config_for(port_of(fake_vllm))
     clock = WatchClock()
-    # GB10 が対応していないときに出る文字列 (int に変換できない) を、両台とも常に返す
+    # GB10 が対応していないときに出る文字列 (int に変換できない) を、4 列とも常に返す
+    not_supported = "[Not Supported], [Not Supported], [Not Supported], [Not Supported]\n"
     runner = FakeRunner(
         var_root=tmp_path,
-        script=[Rule(prefix=w.GPU_UTIL_ARGV, replies=(Reply(stdout="[Not Supported]\n"),))],
+        script=[Rule(prefix=w.GPU_UTIL_ARGV, replies=(Reply(stdout=not_supported),))],
         default=Reply(),
     )
 
@@ -310,6 +311,96 @@ def test_gpu_unavailable_falls_back_to_token_only_judgement(
     assert outcome.gpu_utilization_available is False
     assert "生成のトークンの数だけ" in outcome.detail
     assert [event.finding for event in outcome.events] == ["stalled"]
+
+
+# --- GPU の 4 列の読み取り ----------------------------------------------------
+
+
+def test_gpu_columns_are_recorded_from_one_nvidia_smi_query(
+    tmp_path: Path, fake_vllm: FakeVllm
+) -> None:
+    """温度・SM クロック・電力・使用率の 4 列が、1 回の `nvidia-smi` の問い合わせから読める。
+    台ごとに、観察 1 回あたり `nvidia-smi` はちょうど 1 回だけ流れる。"""
+    fake_vllm.set_metrics(MetricsSample(running_requests=0, generation_tokens_total=1))
+    config = config_for(port_of(fake_vllm))
+    clock = WatchClock()
+    runner = FakeRunner(
+        var_root=tmp_path,
+        script=[Rule(prefix=w.GPU_UTIL_ARGV, replies=(Reply(stdout="65, 1781, 28.90, 97\n"),))],
+        default=Reply(exit_code=1),
+    )
+
+    outcome = w.watch(
+        runner,
+        config,
+        NODES,
+        var_root=tmp_path,
+        duration_s=1.0,
+        interval_s=1.0,
+        sleep=clock.sleep,
+        clock=clock.monotonic,
+        now=clock.now,
+        report=io.StringIO(),
+    )
+
+    sample = json.loads(outcome.samples_path.read_text(encoding="utf-8").splitlines()[0])
+    assert sample["gpu_temperature_c"]["head"] == 65
+    assert sample["gpu_sm_clock_mhz"]["head"] == 1781
+    assert sample["gpu_power_w"]["head"] == 28.9
+    assert sample["gpu_utilization_pct"]["head"] == 97
+
+    per_node: dict[str, int] = {"head": 0, "worker": 0}
+    for call in runner.calls:
+        if call.argv and call.argv[0] == "nvidia-smi":
+            per_node[call.node] += 1
+    assert per_node == {"head": outcome.sample_count, "worker": outcome.sample_count}
+
+
+def test_gpu_columns_that_cannot_be_read_are_empty_one_by_one(
+    tmp_path: Path, fake_vllm: FakeVllm
+) -> None:
+    """読めない列だけが空になり、列を 1 つしか持たない行 (旧い形の応答) は 4 列とも空になる。
+    1 台が旧形式で 1 度も読めなくても、見張りは止まらず観察を続ける。"""
+    fake_vllm.set_metrics(MetricsSample(running_requests=0, generation_tokens_total=1))
+    config = config_for(port_of(fake_vllm))
+    clock = WatchClock()
+    runner = FakeRunner(
+        var_root=tmp_path,
+        script=[
+            Rule(
+                prefix=w.GPU_UTIL_ARGV,
+                node="head",
+                replies=(Reply(stdout="[N/A], 1781, [Not Supported], 97\n"),),
+            ),
+            Rule(prefix=w.GPU_UTIL_ARGV, node="worker", replies=(Reply(stdout="97 %\n"),)),
+        ],
+        default=Reply(exit_code=1),
+    )
+
+    outcome = w.watch(
+        runner,
+        config,
+        NODES,
+        var_root=tmp_path,
+        duration_s=1.0,
+        interval_s=1.0,
+        sleep=clock.sleep,
+        clock=clock.monotonic,
+        now=clock.now,
+        report=io.StringIO(),
+    )
+
+    sample = json.loads(outcome.samples_path.read_text(encoding="utf-8").splitlines()[0])
+    assert sample["gpu_temperature_c"]["head"] is None
+    assert sample["gpu_sm_clock_mhz"]["head"] == 1781
+    assert sample["gpu_power_w"]["head"] is None
+    assert sample["gpu_utilization_pct"]["head"] == 97
+    for column in ("gpu_temperature_c", "gpu_sm_clock_mhz", "gpu_power_w", "gpu_utilization_pct"):
+        assert sample[column]["worker"] is None
+    # worker は旧形式しか返さないので、一度も読めないまま終わる (決めごとの 3: 台ごとに
+    # 一度でも読めたかどうかで判定するので、worker が読めない限り全体は False のまま)
+    assert outcome.gpu_utilization_available is False
+    assert outcome.sample_count == 2
 
 
 # --- 応答しない --------------------------------------------------------------
@@ -379,7 +470,7 @@ def test_logs_from_both_nodes_are_collected_once_when_an_event_fires(
     runner = FakeRunner(
         var_root=tmp_path,
         script=[
-            Rule(prefix=w.GPU_UTIL_ARGV, replies=(Reply(stdout="10 %\n"),)),
+            Rule(prefix=w.GPU_UTIL_ARGV, replies=(Reply(stdout="60, 1700, 25.00, 10\n"),)),
             Rule(
                 prefix=OWN_CONTAINERS_ARGV,
                 node="head",
@@ -480,13 +571,17 @@ def test_continues_when_one_node_cannot_be_reached_for_a_gpu_reading(
     runner = FakeRunner(
         var_root=tmp_path,
         script=[
-            Rule(prefix=w.GPU_UTIL_ARGV, node="head", replies=(Reply(stdout="10 %\n"),)),
+            Rule(
+                prefix=w.GPU_UTIL_ARGV,
+                node="head",
+                replies=(Reply(stdout="60, 1700, 25.00, 10\n"),),
+            ),
             Rule(
                 prefix=w.GPU_UTIL_ARGV,
                 node="worker",
                 replies=(
                     Reply(exit_code=255, stderr="ssh: no route to host"),
-                    Reply(stdout="10 %\n"),
+                    Reply(stdout="60, 1700, 25.00, 10\n"),
                 ),
             ),
         ],
@@ -519,12 +614,14 @@ def test_continues_when_one_node_cannot_be_reached_for_a_gpu_reading(
 def test_watch_never_issues_a_mutating_or_stop_start_push_call(
     tmp_path: Path, fake_vllm: FakeVllm
 ) -> None:
+    """読み取りだけであること (熱区域・hwmon・CPU の発見と観察を含めても)。流れる
+    `argv[0]` は `cat` と `nvidia-smi` だけで、`push`/`pull` は 1 つも出ない。"""
     fake_vllm.set_metrics(MetricsSample(running_requests=1, generation_tokens_total=1))
     config = config_for(port_of(fake_vllm))
     clock = WatchClock()
     runner = FakeRunner(
         var_root=tmp_path,
-        script=[Rule(prefix=w.GPU_UTIL_ARGV, replies=(Reply(stdout="10 %\n"),))],
+        script=[Rule(prefix=w.GPU_UTIL_ARGV, replies=(Reply(stdout="60, 1700, 25.00, 10\n"),))],
         default=Reply(),
     )
 
@@ -542,6 +639,8 @@ def test_watch_never_issues_a_mutating_or_stop_start_push_call(
     )
 
     assert runner.pushes == ()
+    assert runner.pulls == ()
+    assert {call.argv[0] for call in runner.calls if call.argv} <= {"cat", "nvidia-smi"}
     for call in runner.calls:
         assert call.mutating is False
         if call.argv and call.argv[0] == "docker":
@@ -554,7 +653,7 @@ def test_samples_file_gets_one_line_per_observation(tmp_path: Path, fake_vllm: F
     clock = WatchClock()
     runner = FakeRunner(
         var_root=tmp_path,
-        script=[Rule(prefix=w.GPU_UTIL_ARGV, replies=(Reply(stdout="10 %\n"),))],
+        script=[Rule(prefix=w.GPU_UTIL_ARGV, replies=(Reply(stdout="60, 1700, 25.00, 10\n"),))],
         default=Reply(),
     )
 
@@ -587,7 +686,7 @@ def test_partial_summary_is_written_before_the_interrupt_is_raised(
     clock = WatchClock(interrupt_after=2)
     runner = FakeRunner(
         var_root=tmp_path,
-        script=[Rule(prefix=w.GPU_UTIL_ARGV, replies=(Reply(stdout="10 %\n"),))],
+        script=[Rule(prefix=w.GPU_UTIL_ARGV, replies=(Reply(stdout="60, 1700, 25.00, 10\n"),))],
         default=Reply(),
     )
 
@@ -627,7 +726,7 @@ def test_no_stalled_event_when_gpu_is_readable_but_below_threshold(
     clock = WatchClock()
     runner = FakeRunner(
         var_root=tmp_path,
-        script=[Rule(prefix=w.GPU_UTIL_ARGV, replies=(Reply(stdout="50 %\n"),))],
+        script=[Rule(prefix=w.GPU_UTIL_ARGV, replies=(Reply(stdout="60, 1700, 25.00, 50\n"),))],
         default=Reply(),
     )
 
@@ -704,10 +803,10 @@ def test_no_stalled_event_when_gpu_dips_once_within_the_window(
     config = config_for(port_of(fake_vllm))
     clock = WatchClock()
     gpu_sequence = (
-        Reply(stdout="95 %\n"),
-        Reply(stdout="95 %\n"),
-        Reply(stdout="10 %\n"),
-        Reply(stdout="95 %\n"),
+        Reply(stdout="70, 1781, 30.00, 95\n"),
+        Reply(stdout="70, 1781, 30.00, 95\n"),
+        Reply(stdout="60, 1700, 25.00, 10\n"),
+        Reply(stdout="70, 1781, 30.00, 95\n"),
     )
     runner = FakeRunner(
         var_root=tmp_path,
@@ -746,7 +845,7 @@ def test_stalled_event_still_fires_when_gpu_stays_above_the_threshold_throughout
     clock = WatchClock()
     runner = FakeRunner(
         var_root=tmp_path,
-        script=[Rule(prefix=w.GPU_UTIL_ARGV, replies=(Reply(stdout="95 %\n"),))],
+        script=[Rule(prefix=w.GPU_UTIL_ARGV, replies=(Reply(stdout="70, 1781, 30.00, 95\n"),))],
         default=Reply(),
     )
 
@@ -784,7 +883,7 @@ def test_stall_window_is_recounted_when_tokens_increase_mid_window(
     clock = WatchClock()
     runner = FakeRunner(
         var_root=tmp_path,
-        script=[Rule(prefix=w.GPU_UTIL_ARGV, replies=(Reply(stdout="95 %\n"),))],
+        script=[Rule(prefix=w.GPU_UTIL_ARGV, replies=(Reply(stdout="70, 1781, 30.00, 95\n"),))],
         default=Reply(),
     )
 
@@ -824,7 +923,7 @@ def test_stall_window_continues_through_an_unreadable_metrics_round(
     clock = WatchClock()
     runner = FakeRunner(
         var_root=tmp_path,
-        script=[Rule(prefix=w.GPU_UTIL_ARGV, replies=(Reply(stdout="95 %\n"),))],
+        script=[Rule(prefix=w.GPU_UTIL_ARGV, replies=(Reply(stdout="70, 1781, 30.00, 95\n"),))],
         default=Reply(),
     )
 
@@ -861,7 +960,7 @@ def test_stall_window_resets_and_the_restart_is_noted_when_the_counter_decreases
     clock = WatchClock()
     runner = FakeRunner(
         var_root=tmp_path,
-        script=[Rule(prefix=w.GPU_UTIL_ARGV, replies=(Reply(stdout="95 %\n"),))],
+        script=[Rule(prefix=w.GPU_UTIL_ARGV, replies=(Reply(stdout="70, 1781, 30.00, 95\n"),))],
         default=Reply(),
     )
 
@@ -895,7 +994,7 @@ def test_interrupt_during_an_http_read_still_writes_a_partial_summary(
     clock = WatchClock()
     runner = FakeRunner(
         var_root=tmp_path,
-        script=[Rule(prefix=w.GPU_UTIL_ARGV, replies=(Reply(stdout="10 %\n"),))],
+        script=[Rule(prefix=w.GPU_UTIL_ARGV, replies=(Reply(stdout="60, 1700, 25.00, 10\n"),))],
         default=Reply(),
     )
     # 1 回目の観察 (/health, /metrics で 2 回) は通し、2 回目の /health (3 回目の要求) で
@@ -935,11 +1034,15 @@ def test_interrupt_during_a_gpu_reading_still_writes_a_partial_summary(
     runner = FakeRunner(
         var_root=tmp_path,
         script=[
-            Rule(prefix=w.GPU_UTIL_ARGV, node="head", replies=(Reply(stdout="10 %\n"),)),
+            Rule(
+                prefix=w.GPU_UTIL_ARGV,
+                node="head",
+                replies=(Reply(stdout="60, 1700, 25.00, 10\n"),),
+            ),
             Rule(
                 prefix=w.GPU_UTIL_ARGV,
                 node="worker",
-                replies=(Reply(stdout="10 %\n"), Reply(raises=KeyboardInterrupt())),
+                replies=(Reply(stdout="60, 1700, 25.00, 10\n"), Reply(raises=KeyboardInterrupt())),
             ),
         ],
         default=Reply(),
@@ -974,7 +1077,7 @@ def test_interrupt_during_log_collection_still_writes_a_partial_summary(
     runner = FakeRunner(
         var_root=tmp_path,
         script=[
-            Rule(prefix=w.GPU_UTIL_ARGV, replies=(Reply(stdout="10 %\n"),)),
+            Rule(prefix=w.GPU_UTIL_ARGV, replies=(Reply(stdout="60, 1700, 25.00, 10\n"),)),
             Rule(prefix=OWN_CONTAINERS_ARGV, replies=(Reply(raises=KeyboardInterrupt()),)),
         ],
         default=Reply(),
@@ -1046,7 +1149,7 @@ def test_corrupted_metrics_body_does_not_crash(tmp_path: Path, fake_vllm: FakeVl
     clock = WatchClock()
     runner = FakeRunner(
         var_root=tmp_path,
-        script=[Rule(prefix=w.GPU_UTIL_ARGV, replies=(Reply(stdout="10 %\n"),))],
+        script=[Rule(prefix=w.GPU_UTIL_ARGV, replies=(Reply(stdout="60, 1700, 25.00, 10\n"),))],
         default=Reply(),
     )
 
@@ -1078,7 +1181,7 @@ def test_metrics_failure_alongside_a_healthy_check_does_not_crash(
     clock = WatchClock()
     runner = FakeRunner(
         var_root=tmp_path,
-        script=[Rule(prefix=w.GPU_UTIL_ARGV, replies=(Reply(stdout="10 %\n"),))],
+        script=[Rule(prefix=w.GPU_UTIL_ARGV, replies=(Reply(stdout="60, 1700, 25.00, 10\n"),))],
         default=Reply(),
     )
 
@@ -1195,6 +1298,10 @@ def test_event_context_is_the_triggering_sample_and_two_before_it(
         {"log_timeout_s": 0.0},
         {"log_timeout_s": float("nan")},
         {"interval_s": 10.0, "duration_s": 1.0},  # interval_s が duration_s を超える
+        {"thermal_threshold_c": 0.0},
+        {"thermal_threshold_c": -1.0},
+        {"thermal_threshold_c": float("nan")},
+        {"thermal_threshold_c": float("inf")},
     ],
     ids=lambda v: ",".join(f"{k}={val}" for k, val in v.items()),
 )
@@ -1233,17 +1340,18 @@ def test_sleep_receives_the_interval_minus_the_time_spent_observing(
     tmp_path: Path, fake_vllm: FakeVllm
 ) -> None:
     """眠りは、間隔をそのまま渡すのではなく、間隔から、観察にかかった経過を引いた値を渡す
-    (負にはならない。指摘 1・2 の「あわせて」)。"""
+    (負にはならない。指摘 1・2 の「あわせて」)。
+
+    発見 (熱区域・hwmon) は、すべて `exit_code=1` にして空にする (発見の所要は `start_mono`
+    より前に消費されるので、間隔の計算に混ざらない)。空の発見のもとでは、観察 1 回あたりの
+    `run` は、台ごとに `nvidia-smi` と `/proc/stat` の 2 回、2 台で 4 回になる。
+    """
     fake_vllm.set_metrics(MetricsSample(running_requests=0, generation_tokens_total=1))
     config = config_for(port_of(fake_vllm))
     clock = WatchClock()
-    base_runner = FakeRunner(
-        var_root=tmp_path,
-        script=[Rule(prefix=w.GPU_UTIL_ARGV, replies=(Reply(stdout="10 %\n"),))],
-        default=Reply(),
-    )
-    # 1 回の観察 (head と worker、2 回の nvidia-smi の呼び出し) に、0.3 秒ずつ経過が積まれる
-    runner = _CostlyRunner(inner=base_runner, clock=clock, cost_s=0.3)
+    base_runner = FakeRunner(var_root=tmp_path, default=Reply(exit_code=1))
+    # 観察 1 回 (2 台ぶん、nvidia-smi と /proc/stat で 4 回の run) に、0.1 秒ずつ経過が積まれる
+    runner = _CostlyRunner(inner=base_runner, clock=clock, cost_s=0.1)
 
     w.watch(
         runner,
@@ -1258,27 +1366,27 @@ def test_sleep_receives_the_interval_minus_the_time_spent_observing(
         report=io.StringIO(),
     )
 
-    # 1 回の観察に 0.6 秒 (2 台ぶん) かかるので、眠りは 1.0 - 0.6 = 0.4 秒になる
+    # 1 回の観察に 0.4 秒 (4 回ぶん) かかるので、眠りは 1.0 - 0.4 = 0.6 秒になる
     assert clock.slept
     for value in clock.slept:
         assert value > 0
-    assert clock.slept[0] == pytest.approx(0.4)
+    assert clock.slept[0] == pytest.approx(0.6)
 
 
 def test_sleep_is_skipped_without_a_negative_value_when_observing_overruns_the_interval(
     tmp_path: Path, fake_vllm: FakeVllm
 ) -> None:
-    """観察が間隔より長くかかっても、眠りに負の値を渡さない (眠りそのものを呼ばない)。"""
+    """観察が間隔より長くかかっても、眠りに負の値を渡さない (眠りそのものを呼ばない)。
+
+    発見をすべて空にした上で (`test_sleep_receives_the_interval_minus_the_time_spent_observing`
+    と同じ考え方)、観察 1 回の所要 (4 回の run ぶん) が間隔 (1.0 秒) を超えるようにする。
+    """
     fake_vllm.set_metrics(MetricsSample(running_requests=0, generation_tokens_total=1))
     config = config_for(port_of(fake_vllm))
     clock = WatchClock()
-    base_runner = FakeRunner(
-        var_root=tmp_path,
-        script=[Rule(prefix=w.GPU_UTIL_ARGV, replies=(Reply(stdout="10 %\n"),))],
-        default=Reply(),
-    )
-    # 1 回の観察に 1.2 秒 (2 台ぶん、0.6 秒ずつ) かかり、間隔 (1.0 秒) を超える
-    runner = _CostlyRunner(inner=base_runner, clock=clock, cost_s=0.6)
+    base_runner = FakeRunner(var_root=tmp_path, default=Reply(exit_code=1))
+    # 観察 1 回 (4 回の run) に 1.2 秒 (0.3 秒 × 4) かかり、間隔 (1.0 秒) を超える
+    runner = _CostlyRunner(inner=base_runner, clock=clock, cost_s=0.3)
 
     w.watch(
         runner,
@@ -1321,12 +1429,12 @@ def test_stalled_event_fires_in_the_new_window_even_after_a_gpu_dip_in_the_old_o
     clock = WatchClock()
     # 窓 1 (t=0..2) の途中 (t=1) で 1 度だけ低い値、窓 2 (t=3..5) はずっと高い値
     gpu_sequence = (
-        Reply(stdout="95 %\n"),
-        Reply(stdout="10 %\n"),
-        Reply(stdout="95 %\n"),
-        Reply(stdout="95 %\n"),
-        Reply(stdout="95 %\n"),
-        Reply(stdout="95 %\n"),
+        Reply(stdout="70, 1781, 30.00, 95\n"),
+        Reply(stdout="60, 1700, 25.00, 10\n"),
+        Reply(stdout="70, 1781, 30.00, 95\n"),
+        Reply(stdout="70, 1781, 30.00, 95\n"),
+        Reply(stdout="70, 1781, 30.00, 95\n"),
+        Reply(stdout="70, 1781, 30.00, 95\n"),
     )
     runner = FakeRunner(
         var_root=tmp_path,
@@ -1380,7 +1488,7 @@ def test_no_stalled_event_when_requests_drop_to_zero_once_within_the_window(
     clock = WatchClock()
     runner = FakeRunner(
         var_root=tmp_path,
-        script=[Rule(prefix=w.GPU_UTIL_ARGV, replies=(Reply(stdout="95 %\n"),))],
+        script=[Rule(prefix=w.GPU_UTIL_ARGV, replies=(Reply(stdout="70, 1781, 30.00, 95\n"),))],
         default=Reply(),
     )
 
@@ -1422,7 +1530,7 @@ def test_stalled_event_fires_in_the_new_window_after_a_zero_request_dip_in_the_o
     clock = WatchClock()
     runner = FakeRunner(
         var_root=tmp_path,
-        script=[Rule(prefix=w.GPU_UTIL_ARGV, replies=(Reply(stdout="95 %\n"),))],
+        script=[Rule(prefix=w.GPU_UTIL_ARGV, replies=(Reply(stdout="70, 1781, 30.00, 95\n"),))],
         default=Reply(),
     )
 
@@ -1456,7 +1564,7 @@ def test_no_stalled_event_when_requests_are_never_readable_within_the_window(
     clock = WatchClock()
     runner = FakeRunner(
         var_root=tmp_path,
-        script=[Rule(prefix=w.GPU_UTIL_ARGV, replies=(Reply(stdout="95 %\n"),))],
+        script=[Rule(prefix=w.GPU_UTIL_ARGV, replies=(Reply(stdout="70, 1781, 30.00, 95\n"),))],
         default=Reply(),
     )
 
@@ -1475,3 +1583,648 @@ def test_no_stalled_event_when_requests_are_never_readable_within_the_window(
     )
 
     assert outcome.events == ()
+
+
+# --- 熱区域と hwmon の発見 ----------------------------------------------------
+
+
+def test_discovery_runs_once_at_start_and_stops_at_the_limit(
+    tmp_path: Path, fake_vllm: FakeVllm
+) -> None:
+    """熱区域と hwmon のパスは、見張りの開始時に 1 回だけ、番号順に見つける。名前が
+    `mlx5`/`nvme`/`acpitz` でない hwmon は採用しない。発見した一覧は `result.json` に出て、
+    観察を重ねても発見をやり直さない。"""
+    fake_vllm.set_metrics(MetricsSample(running_requests=0, generation_tokens_total=1))
+    config = config_for(port_of(fake_vllm))
+    clock = WatchClock()
+    zone0 = ("cat", f"{w.THERMAL_ZONE_DIR}thermal_zone0/temp")
+    zone4 = ("cat", f"{w.THERMAL_ZONE_DIR}thermal_zone4/temp")
+    hwmon2_name = ("cat", f"{w.HWMON_DIR}hwmon2/name")
+    hwmon5_name = ("cat", f"{w.HWMON_DIR}hwmon5/name")
+    hwmon2_input = ("cat", f"{w.HWMON_DIR}hwmon2/temp1_input")
+    hwmon2_label = ("cat", f"{w.HWMON_DIR}hwmon2/temp1_label")
+    script = [
+        Rule(prefix=zone0, replies=(Reply(stdout="82000\n"),)),
+        Rule(prefix=zone4, replies=(Reply(stdout="70000\n"),)),
+        Rule(prefix=hwmon2_name, replies=(Reply(stdout="mlx5\n"),)),
+        Rule(prefix=hwmon5_name, replies=(Reply(stdout="gpu\n"),)),
+        Rule(prefix=hwmon2_input, replies=(Reply(stdout="47000\n"),)),
+        Rule(prefix=hwmon2_label, replies=(Reply(stdout="asic\n"),)),
+    ]
+    runner = FakeRunner(var_root=tmp_path, script=script, default=Reply(exit_code=1))
+
+    outcome = w.watch(
+        runner,
+        config,
+        NODES,
+        var_root=tmp_path,
+        duration_s=2.0,
+        interval_s=1.0,
+        sleep=clock.sleep,
+        clock=clock.monotonic,
+        now=clock.now,
+        report=io.StringIO(),
+    )
+
+    assert outcome.sample_count == 3
+    result = json.loads(
+        (outcome.samples_path.parent / w.RESULT_FILE_NAME).read_text(encoding="utf-8")
+    )
+    assert result["thermal_zones_found"]["head"] == [0, 4]
+    assert result["hwmon_chip_names"]["head"] == {"hwmon2": "mlx5"}
+    assert result["hwmon_sensors_found"]["head"] == {"hwmon2/temp1": "asic"}
+
+    shown = [" ".join(call.argv) for call in runner.calls]
+    assert not any("thermal_zone32" in one for one in shown)
+    assert not any("hwmon32" in one for one in shown)
+    assert not any("temp33_input" in one for one in shown)
+    assert not any("hwmon5/temp1_input" in one for one in shown)
+
+    name_calls = [call for call in runner.calls if call.node == "head" and call.argv == hwmon2_name]
+    assert len(name_calls) == 1, "発見は開始時の 1 回だけのはずが、観察のたびに繰り返している"
+
+
+def test_discovery_reads_up_to_thirty_two_numbers_per_kind(
+    tmp_path: Path, fake_vllm: FakeVllm
+) -> None:
+    """発見は、熱区域と hwmon の番号を、それぞれ 0 から 31 まで (上限 32) だけ試す。台本を
+    敷かない (既定の `Reply()` は exit 0 なので、番号があれば必ず「存在する」ことになる)。"""
+    fake_vllm.set_metrics(MetricsSample(running_requests=0, generation_tokens_total=1))
+    config = config_for(port_of(fake_vllm))
+    clock = WatchClock()
+    runner = FakeRunner(var_root=tmp_path, default=Reply())
+
+    w.watch(
+        runner,
+        config,
+        NODES,
+        var_root=tmp_path,
+        duration_s=1.0,
+        interval_s=1.0,
+        sleep=clock.sleep,
+        clock=clock.monotonic,
+        now=clock.now,
+        report=io.StringIO(),
+    )
+
+    head_single_path_calls = {
+        call.argv
+        for call in runner.calls
+        if call.node == "head" and len(call.argv) == 2 and call.argv[0] == "cat"
+    }
+    expected_zones = {("cat", f"{w.THERMAL_ZONE_DIR}thermal_zone{n}/temp") for n in range(32)}
+    expected_names = {("cat", f"{w.HWMON_DIR}hwmon{n}/name") for n in range(32)}
+    assert expected_zones <= head_single_path_calls
+    assert expected_names <= head_single_path_calls
+
+    shown = [" ".join(call.argv) for call in runner.calls]
+    assert not any("thermal_zone32" in one for one in shown)
+    assert not any("hwmon32" in one for one in shown)
+
+
+def test_discovery_treats_a_nonzero_exit_as_absent_without_recording_a_note(
+    tmp_path: Path, fake_vllm: FakeVllm
+) -> None:
+    """発見で exit 1 (存在しない) は、これまでどおり黙って続け、`detail` に書かない。
+    番号を最後まで試すので、台ごとの発見の `cat` は 64 回 (熱区域 32 + hwmon 名 32) 流れる。
+    """
+    fake_vllm.set_metrics(MetricsSample(running_requests=0, generation_tokens_total=1))
+    config = config_for(port_of(fake_vllm))
+    clock = WatchClock()
+    runner = FakeRunner(var_root=tmp_path, default=Reply(exit_code=1))
+
+    outcome = w.watch(
+        runner,
+        config,
+        NODES,
+        var_root=tmp_path,
+        duration_s=1.0,
+        interval_s=1.0,
+        sleep=clock.sleep,
+        clock=clock.monotonic,
+        now=clock.now,
+        report=io.StringIO(),
+    )
+
+    assert outcome.thermal_zones_found["worker"] == ()
+    assert "発見" not in outcome.detail
+    worker_discovery_calls = [
+        call
+        for call in runner.calls
+        if call.node == "worker"
+        and len(call.argv) == 2
+        and call.argv[0] == "cat"
+        and (call.argv[1].startswith(w.THERMAL_ZONE_DIR) or call.argv[1].startswith(w.HWMON_DIR))
+    ]
+    assert len(worker_discovery_calls) == 64
+
+
+def test_discovery_stops_for_a_node_it_cannot_reach_and_records_it(
+    tmp_path: Path, fake_vllm: FakeVllm
+) -> None:
+    """発見で台に届かなければ (`RemoteError`)、その台の発見を打ち切り、役割つきで `detail`
+    に記録する。見張り自体は続き、決めた時間ぶん観察する。"""
+    fake_vllm.set_metrics(MetricsSample(running_requests=0, generation_tokens_total=1))
+    config = config_for(port_of(fake_vllm))
+    clock = WatchClock()
+    zone0 = ("cat", f"{w.THERMAL_ZONE_DIR}thermal_zone0/temp")
+    runner = FakeRunner(
+        var_root=tmp_path,
+        script=[Rule(prefix=zone0, node="worker", replies=(Reply(exit_code=255),))],
+        default=Reply(exit_code=1),
+    )
+
+    outcome = w.watch(
+        runner,
+        config,
+        NODES,
+        var_root=tmp_path,
+        duration_s=2.0,
+        interval_s=1.0,
+        sleep=clock.sleep,
+        clock=clock.monotonic,
+        now=clock.now,
+        report=io.StringIO(),
+    )
+
+    assert "worker" in outcome.detail
+    assert "発見" in outcome.detail
+    assert outcome.thermal_zones_found["worker"] == ()
+    worker_discovery_calls = [
+        call
+        for call in runner.calls
+        if call.node == "worker"
+        and len(call.argv) == 2
+        and call.argv[0] == "cat"
+        and (call.argv[1].startswith(w.THERMAL_ZONE_DIR) or call.argv[1].startswith(w.HWMON_DIR))
+    ]
+    assert len(worker_discovery_calls) == 1
+    assert outcome.sample_count == 3
+
+
+# --- 熱区域・hwmon・CPU の 1 回の観察 --------------------------------------------
+
+
+def test_thermal_zones_and_hwmon_are_recorded_per_sensor(
+    tmp_path: Path, fake_vllm: FakeVllm
+) -> None:
+    """発見した熱区域と hwmon の値が、区域番号・センサーの識別子つきで `samples.jsonl` に
+    出る (最高値だけにまとめない)。"""
+    fake_vllm.set_metrics(MetricsSample(running_requests=0, generation_tokens_total=1))
+    config = config_for(port_of(fake_vllm))
+    clock = WatchClock()
+    zone0 = ("cat", f"{w.THERMAL_ZONE_DIR}thermal_zone0/temp")
+    zone4 = ("cat", f"{w.THERMAL_ZONE_DIR}thermal_zone4/temp")
+    hwmon2_name = ("cat", f"{w.HWMON_DIR}hwmon2/name")
+    hwmon2_input = ("cat", f"{w.HWMON_DIR}hwmon2/temp1_input")
+    hwmon2_label = ("cat", f"{w.HWMON_DIR}hwmon2/temp1_label")
+    script = [
+        Rule(
+            prefix=zone0,
+            replies=(Reply(stdout="82000\n"), Reply(stdout="82000\n70000\n")),
+        ),
+        Rule(prefix=zone4, replies=(Reply(stdout="70000\n"),)),
+        Rule(prefix=hwmon2_name, replies=(Reply(stdout="mlx5\n"),)),
+        Rule(prefix=hwmon2_input, replies=(Reply(stdout="47000\n"),)),
+        Rule(prefix=hwmon2_label, replies=(Reply(stdout="asic\n"),)),
+    ]
+    runner = FakeRunner(var_root=tmp_path, script=script, default=Reply(exit_code=1))
+
+    outcome = w.watch(
+        runner,
+        config,
+        NODES,
+        var_root=tmp_path,
+        duration_s=1.0,
+        interval_s=1.0,
+        sleep=clock.sleep,
+        clock=clock.monotonic,
+        now=clock.now,
+        report=io.StringIO(),
+    )
+
+    first = json.loads(outcome.samples_path.read_text(encoding="utf-8").splitlines()[0])
+    assert first["thermal_zones_c"]["head"] == {"0": 82.0, "4": 70.0}
+    assert first["hwmon_temps_c"]["head"] == {"hwmon2/temp1": 47.0}
+
+
+def test_hwmon_sensor_without_a_label_is_recorded_with_an_empty_label(
+    tmp_path: Path, fake_vllm: FakeVllm
+) -> None:
+    """`temp<M>_label` が読めない (存在しない) hwmon センサーは、`hwmon_sensors_found` で
+    そのセンサーのラベルだけを空にし、温度の値 (`hwmon_temps_c`) はそのまま残る。"""
+    fake_vllm.set_metrics(MetricsSample(running_requests=0, generation_tokens_total=1))
+    config = config_for(port_of(fake_vllm))
+    clock = WatchClock()
+    hwmon2_name = ("cat", f"{w.HWMON_DIR}hwmon2/name")
+    hwmon2_input = ("cat", f"{w.HWMON_DIR}hwmon2/temp1_input")
+    hwmon2_label = ("cat", f"{w.HWMON_DIR}hwmon2/temp1_label")
+    script = [
+        Rule(prefix=hwmon2_name, replies=(Reply(stdout="mlx5\n"),)),
+        Rule(prefix=hwmon2_input, replies=(Reply(stdout="47000\n"),)),
+        Rule(prefix=hwmon2_label, replies=(Reply(exit_code=1),)),
+    ]
+    runner = FakeRunner(var_root=tmp_path, script=script, default=Reply(exit_code=1))
+
+    outcome = w.watch(
+        runner,
+        config,
+        NODES,
+        var_root=tmp_path,
+        duration_s=1.0,
+        interval_s=1.0,
+        sleep=clock.sleep,
+        clock=clock.monotonic,
+        now=clock.now,
+        report=io.StringIO(),
+    )
+
+    result = json.loads(
+        (outcome.samples_path.parent / w.RESULT_FILE_NAME).read_text(encoding="utf-8")
+    )
+    assert result["hwmon_sensors_found"]["head"] == {"hwmon2/temp1": None}
+    first = json.loads(outcome.samples_path.read_text(encoding="utf-8").splitlines()[0])
+    assert first["hwmon_temps_c"]["head"] == {"hwmon2/temp1": 47.0}
+
+
+def test_an_unreadable_item_is_empty_without_stopping_the_watch(
+    tmp_path: Path, fake_vllm: FakeVllm
+) -> None:
+    """行数が、発見した区域の数と合わない回は、熱区域の項目だけを空にし、ほかの項目 (CPU)
+    と見張りは続く。"""
+    fake_vllm.set_metrics(MetricsSample(running_requests=0, generation_tokens_total=1))
+    config = config_for(port_of(fake_vllm))
+    clock = WatchClock()
+    zone0 = ("cat", f"{w.THERMAL_ZONE_DIR}thermal_zone0/temp")
+    zone2 = ("cat", f"{w.THERMAL_ZONE_DIR}thermal_zone2/temp")
+    zone4 = ("cat", f"{w.THERMAL_ZONE_DIR}thermal_zone4/temp")
+    proc_stat = ("cat", w.PROC_STAT_PATH)
+    script = [
+        # 発見した区域は [0, 2, 4] の 3 つだが、観察の返事は 2 行しかない (行数の不一致)
+        Rule(prefix=zone0, replies=(Reply(stdout="82000\n"), Reply(stdout="82000\n70000\n"))),
+        Rule(prefix=zone2, replies=(Reply(stdout="75000\n"),)),
+        Rule(prefix=zone4, replies=(Reply(stdout="70000\n"),)),
+        Rule(
+            prefix=proc_stat,
+            replies=(
+                Reply(stdout="cpu0 100 0 100 800 0 0 0 0 0 0\n"),
+                Reply(stdout="cpu0 200 0 200 800 0 0 0 0 0 0\n"),
+            ),
+        ),
+    ]
+    runner = FakeRunner(var_root=tmp_path, script=script, default=Reply(exit_code=1))
+
+    outcome = w.watch(
+        runner,
+        config,
+        NODES,
+        var_root=tmp_path,
+        duration_s=1.0,
+        interval_s=1.0,
+        sleep=clock.sleep,
+        clock=clock.monotonic,
+        now=clock.now,
+        report=io.StringIO(),
+    )
+
+    lines = [
+        json.loads(line) for line in outcome.samples_path.read_text(encoding="utf-8").splitlines()
+    ]
+    assert outcome.sample_count == 2
+    second = lines[1]
+    assert second["thermal_zones_c"]["head"] == {"0": None, "2": None, "4": None}
+    assert second["cpu_utilization_pct"]["head"] == {"0": 100.0}
+
+
+def test_a_line_that_fails_to_parse_only_empties_that_key(
+    tmp_path: Path, fake_vllm: FakeVllm
+) -> None:
+    """行数は発見した区域の数と合うが、1 行だけ整数に変えられないときは、そのキーだけを
+    空にし、ほかのキーの値は残す (行数が合わず全キーを空にする場合とは違う経路)。"""
+    fake_vllm.set_metrics(MetricsSample(running_requests=0, generation_tokens_total=1))
+    config = config_for(port_of(fake_vllm))
+    clock = WatchClock()
+    zone0 = ("cat", f"{w.THERMAL_ZONE_DIR}thermal_zone0/temp")
+    zone4 = ("cat", f"{w.THERMAL_ZONE_DIR}thermal_zone4/temp")
+    script = [
+        # 発見は存在確認だけなので中身は使わない。観察は 2 行 (zone0 は数、zone4 は壊れた行)
+        Rule(prefix=zone0, replies=(Reply(stdout="82000\n"), Reply(stdout="82000\nabc\n"))),
+        Rule(prefix=zone4, replies=(Reply(stdout="70000\n"),)),
+    ]
+    runner = FakeRunner(var_root=tmp_path, script=script, default=Reply(exit_code=1))
+
+    outcome = w.watch(
+        runner,
+        config,
+        NODES,
+        var_root=tmp_path,
+        duration_s=1.0,
+        interval_s=1.0,
+        sleep=clock.sleep,
+        clock=clock.monotonic,
+        now=clock.now,
+        report=io.StringIO(),
+    )
+
+    first = json.loads(outcome.samples_path.read_text(encoding="utf-8").splitlines()[0])
+    assert first["thermal_zones_c"]["head"] == {"0": 82.0, "4": None}
+
+
+def test_cpu_utilization_is_the_difference_from_the_previous_reading(
+    tmp_path: Path, fake_vllm: FakeVllm
+) -> None:
+    """コアごとの使用率は、直前に読めた観察との差から出る。初回は空になる。合計行
+    (`cpu `) はコアとして数えず、差のないコアも含めない。合計行の値が観察のあいだで
+    増えても (2 回目)、コアごとの計算には影響しない。"""
+    fake_vllm.set_metrics(MetricsSample(running_requests=0, generation_tokens_total=1))
+    config = config_for(port_of(fake_vllm))
+    clock = WatchClock()
+    proc_stat = ("cat", w.PROC_STAT_PATH)
+    reading1 = (
+        "cpu  300 0 300 1600 0 0 0 0 0 0\n"
+        "cpu0 100 0 100 800 0 0 0 0 0 0\n"
+        "cpu1 200 0 200 800 0 0 0 0 0 0\n"
+    )
+    reading2 = (
+        "cpu  400 0 400 1600 0 0 0 0 0 0\n"
+        "cpu0 200 0 200 800 0 0 0 0 0 0\n"
+        "cpu1 200 0 200 800 0 0 0 0 0 0\n"
+    )
+    script = [Rule(prefix=proc_stat, replies=(Reply(stdout=reading1), Reply(stdout=reading2)))]
+    runner = FakeRunner(var_root=tmp_path, script=script, default=Reply(exit_code=1))
+
+    outcome = w.watch(
+        runner,
+        config,
+        NODES,
+        var_root=tmp_path,
+        duration_s=1.0,
+        interval_s=1.0,
+        sleep=clock.sleep,
+        clock=clock.monotonic,
+        now=clock.now,
+        report=io.StringIO(),
+    )
+
+    lines = [
+        json.loads(line) for line in outcome.samples_path.read_text(encoding="utf-8").splitlines()
+    ]
+    assert outcome.sample_count == 2
+    assert lines[0]["cpu_utilization_pct"]["head"] == {}
+    assert lines[1]["cpu_utilization_pct"]["head"] == {"0": 100.0}
+
+
+# --- thermal の出来事 -----------------------------------------------------------
+
+
+def test_thermal_event_fires_once_per_rising_edge_without_collecting_logs(
+    tmp_path: Path, fake_vllm: FakeVllm
+) -> None:
+    """熱区域が閾値以上になった観察の立ち上がりで `thermal` が 1 件になり、続く間は増えない。
+    条件が外れてまた起きれば、別の 1 件になる。熱の出来事では、2 台の記録の回収
+    (`docker` の呼び出し) をしない (推論サーバーは壊れていないため)。"""
+    fake_vllm.set_metrics(MetricsSample(running_requests=0, generation_tokens_total=1))
+    config = config_for(port_of(fake_vllm))
+    clock = WatchClock()
+    zone0 = ("cat", f"{w.THERMAL_ZONE_DIR}thermal_zone0/temp")
+    # node="head" に絞る: NODES は head と worker の 2 台なので、絞らないと、両台の発見・
+    # 観察の読みが同じ規則の replies を奪い合い、意図した順で値が出ない (worker は発見で
+    # 区域が見つからないまま default(exit_code=1) になり、zone0 の値を持たない)
+    script = [
+        Rule(
+            prefix=zone0,
+            node="head",
+            replies=(
+                Reply(stdout="85000\n"),
+                Reply(stdout="89000\n"),
+                Reply(stdout="90500\n"),
+                Reply(stdout="91000\n"),
+                Reply(stdout="88000\n"),
+                Reply(stdout="90000\n"),
+            ),
+        ),
+    ]
+    runner = FakeRunner(var_root=tmp_path, script=script, default=Reply(exit_code=1))
+
+    outcome = w.watch(
+        runner,
+        config,
+        NODES,
+        var_root=tmp_path,
+        duration_s=4.0,
+        interval_s=1.0,
+        thermal_threshold_c=90.0,
+        sleep=clock.sleep,
+        clock=clock.monotonic,
+        now=clock.now,
+        report=io.StringIO(),
+    )
+
+    assert outcome.sample_count == 5
+    assert [event.finding for event in outcome.events] == ["thermal", "thermal"]
+    assert outcome.events[0].at_utc == STARTED_WALL + timedelta(seconds=1)
+    assert outcome.events[1].at_utc == STARTED_WALL + timedelta(seconds=4)
+    for event in outcome.events:
+        assert "記録は" not in event.detail
+        assert "回収" not in event.detail
+    for call in runner.calls:
+        assert not (call.argv and call.argv[0] == "docker")
+
+
+def test_no_thermal_event_below_the_threshold(tmp_path: Path, fake_vllm: FakeVllm) -> None:
+    """熱区域の値が、既定のしきい値 (90℃) をわずかに下回れば `thermal` は出ない。"""
+    fake_vllm.set_metrics(MetricsSample(running_requests=0, generation_tokens_total=1))
+    config = config_for(port_of(fake_vllm))
+    clock = WatchClock()
+    zone0 = ("cat", f"{w.THERMAL_ZONE_DIR}thermal_zone0/temp")
+    script = [Rule(prefix=zone0, replies=(Reply(stdout="89999\n"),))]
+    runner = FakeRunner(var_root=tmp_path, script=script, default=Reply(exit_code=1))
+
+    outcome = w.watch(
+        runner,
+        config,
+        NODES,
+        var_root=tmp_path,
+        duration_s=1.0,
+        interval_s=1.0,
+        sleep=clock.sleep,
+        clock=clock.monotonic,
+        now=clock.now,
+        report=io.StringIO(),
+    )
+
+    assert outcome.events == ()
+
+
+# --- result.json の要約 ----------------------------------------------------------
+
+
+def test_summary_has_per_node_maxima_and_the_sm_clock_range(
+    tmp_path: Path, fake_vllm: FakeVllm
+) -> None:
+    """`result.json` に、台ごと・項目ごとの最大値 (GPU 温度、SM の範囲、電力、熱区域、
+    hwmon) が出る。1 度も読めなかった台の項目は空になる。熱区域と hwmon には、途中の回
+    (最後ではない回) で最大になる値の列を与え、読めない回を挟んでも、その最大値がそのまま
+    `result.json` に出ること (最後の値で上書きしないこと) を確かめる。"""
+    fake_vllm.set_metrics(MetricsSample(running_requests=0, generation_tokens_total=1))
+    config = config_for(port_of(fake_vllm))
+    clock = WatchClock()
+    zone0 = ("cat", f"{w.THERMAL_ZONE_DIR}thermal_zone0/temp")
+    hwmon2_name = ("cat", f"{w.HWMON_DIR}hwmon2/name")
+    hwmon2_input = ("cat", f"{w.HWMON_DIR}hwmon2/temp1_input")
+    # node="head" に絞る (絞らないと、head と worker が同じ規則の replies を奪い合う)
+    script = [
+        Rule(
+            prefix=w.GPU_UTIL_ARGV,
+            node="head",
+            replies=(
+                Reply(stdout="65, 1781, 28.90, 10\n"),
+                Reply(stdout="70, 1774, 30.10, 10\n"),
+                Reply(stdout="68, 1781, 29.00, 10\n"),
+            ),
+        ),
+        Rule(
+            prefix=w.GPU_UTIL_ARGV,
+            node="worker",
+            replies=(Reply(stdout="[N/A], [N/A], [N/A], [N/A]\n"),),
+        ),
+        Rule(
+            prefix=zone0,
+            node="head",
+            replies=(
+                Reply(stdout="80000\n"),  # 発見
+                Reply(stdout="80000\n"),  # 観察 1
+                Reply(stdout="88000\n"),  # 観察 2 (途中の回で最大)
+                Reply(exit_code=1),  # 観察 3 (読めない)
+                Reply(stdout="84000\n"),  # 観察 4
+            ),
+        ),
+        Rule(prefix=hwmon2_name, node="head", replies=(Reply(stdout="mlx5\n"),)),
+        Rule(
+            prefix=hwmon2_input,
+            node="head",
+            replies=(
+                Reply(stdout="47000\n"),  # 発見
+                Reply(stdout="47000\n"),  # 観察 1
+                Reply(stdout="52000\n"),  # 観察 2 (途中の回で最大)
+                Reply(exit_code=1),  # 観察 3 (読めない)
+                Reply(stdout="49000\n"),  # 観察 4
+            ),
+        ),
+    ]
+    runner = FakeRunner(var_root=tmp_path, script=script, default=Reply(exit_code=1))
+
+    outcome = w.watch(
+        runner,
+        config,
+        NODES,
+        var_root=tmp_path,
+        duration_s=3.0,
+        interval_s=1.0,
+        sleep=clock.sleep,
+        clock=clock.monotonic,
+        now=clock.now,
+        report=io.StringIO(),
+    )
+
+    assert outcome.sample_count == 4
+    result = json.loads(
+        (outcome.samples_path.parent / w.RESULT_FILE_NAME).read_text(encoding="utf-8")
+    )
+    assert result["gpu_temperature_max_c"]["head"] == 70
+    assert result["gpu_sm_clock_range_mhz"]["head"] == [1774, 1781]
+    assert result["gpu_power_max_w"]["head"] == 30.1
+    assert result["gpu_temperature_max_c"]["worker"] is None
+    assert result["thermal_zone_max_c"]["head"] == {"0": 88.0}
+    assert result["hwmon_temp_max_c"]["head"] == {"hwmon2/temp1": 52.0}
+
+
+def test_summary_counts_the_samples_over_the_threshold_and_their_time_span(
+    tmp_path: Path, fake_vllm: FakeVllm
+) -> None:
+    """`result.json` に、熱区域が閾値以上だった観察の数と、その時刻の範囲が出る。観察の数は
+    出来事の件数 (立ち上がりの回数) とは別に数える。"""
+    fake_vllm.set_metrics(MetricsSample(running_requests=0, generation_tokens_total=1))
+    config = config_for(port_of(fake_vllm))
+    clock = WatchClock()
+    zone0 = ("cat", f"{w.THERMAL_ZONE_DIR}thermal_zone0/temp")
+    # node="head" に絞る (理由は test_thermal_event_fires_once_per_rising_edge... と同じ:
+    # 絞らないと、head と worker が同じ規則の replies を奪い合ってしまう)
+    script = [
+        Rule(
+            prefix=zone0,
+            node="head",
+            replies=(
+                Reply(stdout="80000\n"),
+                Reply(stdout="85000\n"),
+                Reply(stdout="86000\n"),
+                Reply(stdout="91000\n"),
+                Reply(stdout="92000\n"),
+                Reply(stdout="87000\n"),
+            ),
+        ),
+    ]
+    runner = FakeRunner(var_root=tmp_path, script=script, default=Reply(exit_code=1))
+
+    outcome = w.watch(
+        runner,
+        config,
+        NODES,
+        var_root=tmp_path,
+        duration_s=4.0,
+        interval_s=1.0,
+        thermal_threshold_c=90.0,
+        sleep=clock.sleep,
+        clock=clock.monotonic,
+        now=clock.now,
+        report=io.StringIO(),
+    )
+
+    result = json.loads(
+        (outcome.samples_path.parent / w.RESULT_FILE_NAME).read_text(encoding="utf-8")
+    )
+    assert result["thermal_threshold_c"] == 90.0
+    assert result["thermal_over_threshold_samples"] == 2
+    # 内部の直列化の書式 (Z か +00:00 か) に依存しないよう、値を datetime に戻して比べる
+    span = [datetime.fromisoformat(value) for value in result["thermal_over_threshold_span"]]
+    assert span == [
+        STARTED_WALL + timedelta(seconds=2),
+        STARTED_WALL + timedelta(seconds=3),
+    ]
+    assert [event.finding for event in outcome.events] == ["thermal"]
+
+
+# --- 既存の判定が変わらないこと、読み取りだけであること --------------------------------
+
+
+def test_thermal_condition_does_not_change_the_unresponsive_judgement(
+    tmp_path: Path, fake_vllm: FakeVllm
+) -> None:
+    """熱区域がずっと閾値以上でも、`unresponsive` の判定 (続けての失敗の回数と、出来事の
+    時刻) は変わらない。既存試験
+    (`test_unresponsive_event_appears_on_the_third_consecutive_failure`) と同じ時刻で
+    `unresponsive` が出ることを、`thermal` が同時に起きていても固定する。"""
+    fake_vllm.set_health_fault(Fault(status=None))
+    config = config_for(port_of(fake_vllm))
+    clock = WatchClock()
+    zone0 = ("cat", f"{w.THERMAL_ZONE_DIR}thermal_zone0/temp")
+    script = [Rule(prefix=zone0, replies=(Reply(stdout="95000\n"),))]
+    runner = FakeRunner(var_root=tmp_path, script=script, default=Reply(exit_code=1))
+
+    outcome = w.watch(
+        runner,
+        config,
+        NODES,
+        var_root=tmp_path,
+        duration_s=2.0,
+        interval_s=1.0,
+        sleep=clock.sleep,
+        clock=clock.monotonic,
+        now=clock.now,
+        report=io.StringIO(),
+    )
+
+    assert outcome.sample_count == 3
+    assert [event.finding for event in outcome.events] == ["thermal", "unresponsive"]
+    unresponsive = next(event for event in outcome.events if event.finding == "unresponsive")
+    assert unresponsive.at_utc == STARTED_WALL + timedelta(seconds=2)
