@@ -1,0 +1,15 @@
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "awk '/^## ボーイスカウトルール/{f=1} f&&/^## /&&!/ボーイスカウトルール/{f=0} f' \"$CLAUDE_PROJECT_DIR/CLAUDE.md\" 2>/dev/null || true",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}
