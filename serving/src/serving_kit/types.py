@@ -115,6 +115,10 @@ ThermalFinding = Literal["thermal"]
 推論サーバー側の判定で記録の回収を伴うが、`thermal` は熱の判定で、推論サーバーは壊れて
 いないため記録の回収を伴わない。"""
 
+CpuCluster = Literal["x925", "a725"]
+"""GB10 の 2 種類の CPU コア群 (X925 は周波数の上限を掛ける対象、A725 は上限を掛けない対象。
+issue #10、docs/results/2026-09-23-thermal-source.md)。"""
+
 ThinkingVariant = Literal[
     "none",
     "output_config_low",
@@ -759,6 +763,9 @@ class WatchSample(_Frozen):
     thermal_zones_c: dict[NodeRole, dict[int, float | None]] = Field(default_factory=dict)
     hwmon_temps_c: dict[NodeRole, dict[str, float | None]] = Field(default_factory=dict)
     cpu_utilization_pct: dict[NodeRole, dict[int, float]] = Field(default_factory=dict)
+    cpu_scaling_max_freq_khz: dict[NodeRole, dict[int, int | None]] = Field(default_factory=dict)
+    """見張りの開始時に発見した cpufreq のコアごとの周波数の上限 (kHz。issue #10)。行数が
+    発見した数と合わない回や、値を整数に変えられない行は空になる。"""
 
 
 class WatchEvent(_Frozen):
@@ -794,11 +801,16 @@ class WatchOutcome(_Frozen):
     thermal_zones_found: dict[NodeRole, tuple[int, ...]] = Field(default_factory=dict)
     hwmon_chip_names: dict[NodeRole, dict[str, str]] = Field(default_factory=dict)
     hwmon_sensors_found: dict[NodeRole, dict[str, str | None]] = Field(default_factory=dict)
+    cpufreq_cores_found: dict[NodeRole, tuple[int, ...]] = Field(default_factory=dict)
+    """見張りの開始時に発見した cpufreq のコア番号 (台ごと。issue #10、決めごとの 8 と同じ形)。"""
     gpu_temperature_max_c: dict[NodeRole, int | None] = Field(default_factory=dict)
     gpu_sm_clock_range_mhz: dict[NodeRole, tuple[int, int] | None] = Field(default_factory=dict)
     gpu_power_max_w: dict[NodeRole, float | None] = Field(default_factory=dict)
     thermal_zone_max_c: dict[NodeRole, dict[int, float]] = Field(default_factory=dict)
     hwmon_temp_max_c: dict[NodeRole, dict[str, float]] = Field(default_factory=dict)
+    cpu_cluster_max_freq_khz: dict[NodeRole, dict[CpuCluster, int]] = Field(default_factory=dict)
+    """台ごとの X925/A725 の周波数の上限の最大値 (kHz。読めた値だけの全観察を通した最大。
+    1 度も読めなかった群はキーを持たない。issue #10)。"""
     thermal_over_threshold_samples: NonNegativeInt = 0
     thermal_over_threshold_span: tuple[datetime, datetime] | None = None
 

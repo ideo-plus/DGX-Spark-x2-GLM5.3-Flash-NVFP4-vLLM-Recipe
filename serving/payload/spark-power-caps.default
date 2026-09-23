@@ -1,0 +1,17 @@
+# /etc/default/spark-power-caps の写し元 (systemd の EnvironmentFile の書式: KEY=VALUE、# はコメント)。
+# issue #10: 再起動すると既定に戻る GPU クロックの上限と X925 の周波数の上限を、起動のたびに入れ直すための値。
+
+# GPU クロックの範囲 (nvidia-smi -lgc <最小>,<最大>)。
+# 根拠: docs/results/2026-09-23-decode-gpu-clock-cap.md (上限 1800 を採用。90℃ まで約 10℃ の余裕、電力ピークは既定より約 37W 低い)
+SPARK_GPU_CLOCK_RANGE_MHZ=300,1800
+
+# X925 のコア (cpupower -c の書式)。
+# 根拠: docs/results/2026-09-23-thermal-source.md (#11 段階 2。X925 = CPU 5-9,15-19)
+SPARK_X925_CPUS=5-9,15-19
+
+# X925 の周波数の上限 (整数 MHz。単位は付けない)。
+# 根拠: 同上 (3.9 GHz から 3.0 GHz に下げ、熱区域 0 の最高が head で 86.9℃→70.8℃、worker で 79.7℃→71.7℃ に下がった)
+SPARK_X925_MAX_MHZ=3000
+
+# 戻すときの値は、ここには持たない。reset は GPU を nvidia-smi -rgc で、X925 を各コアの
+# cpuinfo_max_freq (実測 3.9 GHz) で既定に戻す。値を変数として二重に持つと、実測値とのズレが起きうるため。

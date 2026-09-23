@@ -1,0 +1,234 @@
+#!/bin/sh
+# spark-power-caps-apply: GPU クロックの上限と X925 の周波数の上限を、適用 (apply) また
+# は解除 (reset) する (issue #10)。root 所有で /usr/local/sbin/ に置く POSIX sh のスク
+# リプト。systemd の spark-power-caps.service (ExecStart/ExecStop) から呼ばれる。
+#
+# 差し替え口 (試験が、sysfs と nvidia-smi/cpupower の読み取り先を、コマンドライン引数で
+# 差し替える。unit はこれらの引数を渡さないので、本番では常に既定の絶対パスを使う。
+# EnvironmentFile 経由の値では差し替えられない: EnvironmentFile は利用者が書ける値の
+# 置き場所であり、root が実行するプログラムと読む sysfs をそこから変えられると、値の
+# 検査が防御にならない):
+#   --sysfs <道筋>       既定 /sys/devices/system/cpu
+#   --nvidia-smi <道筋>  既定 /usr/bin/nvidia-smi
+#   --cpupower <道筋>    既定 /usr/bin/cpupower
+#
+# apply が読む値 (/etc/default/spark-power-caps 由来。EnvironmentFile で渡す。要求が
+# 定める方式なので、この 3 つだけは引き続き環境変数で読む):
+#   SPARK_GPU_CLOCK_RANGE_MHZ  例: 300,1800 (nvidia-smi -lgc <最小>,<最大>)
+#   SPARK_X925_CPUS            例: 5-9,15-19 (cpupower -c の書式)
+#   SPARK_X925_MAX_MHZ         例: 3000 (整数の MHz。単位は付けない)
+#
+# apply は、反映の前にすべての値を検査し、1 つでも外れたら、nvidia-smi -lgc も cpupower
+# も呼ばずに、理由を標準エラーに出して 1 で終わる。reset は、値の環境変数を読まず、GPU を
+# nvidia-smi -rgc で、X925 (sysfs の cpuinfo_max_freq が最大の群) を、そのコアの
+# cpuinfo_max_freq で既定に戻す。
+
+set -eu
+
+# 補助コマンド (cat/head/tr/sort) は、継承した PATH からではなく、この固定した PATH から
+# 探す。EnvironmentFile で PATH を書き換えても、探す場所は変わらない。
+PATH=/usr/sbin:/usr/bin:/sbin:/bin
+export PATH
+
+SYSFS=/sys/devices/system/cpu
+NVIDIA_SMI=/usr/bin/nvidia-smi
+CPUPOWER=/usr/bin/cpupower
+
+fail() {
+    printf '%s\n' "spark-power-caps-apply: $1" >&2
+    exit 1
+}
+
+usage() {
+    printf '%s\n' "usage: spark-power-caps-apply [--sysfs <道筋>] [--nvidia-smi <道筋>] [--cpupower <道筋>] (apply|reset)" >&2
+    exit 2
+}
+
+# 差し替え口の引数を、モード (apply|reset) より前で受ける。値のない引数や未知の引数は使い方
+# を出して 2 で終える。
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --sysfs)
+            [ "$#" -ge 2 ] || usage
+            SYSFS=$2
+            shift 2
+            ;;
+        --nvidia-smi)
+            [ "$#" -ge 2 ] || usage
+            NVIDIA_SMI=$2
+            shift 2
+            ;;
+        --cpupower)
+            [ "$#" -ge 2 ] || usage
+            CPUPOWER=$2
+            shift 2
+            ;;
+        --)
+            shift
+            break
+            ;;
+        -*)
+            usage
+            ;;
+        *)
+            break
+            ;;
+    esac
+done
+
+# sysfs から、cpuinfo_max_freq が最大のコアの群 (X925) と、その最大値 (kHz) を決める。
+# 呼び出し元で参照するグローバル変数 x925_cores (昇順、空白区切り) と top_khz を設定する
+# (POSIX sh には local がないため、この関数の外でも参照できる)。
+find_x925() {
+    x925_cores=""
+    top_khz=0
+    for dir in "$SYSFS"/cpu[0-9]*; do
+        [ -d "$dir/cpufreq" ] || continue
+        core=${dir##*/cpu}
+        max_khz=$(cat "$dir/cpufreq/cpuinfo_max_freq")
+        case "$max_khz" in
+            '' | *[!0-9]*) fail "$dir/cpufreq/cpuinfo_max_freq が整数でない: $max_khz" ;;
+        esac
+        if [ "$max_khz" -gt "$top_khz" ]; then
+            top_khz=$max_khz
+            x925_cores=$core
+        elif [ "$max_khz" -eq "$top_khz" ]; then
+            x925_cores="$x925_cores $core"
+        fi
+    done
+    [ -n "$x925_cores" ] || fail "cpuinfo_max_freq を 1 つも読めなかった ($SYSFS)"
+    # コア番号の順 (glob の展開順はアルファベット順で、桁数の違いで前後しうる) を数値順に直す
+    x925_cores=$(printf '%s\n' $x925_cores | sort -n | tr '\n' ' ')
+    x925_cores=${x925_cores% }
+}
+
+do_reset() {
+    "$NVIDIA_SMI" -rgc
+    find_x925
+    cores=$(printf '%s' "$x925_cores" | tr ' ' ',')
+    "$CPUPOWER" -c "$cores" frequency-set -u "${top_khz}kHz"
+}
+
+do_apply() {
+    range=${SPARK_GPU_CLOCK_RANGE_MHZ:-}
+    cpus=${SPARK_X925_CPUS:-}
+    mhz=${SPARK_X925_MAX_MHZ:-}
+    [ -n "$range" ] || fail "SPARK_GPU_CLOCK_RANGE_MHZ が設定されていない"
+    [ -n "$cpus" ] || fail "SPARK_X925_CPUS が設定されていない"
+    [ -n "$mhz" ] || fail "SPARK_X925_MAX_MHZ が設定されていない"
+
+    # 1. GPU の範囲: <最小>,<最大> の整数で、最小 <= 最大
+    # カンマが 1 つも無い値 (例: "1800") は、下の文字クラスの検査だけでは弾けない
+    # (${range%,*}/${range#*,} がどちらも元の文字列のままになり、単一値がそのまま
+    # nvidia-smi -lgc に渡ってしまう。-lgc は単一値だとクロックの固定という別の意味になる)。
+    case "$range" in
+        *,*) : ;;
+        *) fail "SPARK_GPU_CLOCK_RANGE_MHZ の書式が不正 (<最小>,<最大> の整数にする、カンマが要る): $range" ;;
+    esac
+    case "$range" in
+        *[!0-9,]* | ,* | *, | *,*,*)
+            fail "SPARK_GPU_CLOCK_RANGE_MHZ の書式が不正 (<最小>,<最大> の整数にする): $range"
+            ;;
+    esac
+    gpu_min=${range%,*}
+    gpu_max=${range#*,}
+    [ "$gpu_min" -le "$gpu_max" ] || fail "SPARK_GPU_CLOCK_RANGE_MHZ の最小が最大を超えている: $range"
+
+    # 2. GPU の最大は、nvidia-smi が答える SM の最大以下
+    sm_max=$("$NVIDIA_SMI" --query-gpu=clocks.max.sm --format=csv,noheader,nounits | head -n 1 | tr -d '[:space:]')
+    case "$sm_max" in
+        '' | *[!0-9]*) fail "nvidia-smi の SM の最大を整数として読めない: $sm_max" ;;
+    esac
+    [ "$gpu_max" -le "$sm_max" ] || fail "SPARK_GPU_CLOCK_RANGE_MHZ の最大が SM の最大 ($sm_max) を超えている: $range"
+
+    # 3. X925 (cpuinfo_max_freq が最大の群) のコアの一覧を決める
+    find_x925
+
+    # 4. CPU の集合を展開し、書式 (cpupower -c の書式) と、X925 に含まれるかを検査する
+    # GPU の範囲 (1) と同じく、分ける前に文字クラス全体を検査する。次の `set -- $cpus` は
+    # 引用符なしの展開なので、単語分割だけでなくパス名展開 (グロブ) も働く。`*`・`?`・
+    # `[...]` を許したまま分けると、カレントディレクトリ (systemd の既定では
+    # WorkingDirectory 未指定時は /) の中身が、意図せず要素として混ざりうる。断る・断らない
+    # が値だけでなく実行時の環境にも依存してしまうため、分ける前に断つ。
+    case "$cpus" in
+        *[!0-9,-]*)
+            fail "SPARK_X925_CPUS の書式が不正 (数字とカンマとハイフンだけにする): $cpus"
+            ;;
+    esac
+    # 先頭・途中・末尾の空の要素 (例: ",5-9"、"5-9,,15-19"、"5-9,15-19,"、",") は、分けた
+    # あとの要素ごとの検査だけでは見つけられない (IFS=, の分割で、途中の空の要素は "" に
+    # なって検査を素通りし、末尾のカンマは要素そのものを作らない)。分ける前に、文字列のまま
+    # 検査する。
+    case "$cpus" in
+        ,* | *, | *,,*)
+            fail "SPARK_X925_CPUS の書式が不正 (空の要素を含む。cpupower -c の書式にする): $cpus"
+            ;;
+    esac
+    old_ifs=$IFS
+    IFS=,
+    set -- $cpus
+    IFS=$old_ifs
+    cores=""
+    for item in "$@"; do
+        case "$item" in
+            *-*)
+                lo=${item%-*}
+                hi=${item#*-}
+                case "$lo" in
+                    '' | *[!0-9]*) fail "SPARK_X925_CPUS の書式が不正: $item" ;;
+                esac
+                case "$hi" in
+                    '' | *[!0-9]*) fail "SPARK_X925_CPUS の書式が不正: $item" ;;
+                esac
+                [ "$lo" -le "$hi" ] || fail "SPARK_X925_CPUS の範囲が逆: $item"
+                n=$lo
+                while [ "$n" -le "$hi" ]; do
+                    cores="$cores $n"
+                    n=$((n + 1))
+                done
+                ;;
+            *)
+                cores="$cores $item"
+                ;;
+        esac
+    done
+    [ -n "$cores" ] || fail "SPARK_X925_CPUS の展開後のコアが 0 個: $cpus"
+    for core in $cores; do
+        case " $x925_cores " in
+            *" $core "*) : ;;
+            *) fail "SPARK_X925_CPUS に X925 以外のコアが含まれる: $core" ;;
+        esac
+    done
+
+    # 5. CPU の上限: 整数 MHz で、そのコアの cpuinfo_min_freq 以上、cpuinfo_max_freq 以下
+    case "$mhz" in
+        '' | *[!0-9]*) fail "SPARK_X925_MAX_MHZ が整数の MHz でない (単位は付けない): $mhz" ;;
+    esac
+    # 先頭が 0 の値 (例: 04000) は、次の算術展開 ($((...))) で 8 進数として解釈され、検査した
+    # 値 (2048 相当) と、cpupower にそのまま渡る元の文字列 ("04000MHz") がずれる。7 桁以上は
+    # 算術展開で桁があふれうる。どちらも、検査した値と反映する値の一致を保てないので断る。
+    case "$mhz" in
+        0?*) fail "SPARK_X925_MAX_MHZ の先頭に 0 を付けない (8 進数と解釈される): $mhz" ;;
+    esac
+    case "$mhz" in
+        ???????*) fail "SPARK_X925_MAX_MHZ の桁数が大きすぎる: $mhz" ;;
+    esac
+    cap_khz=$((mhz * 1000))
+    for core in $cores; do
+        min_khz=$(cat "$SYSFS/cpu$core/cpufreq/cpuinfo_min_freq")
+        max_khz=$(cat "$SYSFS/cpu$core/cpufreq/cpuinfo_max_freq")
+        [ "$cap_khz" -ge "$min_khz" ] || fail "SPARK_X925_MAX_MHZ が cpu$core の下限 (${min_khz} kHz 相当) を下回る: $mhz"
+        [ "$cap_khz" -le "$max_khz" ] || fail "SPARK_X925_MAX_MHZ が cpu$core の上限 (${max_khz} kHz 相当) を超える: $mhz"
+    done
+
+    # 6. すべての検査を通ったので反映する (GPU の上限が先、CPU の上限があと)
+    "$NVIDIA_SMI" -lgc "$range"
+    "$CPUPOWER" -c "$cpus" frequency-set -u "${mhz}MHz"
+}
+
+[ "$#" -eq 1 ] || usage
+case "$1" in
+    apply) do_apply ;;
+    reset) do_reset ;;
+    *) usage ;;
+esac

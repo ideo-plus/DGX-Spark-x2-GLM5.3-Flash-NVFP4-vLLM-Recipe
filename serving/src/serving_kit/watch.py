@@ -20,6 +20,10 @@ head の `/health` (時間切れ `health_timeout_s`。既定 10 秒)、`/metrics
    の値を、センサーの識別子つきで読む
 4. **CPU**: `/proc/stat` の `cpu<N>` 行から、コアごとの使用率を、直前に読めた観察との差で
    計算する (初回は空)
+5. **cpufreq のコアの周波数の上限**: 見張りの開始時に発見した全コア
+   (`/sys/devices/system/cpu/cpu<N>/cpufreq/scaling_max_freq`) の値を、コア番号つきで
+   kHz の整数で読む (issue #10: GPU クロックの上限とあわせて、計測中の CPU の上限を記録から
+   確かめるため)
 
 1 つの `types.WatchSample` にして、1 行の JSON で `samples_path`
 (`serving/var/<UTC>-watch-<構成>/samples.jsonl`。置き場所は `logs.var_dir` の決まりで作る)
@@ -128,16 +132,17 @@ head の `/health` (時間切れ `health_timeout_s`。既定 10 秒)、`/metrics
    (`DEFAULT_GPU_TIMEOUT_S` を既定の間隔より短くしたのは既定値どうしの選び方の理由であって、
    呼ぶ側が短い `interval_s` を選ぶこと自体は誤りではない。試験が、間隔を縮めて確かめるのに
    使うため、ここを断ると、値を決めた組み合わせでしか呼べなくなる)
-8. **熱区域と hwmon の発見は、見張りの開始時に 1 回だけ** (`start_mono` を取る前。中断が発見
-   の最中に来ても、そこまでの要約が書かれる)。熱区域と hwmon 自体の番号は 0 から (上限 32、
-   `_THERMAL_ZONE_LIMIT`、`_HWMON_LIMIT`)、hwmon の温度センサーの番号は 1 から (上限 32、
-   `_HWMON_TEMP_LIMIT`) 順に試す。見つけた一覧は、見張りの
+8. **熱区域・hwmon・cpufreq のコアの発見は、見張りの開始時に 1 回だけ** (`start_mono` を
+   取る前。中断が発見の最中に来ても、そこまでの要約が書かれる)。熱区域・hwmon・cpufreq の
+   コア自体の番号は 0 から (上限 32、`_THERMAL_ZONE_LIMIT`、`_HWMON_LIMIT`、
+   `_CPU_CORE_LIMIT`)、hwmon の温度センサーの番号は 1 から (上限 32、`_HWMON_TEMP_LIMIT`)
+   順に試す。見つけた一覧は、見張りの
    あいだ使い、`result.json` に記録する (観察のたびには繰り返さない)。発見の途中で台に届かな
    い (`RemoteError`) と、その台の発見を打ち切り、役割つきの文を `WatchOutcome.detail` に
    残す。`exit_code != 0` (存在しない) は、これまでどおり素通りする (`detail` に書かない)。
    見張りそのものは止めず、打ち切った台の観察も続ける (`_discover_node`)
-9. **熱区域・hwmon の読みは、1 回の `cat` に複数の道筋を並べる**。行数が、発見した数と合わ
-   なければ、その項目全体を空にする (区域どうしの対応が取れないため)
+9. **熱区域・hwmon・cpufreq のコアの読みは、1 回の `cat` に複数の道筋を並べる**。行数が、
+   発見した数と合わなければ、その項目全体を空にする (対応が取れないため)
 10. **CPU の使用率は、直前に読めた観察との差**。初回や、直前の観察が読めなかったときは空に
    する (読めない回を挟んだあとも、直前に読めた回との差として計算を続ける)
 11. **`thermal` の終了コードへの写しは、既存の表のとおり** (`events` に 1 件でもあれば 2)。
@@ -145,6 +150,10 @@ head の `/health` (時間切れ `health_timeout_s`。既定 10 秒)、`/metrics
    が決める)
 12. **`thermal` の型は `types.ThermalFinding`**。`types.WatchFinding` は変えない (`unresponsive`
    /`stalled` は記録の回収を伴うが、`thermal` は伴わないという意味の違いを、型でも分ける)
+13. **`result.json` の `cpu_cluster_max_freq_khz` は、台ごとの X925/A725 の上限の最大値**
+   (全観察を通した、読めた値だけの最大。`watch.X925_CORES` が GB10 の X925 のコア番号を
+   固定で持ち、残りを A725 として扱う。issue #10: GPU の上限は既存の `gpu_sm_clock_range_mhz`
+   で確かめられるので、CPU 側の上限をこの欄で確かめられるようにする)
 
 ## 終了コードへの写し方 (5.1 が、この表のとおりに写す。design.md 「Error Handling」に合わせる)
 
@@ -184,6 +193,7 @@ from serving_kit.remote import RemoteError, RemoteRunner
 from serving_kit.types import (
     ConfigDef,
     ContainerPlan,
+    CpuCluster,
     NodeDef,
     NodeRole,
     ThermalFinding,
@@ -195,6 +205,7 @@ from serving_kit.types import (
 
 __all__ = [
     "COMMAND_NAME",
+    "CPU_DIR",
     "DEFAULT_DURATION_S",
     "DEFAULT_GPU_TIMEOUT_S",
     "DEFAULT_HEALTH_TIMEOUT_S",
@@ -209,6 +220,7 @@ __all__ = [
     "RESULT_FILE_NAME",
     "SAMPLES_FILE_NAME",
     "THERMAL_ZONE_DIR",
+    "X925_CORES",
     "watch",
 ]
 
@@ -266,10 +278,16 @@ HWMON_DIR: Final[str] = "/sys/class/hwmon/"
 PROC_STAT_PATH: Final[str] = "/proc/stat"
 """CPU の使用率の読み取り先 (`remote._CAT_EXACT_PATHS` が完全一致で許す場所)。"""
 
+CPU_DIR: Final[str] = "/sys/devices/system/cpu/"
+"""cpufreq のコアごとの周波数の上限の読み取り先の根 (`remote._CAT_EXACT_PATTERNS` が
+正規表現の完全一致で許す場所。issue #10: GPU クロックの上限とあわせて、計測中の CPU の
+上限を記録から確かめるため)。"""
+
 _THERMAL_ZONE_LIMIT: Final[int] = 32
 _HWMON_LIMIT: Final[int] = 32
-"""発見が試す、熱区域と hwmon 自体の番号の上限 (決めごとの 8。0 から、この数の手前まで
-(0〜31) 試す)。"""
+_CPU_CORE_LIMIT: Final[int] = 32
+"""発見が試す、熱区域・hwmon・CPU コア自体の番号の上限 (決めごとの 8。0 から、この数の手前
+まで (0〜31) 試す。GB10 の実コア数は 20 だが、余裕を持たせた上限にする)。"""
 
 _HWMON_TEMP_LIMIT: Final[int] = 32
 """発見が試す、hwmon の温度センサーの番号の上限 (決めごとの 8。1 から、この数まで
@@ -277,6 +295,10 @@ _HWMON_TEMP_LIMIT: Final[int] = 32
 
 _HWMON_CHIP_NAMES: Final[frozenset[str]] = frozenset({"mlx5", "nvme", "acpitz"})
 """採用する hwmon の `name` (ConnectX-7、NVMe、ACPI 熱区域相当の hwmon)。"""
+
+X925_CORES: Final[frozenset[int]] = frozenset({5, 6, 7, 8, 9, 15, 16, 17, 18, 19})
+"""X925 の高性能コアの番号 (GB10 固有の既知の事実。issue #10、
+docs/results/2026-09-23-thermal-source.md)。残りのコアは A725 として扱う。"""
 
 _KIND_SERVE: Final[str] = "serve"
 """この module が受ける構成の種類 (決めごとの 1)。"""
@@ -554,35 +576,64 @@ def _discover_hwmon(
     return chip_names, sensors
 
 
+def _scaling_max_freq_path(core: int) -> str:
+    """CPU コア 1 つの、周波数の上限の読み取り先 (`remote._CAT_EXACT_PATTERNS` が正規表現の
+    完全一致で許す場所。issue #10)。"""
+    return f"{CPU_DIR}cpu{core}/cpufreq/scaling_max_freq"
+
+
+def _discover_cpufreq_cores(
+    runner: RemoteRunner, node: NodeDef, *, timeout_s: float
+) -> tuple[int, ...]:
+    """cpufreq のコア番号を、0 から `_CPU_CORE_LIMIT` の手前まで、1 つずつ試して見つける
+    (決めごとの 8 と同じ形。存在は `cat` の exit 0 で判定する。見張りの開始時に 1 回だけ呼ぶ)。
+
+    台に届かない (`RemoteError`) ときは、それまでに見つけたコアを返さずに上へ伝える
+    (呼び出し元の `_discover_node` が、打ち切りとして扱う)。
+    """
+    found: list[int] = []
+    for core in range(_CPU_CORE_LIMIT):
+        path = _scaling_max_freq_path(core)
+        if _cat_if_present(runner, node, (path,), timeout_s=timeout_s) is not None:
+            found.append(core)
+    return tuple(found)
+
+
 def _discover_node(
     runner: RemoteRunner, role: NodeRole, node: NodeDef, *, timeout_s: float
-) -> tuple[tuple[int, ...], dict[str, str], dict[str, str | None], str | None]:
-    """1 台ぶんの熱区域と hwmon の発見。台に届かなければ (`RemoteError`)、その台の発見を
-    打ち切る。打ち切ったときは、完了していた種類の一覧はそのまま残し、途中だった種類と、
-    まだ始めていない種類は空にする (`熱区域` → `hwmon` の順で試すため)。
+) -> tuple[tuple[int, ...], dict[str, str], dict[str, str | None], tuple[int, ...], str | None]:
+    """1 台ぶんの熱区域・hwmon・cpufreq のコアの発見。台に届かなければ (`RemoteError`)、
+    その台の発見を打ち切る。打ち切ったときは、完了していた種類の一覧はそのまま残し、途中
+    だった種類と、まだ始めていない種類は空にする (`熱区域` → `hwmon` → `cpufreq` の順で試すため)。
 
     返り値の最後の要素は、打ち切ったことを役割つきで示す文 (完了していれば `None`)。
     """
     zones: tuple[int, ...] = ()
     chip_names: dict[str, str] = {}
     sensors: dict[str, str | None] = {}
+    cpufreq_cores: tuple[int, ...] = ()
     try:
         zones = _discover_thermal_zones(runner, node, timeout_s=timeout_s)
         chip_names, sensors = _discover_hwmon(runner, node, timeout_s=timeout_s)
+        cpufreq_cores = _discover_cpufreq_cores(runner, node, timeout_s=timeout_s)
     except RemoteError as exc:
-        note = f"{role}: 熱区域・hwmon の発見が完了しなかった (この台の一覧は完全ではない): {exc}"
-        return zones, chip_names, sensors, note
-    return zones, chip_names, sensors, None
+        note = (
+            f"{role}: 熱区域・hwmon・cpufreq の発見が完了しなかった"
+            f" (この台の一覧は完全ではない): {exc}"
+        )
+        return zones, chip_names, sensors, cpufreq_cores, note
+    return zones, chip_names, sensors, cpufreq_cores, None
 
 
-def _read_milli_celsius[K: (int, str)](
+def _read_int_by_key[K: (int, str)](
     runner: RemoteRunner, node: NodeDef, paths: Mapping[K, str], *, timeout_s: float
-) -> dict[K, float | None]:
-    """発見した区域・センサーの値を、1 回の `cat` にまとめて読む (決めごとの 9)。熱区域と
-    hwmon で、読みの規則は同じ (この関数 1 つに集める)。`paths` は、区域番号または hwmon
-    センサーの識別子から、読み取り先の道筋への対応 (空なら `cat` を流さず空を返す)。読めな
-    かった回や、行数がキーの数と合わない回は、全キーを空にする (キーどうしの対応が取れない
-    ため)。各行は m℃ の整数を℃に変える (`/1000`)。変換できない行は、そのキーだけ空。
+) -> dict[K, int | None]:
+    """発見した区域・センサー・コアの値を、1 回の `cat` にまとめて整数として読む
+    (決めごとの 9)。熱区域・hwmon・cpufreq で、読みの規則は同じ (この関数 1 つに集める)。
+    `paths` は、キー (区域番号、hwmon センサーの識別子、CPU コア番号のいずれか) から、
+    読み取り先の道筋への対応 (空なら `cat` を流さず空を返す)。読めなかった回や、行数が
+    キーの数と合わない回は、全キーを空にする (キーどうしの対応が取れないため)。変換できない
+    行は、そのキーだけ空。
     """
     if not paths:
         return {}
@@ -593,11 +644,20 @@ def _read_milli_celsius[K: (int, str)](
     lines = [line for line in text.splitlines() if line.strip()]
     if len(lines) != len(keys):
         return dict.fromkeys(keys, None)
-    result: dict[K, float | None] = {}
+    result: dict[K, int | None] = {}
     for key, line in zip(keys, lines, strict=True):
-        milli = _to_int(line.strip())
-        result[key] = None if milli is None else milli / 1000.0
+        result[key] = _to_int(line.strip())
     return result
+
+
+def _read_milli_celsius[K: (int, str)](
+    runner: RemoteRunner, node: NodeDef, paths: Mapping[K, str], *, timeout_s: float
+) -> dict[K, float | None]:
+    """発見した区域・センサーの値を読み、m℃ の整数を℃に変える (`/1000`)。読みの規則
+    そのものは `_read_int_by_key` に集めている (熱区域・hwmon・cpufreq で共通)。
+    """
+    raw = _read_int_by_key(runner, node, paths, timeout_s=timeout_s)
+    return {key: (None if milli is None else milli / 1000.0) for key, milli in raw.items()}
 
 
 def _read_thermal_zones(
@@ -616,6 +676,34 @@ def _read_hwmon_temps(
     渡すだけ)。"""
     paths = {sensor_id: f"{HWMON_DIR}{sensor_id}_input" for sensor_id in sensors}
     return _read_milli_celsius(runner, node, paths, timeout_s=timeout_s)
+
+
+def _read_scaling_max_freq(
+    runner: RemoteRunner, node: NodeDef, cores: Sequence[int], *, timeout_s: float
+) -> dict[int, int | None]:
+    """発見した cpufreq のコアの周波数の上限を読む (`_read_int_by_key` に、コア番号から
+    道筋への対応を渡すだけ。issue #10)。"""
+    paths = {core: _scaling_max_freq_path(core) for core in cores}
+    return _read_int_by_key(runner, node, paths, timeout_s=timeout_s)
+
+
+def _cluster_of(core: int) -> CpuCluster:
+    """CPU コア番号から、X925/A725 のどちらの群に属するかを返す (GB10 固有。issue #10)。"""
+    return "x925" if core in X925_CORES else "a725"
+
+
+def _cluster_max_khz(samples: Sequence[WatchSample], role: NodeRole) -> dict[CpuCluster, int]:
+    """台ごとの X925/A725 の周波数の上限の最大値 (全観察を通した、読めた値だけの最大。
+    1 度も読めなかった群はキーを持たない。issue #10)。"""
+    result: dict[CpuCluster, int] = {}
+    for sample in samples:
+        for core, khz in sample.cpu_scaling_max_freq_khz.get(role, {}).items():
+            if khz is None:
+                continue
+            cluster = _cluster_of(core)
+            if cluster not in result or khz > result[cluster]:
+                result[cluster] = khz
+    return result
 
 
 # --- /proc/stat の読み取り (CPU) ---------------------------------------------
@@ -683,13 +771,16 @@ def _observe_once(
     now: Callable[[], datetime],
     zones: Mapping[NodeRole, tuple[int, ...]],
     sensors: Mapping[NodeRole, tuple[str, ...]],
+    cpufreq_cores: Mapping[NodeRole, tuple[int, ...]],
     previous_cpu: Mapping[NodeRole, _CpuCounters | None],
 ) -> tuple[WatchSample, dict[NodeRole, _CpuCounters | None]]:
-    """1 回ぶんの観察 (design.md 「watch」の「1 回の観察」に、熱区域・hwmon・CPU を加えた形)。
+    """1 回ぶんの観察 (design.md 「watch」の「1 回の観察」に、熱区域・hwmon・CPU・cpufreq
+    のコアの周波数の上限を加えた形)。
 
-    台ごとに `nvidia-smi` → 熱区域 → hwmon → `/proc/stat` の順で読む。1 つが読めなくても、
-    他は続ける。返り値の 2 つ目は、台ごとに、この回に読めた `/proc/stat` の生カウンタ
-    (読めなければ `None`)。呼び出し側は、読めた台だけ次回の `previous_cpu` を更新する。
+    台ごとに `nvidia-smi` → 熱区域 → hwmon → `/proc/stat` → cpufreq のコアの順で読む。
+    1 つが読めなくても、他は続ける。返り値の 2 つ目は、台ごとに、この回に読めた
+    `/proc/stat` の生カウンタ (読めなければ `None`)。呼び出し側は、読めた台だけ次回の
+    `previous_cpu` を更新する。
     """
     taken_at = now()
     health_ok = _check_health(client, base_url)
@@ -702,6 +793,7 @@ def _observe_once(
     thermal_zones_c: dict[NodeRole, dict[int, float | None]] = {}
     hwmon_temps_c: dict[NodeRole, dict[str, float | None]] = {}
     cpu_utilization_pct: dict[NodeRole, dict[int, float]] = {}
+    cpu_scaling_max_freq_khz: dict[NodeRole, dict[int, int | None]] = {}
     current_cpu: dict[NodeRole, _CpuCounters | None] = {}
 
     for role in config.nodes:
@@ -727,6 +819,10 @@ def _observe_once(
             {} if counters is None else _cpu_utilization(previous_cpu.get(role), counters)
         )
 
+        cpu_scaling_max_freq_khz[role] = _read_scaling_max_freq(
+            runner, node, cpufreq_cores.get(role, ()), timeout_s=gpu_timeout_s
+        )
+
     sample = WatchSample(
         taken_at_utc=taken_at,
         health_ok=health_ok,
@@ -740,6 +836,7 @@ def _observe_once(
         thermal_zones_c=thermal_zones_c,
         hwmon_temps_c=hwmon_temps_c,
         cpu_utilization_pct=cpu_utilization_pct,
+        cpu_scaling_max_freq_khz=cpu_scaling_max_freq_khz,
     )
     return sample, current_cpu
 
@@ -1036,6 +1133,7 @@ def watch(
     zones: dict[NodeRole, tuple[int, ...]] = {}
     chip_names: dict[NodeRole, dict[str, str]] = {}
     sensors_found: dict[NodeRole, dict[str, str | None]] = {}
+    cpufreq_found: dict[NodeRole, tuple[int, ...]] = {}
     previous_cpu: dict[NodeRole, _CpuCounters | None] = dict.fromkeys(config.nodes, None)
     thermal_over_threshold_samples = 0
     thermal_first_at: datetime | None = None
@@ -1050,6 +1148,7 @@ def watch(
         gpu_power_max_w: dict[NodeRole, float | None] = {}
         thermal_zone_max_c: dict[NodeRole, dict[int, float]] = {}
         hwmon_temp_max_c: dict[NodeRole, dict[str, float]] = {}
+        cpu_cluster_max_freq_khz: dict[NodeRole, dict[CpuCluster, int]] = {}
         for role in config.nodes:
             gpu_temperature_max_c[role] = _max_present(
                 s.gpu_temperature_c.get(role) for s in samples
@@ -1064,6 +1163,10 @@ def watch(
             hwmon_max = _max_by_key(s.hwmon_temps_c.get(role, {}) for s in samples)
             if hwmon_max:
                 hwmon_temp_max_c[role] = hwmon_max
+
+            cluster_max = _cluster_max_khz(samples, role)
+            if cluster_max:
+                cpu_cluster_max_freq_khz[role] = cluster_max
 
         thermal_span: tuple[datetime, datetime] | None = None
         if thermal_first_at is not None and thermal_last_at is not None:
@@ -1082,11 +1185,13 @@ def watch(
             thermal_zones_found=dict(zones),
             hwmon_chip_names=dict(chip_names),
             hwmon_sensors_found=dict(sensors_found),
+            cpufreq_cores_found=dict(cpufreq_found),
             gpu_temperature_max_c=gpu_temperature_max_c,
             gpu_sm_clock_range_mhz=gpu_sm_clock_range_mhz,
             gpu_power_max_w=gpu_power_max_w,
             thermal_zone_max_c=thermal_zone_max_c,
             hwmon_temp_max_c=hwmon_temp_max_c,
+            cpu_cluster_max_freq_khz=cpu_cluster_max_freq_khz,
             thermal_over_threshold_samples=thermal_over_threshold_samples,
             thermal_over_threshold_span=thermal_span,
         )
@@ -1096,12 +1201,17 @@ def watch(
         # 取る前に行うので、発見の所要は最初の間隔に食い込まず、発見の最中の中断でも、
         # そこまでの要約 (発見は空のまま) が書かれる。
         for role in config.nodes:
-            found_zones, found_chip_names, found_sensors, discovery_note = _discover_node(
-                runner, role, nodes[role], timeout_s=gpu_timeout_s
-            )
+            (
+                found_zones,
+                found_chip_names,
+                found_sensors,
+                found_cpufreq_cores,
+                discovery_note,
+            ) = _discover_node(runner, role, nodes[role], timeout_s=gpu_timeout_s)
             zones[role] = found_zones
             chip_names[role] = found_chip_names
             sensors_found[role] = found_sensors
+            cpufreq_found[role] = found_cpufreq_cores
             if discovery_note is not None:
                 notes.append(discovery_note)
 
@@ -1118,6 +1228,7 @@ def watch(
                 now=now_fn,
                 zones=zones,
                 sensors={role: tuple(sensors_found[role]) for role in config.nodes},
+                cpufreq_cores=cpufreq_found,
                 previous_cpu=previous_cpu,
             )
             samples.append(sample)
