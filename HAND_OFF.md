@@ -1,49 +1,53 @@
-# HAND_OFF — モデル・ハーネス更新前の引き継ぎ
+# HAND_OFF — GPU クロック上限と初回の decode・品質計測の後
 
-最終更新: 2026-09-23 JST。現在は **計測者によるモデル・ハーネス更新のための区切り**。
-更新対象・更新先の版はまだ指定されていない。次の担当は勝手に更新や実機計測を始めず、更新完了と再開の指示を確認する。
+最終更新: 2026-09-23 13:20 JST。モデル・ハーネス更新後に再開し、GPU クロック上限を決め、初回の decode 計測と quality 計測を完了した。
+推論サーバーは停止済み。次の実機操作は計測者の指示を待つ。
 
 ## 最初に読む要約
 
-- 自前イメージで実重み TP=2 の起動、両台の IB、日本語・英語の短い応答まで確認した。
-- 07:41:27 JST に停止を完了。その後の `serve status` でも両台の作業用コンテナは absent、GPU プロセスは 0 件だった。
-  これは最後の観測値であり、再開時には状態を読み直す。
-- SSE、生成速度、ツール呼び出し、品質、長文脈、長時間運転の計測は **未開始**。
-- 最低限の CI は導入済み。作業は [PR #7](https://github.com/ideo-plus/DGX-Spark-GLM5.3-Flash-Recipe/pull/7) までマージ済み。
-  この引き継ぎ追記の基点は `main` の `8dd7d928e9c9cde89701acf92d04b92d1b893fe8`。
-- TAKT の作業はすべて終了し、継続待ちの実行はない。過去の依頼をそのまま再実行する必要はない。
-- cc-sdd は導入しない。準備するコード・構成・試験・文書は Mac の TAKT、実機操作と結果の判断は対話側で担当する。
-- 短い応答の再確認には `serve smoke ... --max-tokens 512` を使う。既定 64 では日本語の本文が空だった。
-- 本セッションでは既存の TAKT モデル割り当てを変更していない。ユーザーが更新する「モデル・ハーネス」を、推論モデルの重みや Spark のイメージの更新と決めつけない。
+- 自前イメージで実重み TP=2 を起動し、IB 経路、日本語・英語の短い応答、SSE での decode 計測まで確認した。
+  結果は [GPU クロック上限と初回 decode 計測](docs/results/2026-09-23-decode-gpu-clock-cap.md)。
+- decode（同時実行 1、文脈長 4096、`quick`）は 4 条件とも約 13.9〜14.2 tok/s、失敗 0。
+- quality（`quick`）: toolcall 37/50（解釈は 50 件とも成功。不正解は下調べのツールを先に呼んだもの）。
+  code 26/40（不正解 14 件はすべて出力上限 1024 に達した打ち切り）。needle は文脈長 4096 のため未実施。
+- **両台に `nvidia-smi -lgc 300,1800` を手動で設定している。** 全力負荷で ACPI 熱区域 80℃・電力ピーク約 54 W に収まった。
+  既定クロックでは 92.6℃ まで上がった。再起動で消えるので、計測前に毎回確認する。
+  上限で decode は約 3.3% 下がった（参考値）。行列積は約 15% 下がる。
+- 両台の `/etc/sudoers.d/nvidia-clock` で、`nvidia-smi -lgc *` と `nvidia-smi -rgc` だけを NOPASSWD で許可した。
+  そのほかの sudo にはパスワードが要る。
+- GB10 の減速の理由（clocks_event_reasons）とカウンタは当てにならない。クロック・TFLOPS・温度の実測で判断する。
+- 13:11 JST の停止後、両台ともコンテナは absent、GPU プロセスは 0 件だった。再開時は状態を読み直す。
+- prefill、並列、長文脈、長時間運転は未確認。
+- TAKT の割り当てを変更し、Codex の利用上限（9/27 19:38 まで）のあいだは codex の割り当てを Claude に移している（下記「TAKT と CI」）。
+- 短い応答の確認には `serve smoke ... --max-tokens 512` を使う。既定の 64 では日本語の本文が空だった。
 
-## 更新後の再開手順
+## 再開手順
 
-1. 更新が終わったことを確認し、`AGENTS.md`、`CLAUDE.md` とこのファイルを読む。
-   `git status` で、この引き継ぎ追記を含む未コミット差分の有無を確認する。
-2. [実機の最新記録](docs/results/2026-09-23-patched-tp2.md) と
-   [初回計測の手順](docs/vllm-baseline/initial-benchmark-procedure.md) を読む。
-   手順や生成器の「実重みで未確認」という記述は作成時点のもの。現在の実測状態は最新記録を優先する。
-3. 下記の生成済み TOML があるか確認する。これは Git 対象外なので、別の checkout には自動で付いてこない。
-   なければ [生成手順](docs/vllm-baseline/patched-tp2-procedure.md) に従う。生成器は既存出力を上書きしない。
-4. 実機操作は対話側で行う。全関門を再検査し、同じ構成で起動して ready と **今回分**の IB を確認する。
-   `initial-benchmark-procedure.md` の smoke コマンドには `--max-tokens 512` を追加して実行する。
-5. 最初の計測は `--suite decode` を明示する。既定の速度 3 種や concurrency をまとめて実行しない。
-   計測後はログ回収・所有確認・停止まで行い、結果と未確認範囲を記録する。
+1. `AGENTS.md`、`CLAUDE.md`、このファイル、[最新の記録](docs/results/2026-09-23-decode-gpu-clock-cap.md) を読み、
+   `git status` で未コミットの差分を確認する。
+2. 両台の GPU クロック上限を読み取りで確かめる。`nvidia-smi -q -d CLOCK` や、負荷中の SM が 1800 付近かで見る。
+   再起動などで外れていれば `ssh <host> 'sudo -n nvidia-smi -lgc 300,1800'` で入れ直す。状態変更なので計測者の了承を取る。
+3. 生成済みの `serving/var/nope-build-0961bbae/tp2.toml`（Git 対象外）があるか確認する。
+4. 実機操作は対話側で行う。全関門を再検査して起動し、ready と**今回分**の IB を確認する。
+   PID が過去と同じで NCCL ログが上書きされることがあるので、開始時刻と初期化回数で帰属を確かめる。
+5. 計測中は GPU の温度・SM クロック・電力、ACPI 熱区域の最高値を 10 秒ごとに記録する。
+   記録には `serving/var/thermal-20260923/sample.sh` が使える（読み取りだけ）。
+   ACPI が 90℃ に近づいたら、その区間を基準値として扱わない。
+6. 計測後はログ回収・所有確認・停止まで行い、結果と未確認範囲を記録する。
 
-以下は再開時のコマンドの参照であり、更新前に実行する指示ではない。作業ディレクトリはリポジトリ直下。
+以下は参照用のコマンド。作業ディレクトリはリポジトリ直下。
 
 ```bash
 uv run --directory serving serve check p2-nope-tp2-smoke --configs var/nope-build-0961bbae/tp2.toml
-# 全関門通過と実行条件を確認してから起動する。以後は手順書の ready・IB 確認を省かない。
 uv run --directory serving serve start p2-nope-tp2-smoke --configs var/nope-build-0961bbae/tp2.toml --timeout 3h --yes
 uv run --directory serving serve smoke p2-nope-tp2-smoke --configs var/nope-build-0961bbae/tp2.toml --max-tokens 512
-uv run --directory bench bench run --target p2-nope-tp2-smoke --suite decode --profile quick
+uv run --directory bench bench run --target p2-nope-tp2-smoke --suite quality --profile quick
 ```
 
 同時実行は 1、文脈長は 4096。長文脈や並列性能の結果と混同しない。
 `quality` は toolcall だけを選択できず、code・needle も計画する。`quality.code_problem_limit=0` は無効。
 `serving` は本文を保存しない。一方、`bench` は PLAN.md の方針に従い、合成データの本文を Git 対象外の
-`results/` に保存する。公開記録には本文を含めない。
+`results/` に保存する。公開記録には本文を含めない。`serve smoke` の stderr（応答の本文）はファイルに保存しない。
 
 ## 使用する構成と保存場所
 
@@ -56,7 +60,7 @@ uv run --directory bench bench run --target p2-nope-tp2-smoke --suite decode --p
 | 重みの配置 | 両台の `~/vllm-baseline/models/glm-5-3-flash-nvfp4/`。各 19 ファイル・197,881,153,655 B、照合済み |
 | 構成ハッシュ | `9bd65ac3e94c8690db3861bee46c7c22fe4985d317d01995c9ee5096072d61cd` |
 | API | `http://10.0.1.60:8000`、モデル名 `glm-5-3-flash`（ドットではなくハイフン） |
-| 実測の要約 | `docs/results/2026-09-23-patched-tp2.md` |
+| 実測の要約 | `docs/results/2026-09-23-patched-tp2.md`、`2026-09-23-decode-gpu-clock-cap.md` |
 | 操作の生ログ | `serving/var/nope-build-0961bbae/tp2-*.log`、`*-result.json`、`*-verdict.json` |
 | 初回の応答後の回収ログ | `serving/var/20260922T215658Z-logs-p2-nope-tp2-smoke/` |
 | 512 トークン再試行後の回収ログ | `serving/var/20260922T223912Z-logs-p2-nope-tp2-smoke/` |
@@ -67,26 +71,37 @@ NCCL のログは古いものも回収される。所有確認済みコンテナ
 
 ## TAKT と CI
 
-使っていた TAKT は 0.66.0。固定したワークフローの導入元、使い分け、検証結果は
+使っている TAKT は 0.66.0。固定したワークフローの導入元、使い分け、検証結果は
 [開発手順](docs/development/takt-preparation.md) を参照する。
 `.takt/runtime.yaml` は profile 名の割り当て、モデル・接続先の実体は `~/.takt/runtime.yaml` にある。
-更新後は現在の設定を確認し、古いモデル名やセッションを前提に再開しない。
 `--pipeline --skip-git` で実行しており、worktree は作っていない。今後 worktree を使う場合は `mise trust` を実行する。
 
-| 作業 | 結果 | ログ（Git 対象外） |
-|---|---|---|
-| TP=2 準備 / spark-preparation | 修正検証の残件を対話側が引き取り、終了値 130。残件は修正・検証・統合済み | `.takt/verification/tp2-run.log` |
-| API 調査 / research | 正常終了 | `.takt/verification/p0-research-run.log` |
-| 初回計測の準備 / simple-mini | レビュー承認・正常終了 | `.takt/verification/benchmark-target-run.log` |
-| smoke の出力上限 / simple-mini | レビュー承認・正常終了 | `.takt/verification/smoke-budget-run.log` |
+2026-09-23 に `~/.takt/` の設定を次のように変えた（Git 対象外。控えは `~/.takt/*.bak-20260923`・`*.codex-20260923`）。
 
+| 項目 | 設定 |
+|---|---|
+| `t2` | `claude-opus-5-5` |
+| `t0-production-code` | 本来は codex / `gpt-6-luna`。**9/27 19:38 までは claude / `claude-sonnet-5`** |
+| `t3-judge` | 本来は codex / `gpt-6-astra`。**9/27 19:38 までは claude / `claude-opus-5-5`** |
+| `rate_limit_fallback` | `claude-opus-5-5`。本来は続けて codex / `gpt-6-sol`（上限中はコメントアウト） |
+| `codex_cli_path` | mise の codex 0.156.0 の実体。codex を更新したらパスも直す |
+
+Codex の割り当てに戻すときは、`~/.takt/runtime.yaml` と `config.yaml` のコメント行を戻す。`codex_cli_path` は残す。
+
+TAKT 0.66.0 で確認した問題:
+
+- 同梱の codex 0.153.4 は、ChatGPT アカウントで `gpt-6-luna`・`gpt-6-sol` を HTTP 400 で拒否する。
+  `codex_cli_path` で 0.156.0 を指定して解消した。
+- Codex の「You've hit your usage limit」はレート制限と判定されず、`rate_limit_fallback` が働かずに止まる。未解決。
+- report phase でモデルがツールを呼ぶと `ReportPhaseToolCallError` で Node ごと落ちることがある。1 回観測し、再実行で成功した。
+
+スクラッチ領域の使い捨てプロジェクトで `flash-default` を流した。
+割り当てどおりのモデルで plan から final-gate まで通過した（16 分 39 秒、`Result: Success`）。
+リポジトリの過去の TAKT 実行と CI の記録は [開発手順](docs/development/takt-preparation.md) にある。
 初回 TP=2 準備の依頼を固定した `scripts/run-takt-preparation.sh` を、次の計測を始めるつもりで再実行しない。
-TAKT 0.66.0 の `takt prompt` は未変更の上流ワークフローでもプレビューに失敗したが、実行自体はできた。
 
 [CI 設定](.github/workflows/ci.yml) は `bench` / `serving` の locked sync、pytest、ruff、mypy を実行する。
-直近は serving 1,904 件、bench 1,437 件成功・27 件 skip。skip を実機や隔離環境の合格とは扱わない。
 Spark 接続やモデル取得は CI に含めない。
-
 
 書かないこと (要件 10.5): 送った内容と応答の本文、認証の情報、`exl3-tp2` の中身。
 
@@ -171,12 +186,16 @@ SSE、ツール呼び出し、品質・性能、長文脈は未確認。[最新�
 
 ## 再開時の選択肢と保留事項
 
-1. **推奨: モデル・ハーネス更新後、準備済みの初回計測へ進む。** 更新によって準備コードの変更が必要なら、範囲を絞った依頼を TAKT に渡す。
-2. **更新を保留する場合: 現在の停止状態を維持する。** 計測の再開指示があるまで、新しい実機操作を始めない。
+1. **推奨: prefill・並列・長文脈へ進むための構成を用意する。** 文脈長と `--max-num-seqs` を広げた構成が要る。
+   構成の追加は根拠付きの argv と SHA-256 の固定の契約に触れるので、TAKT に範囲を絞って依頼する。
+   上限 1800 の影響は decode より大きいと見込む。
+2. code の出力上限を上げて比べる（`--set` で変えられるかを先に確かめる）。今の 0.650 は打ち切りの影響が大きい。
+3. 上限 1800 を再起動後も保つ systemd サービスにする。Spark の設定を長く変えるので、計測者の了承が要る。
+4. ACPI 熱区域 0・2・4 の熱源を調べる。CPU 負荷は低く、GPU は 58℃ 以下なので、CPU ガバナの変更は優先度が低い。
 
 別途判断する事項:
 
-- 上流への不具合報告。投稿は未実施であり、計測者の指示なしに送らない。
+- 上流への不具合報告（vLLM、TAKT の判定漏れ）。投稿は未実施であり、計測者の指示なしに送らない。
 - 一般公開前の Kiro 関連ライセンス、CLAUDE.md の扱い、PLAN.md の名前、ルート LICENSE の整理。リポジトリは private のまま。
 - 公式のパッチなし P1 の成功条件は未達のまま。自前イメージでの成功を理由に、過去の打ち切りタスクを実施済みに書き換えない。
 
