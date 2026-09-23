@@ -38,7 +38,7 @@
 4. 実機操作は対話側で行う。全関門を再検査して起動し、ready と**今回分**の IB を確認する。
    PID が過去と同じで NCCL ログが上書きされることがあるので、開始時刻と初期化回数で帰属を確かめる。
 5. 計測中は GPU の温度・SM クロック・電力、ACPI 熱区域の最高値を 10 秒ごとに記録する。
-   記録には `serving/var/thermal-20260923/sample.sh` が使える（読み取りだけ）。
+   記録には `serving/var/thermal-20260923/sample.sh` が使える（読み取りだけ。Git 対象外なので、ツール化を [#12](https://github.com/ideo-plus/DGX-Spark-GLM5.3-Flash-Recipe/issues/12) で扱う）。
    ACPI が 90℃ に近づいたら、その区間を基準値として扱わない。
 6. 計測後はログ回収・所有確認・停止まで行い、結果と未確認範囲を記録する。
 
@@ -55,6 +55,7 @@ uv run --directory bench bench run --target p2-nope-tp2-smoke --suite quality --
 `quality` は toolcall だけを選択できず、code・needle も計画する。`quality.code_problem_limit=0` は無効。
 `serving` は本文を保存しない。一方、`bench` は PLAN.md の方針に従い、合成データの本文を Git 対象外の
 `results/` に保存する。公開記録には本文を含めない。`serve smoke` の stderr（応答の本文）はファイルに保存しない。
+書かないこと (要件 10.5): 送った内容と応答の本文、認証の情報、`exl3-tp2` の中身。
 
 ## 使用する構成と保存場所
 
@@ -109,8 +110,6 @@ TAKT 0.66.0 で確認した問題:
 
 [CI 設定](.github/workflows/ci.yml) は `bench` / `serving` の locked sync、pytest、ruff、mypy を実行する。
 Spark 接続やモデル取得は CI に含めない。
-
-書かないこと (要件 10.5): 送った内容と応答の本文、認証の情報、`exl3-tp2` の中身。
 
 ## 背景: P1 の終了とパッチ検証
 
@@ -193,12 +192,12 @@ SSE、ツール呼び出し、品質・性能、長文脈は未確認。[最新�
 
 ## 再開時の選択肢と保留事項
 
-1. **推奨: 熱の余裕を確かめてから agent に進む。**
+1. **推奨: 熱の余裕を確かめてから agent に進む（[#11](https://github.com/ideo-plus/DGX-Spark-GLM5.3-Flash-Recipe/issues/11)）。**
    ACPI 熱区域 0・4 の熱源を探す。例えば、張り付いた X925 のコアや CPU の上限を変えて、cold 128k の prefill だけを比べる。
    そのうえで `--suite agent --set agent.end_tokens=20000` から段階的に始める（`full-context-procedure.md` §5）。
-2. 上限 1800 を再起動後も保つ systemd サービスにする。Spark の設定を長く変えるので、計測者の了承が要る。
+2. 上限 1800 を再起動後も保つ systemd サービスにする（[#10](https://github.com/ideo-plus/DGX-Spark-GLM5.3-Flash-Recipe/issues/10)）。Spark の設定を長く変えるので、計測者の了承が要る。
 3. code の出力上限を上げて比べる。`--set` で変えられるかを先に確かめる。
-4. concurrency を `--set concurrency.rounds=20` で測り直し、再現性を確かめる。
+4. concurrency を `--set concurrency.rounds=20` で測り直し、再現性を確かめる（入力の長さのずれは [#9](https://github.com/ideo-plus/DGX-Spark-GLM5.3-Flash-Recipe/issues/9)）。
    入力が狙いより 7〜9% 長い原因も調べる。
 
 別途判断する事項:
