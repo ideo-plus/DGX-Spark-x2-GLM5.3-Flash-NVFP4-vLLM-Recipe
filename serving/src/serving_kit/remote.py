@@ -53,6 +53,9 @@
    `/sys/class/infiniband/` の下、`/sys/class/thermal/` の下、`/sys/class/hwmon/` の下
    (熱区域と hwmon の温度センサーの読み取り) のどれか、または `/proc/stat` (CPU の使用率の
    読み取り。完全一致だけで許し、`/proc` の他の場所には前方一致で届かないようにする) だけ。
+   加えて、`/sys/devices/system/cpu/cpu<N>/cpufreq/scaling_max_freq` (CPU コアごとの周波数の
+   上限の読み取り) は、正規表現の完全一致の 1 種類だけを許す。`/sys/devices/system/cpu/` の
+   前方一致は許さない (兄弟のファイルや他の cpufreq の場所には届かない)。
    認証の情報、`/proc/stat` 以外の `/proc`、ほかのコンテナの記録には届かなくする
    (requirements 2.4、2.6)
 """
@@ -163,6 +166,13 @@ hwmon の温度センサーの読み取り)。"""
 _CAT_EXACT_PATHS: Final[frozenset[str]] = frozenset({"/proc/stat"})
 """`cat` で完全一致だけで読める場所 (CPU の使用率の読み取り)。`/proc` は他の場所に前方一致
 で広げない (認証の情報やほかのプロセスの記録に届かないようにする)。"""
+
+_CAT_EXACT_PATTERNS: Final[tuple[re.Pattern[str], ...]] = (
+    re.compile(r"/sys/devices/system/cpu/cpu[0-9]+/cpufreq/scaling_max_freq"),
+)
+"""`cat` で正規表現の完全一致だけで読める場所 (CPU コアごとの周波数の上限の読み取り)。
+`/sys/devices/system/cpu/` の前方一致は許さない (兄弟のファイルや他の cpufreq の場所、
+`..` を含む変形の道筋には届かないようにする)。"""
 
 
 # --- 遠隔のシェルに渡る道筋の、文字の絞り込み ---------------------------
@@ -331,8 +341,9 @@ def _check_cat(node: NodeDef, rest: tuple[str, ...]) -> None:
     """`cat` の読み取り先を絞る (requirements 2.4、2.6)。
 
     引数はすべて道筋で (オプションを通さない)、`remote_root` の下、インターフェース・熱区域・
-    hwmon の読み取りの場所 (前方一致)、または `/proc/stat` (完全一致) だけを読める。認証の
-    情報、`/proc/stat` 以外の `/proc`、ほかのコンテナの記録には届かない。
+    hwmon の読み取りの場所 (前方一致)、`/proc/stat` (完全一致)、または CPU コアごとの周波数の
+    上限 `scaling_max_freq` (正規表現の完全一致) だけを読める。認証の情報、`/proc/stat` 以外の
+    `/proc`、ほかのコンテナの記録、`/sys/devices/system/cpu/` の前方一致には届かない。
     """
     if not rest:
         raise RuntimeError("cat には、読むファイルの道筋が要る")
@@ -344,13 +355,16 @@ def _check_cat(node: NodeDef, rest: tuple[str, ...]) -> None:
             value.startswith(inside_root)
             or value.startswith(_CAT_PREFIXES)
             or value in _CAT_EXACT_PATHS
+            or any(pattern.fullmatch(value) for pattern in _CAT_EXACT_PATTERNS)
         )
         if not allowed_place or ".." in PurePosixPath(value).parts:
             prefix_places = ", ".join((inside_root, *_CAT_PREFIXES))
             exact_places = ", ".join(sorted(_CAT_EXACT_PATHS))
+            pattern_places = ", ".join(pattern.pattern for pattern in _CAT_EXACT_PATTERNS)
             raise RuntimeError(
                 f"cat で読めるのは、前方一致で {prefix_places} の下、"
-                f"完全一致で {exact_places} だけ"
+                f"完全一致で {exact_places}、"
+                f"正規表現の完全一致で {pattern_places} だけ"
                 f" (よその場所、認証の情報、別の構成の記録を読まない): {value}"
             )
 
