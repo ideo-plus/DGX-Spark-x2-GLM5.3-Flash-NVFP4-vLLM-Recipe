@@ -158,5 +158,9 @@ scripts/run-takt.sh --claude-account ~/.claude-<アカウント> resume
 - `run-takt.sh` は、`TAKT_CLAUDE_CLI_PATH` に `scripts/takt-claude.sh` を絶対パスで渡す。`--claude-account` の後ろの引数は、そのまま `takt` に渡す。
 - `takt-claude.sh` は、そのアカウントの `CLAUDE_CONFIG_DIR` で `claude` を起動する。
 - アカウントの指定がない、または設定ディレクトリがないときは、既定のアカウントに黙って戻さず失敗する。
+- `CLAUDE_CODE_OAUTH_TOKEN`、`ANTHROPIC_API_KEY`、`ANTHROPIC_AUTH_TOKEN` は外してから起動する。
+  これらは `CLAUDE_CONFIG_DIR` より優先されるので、残っているとアカウントが切り替わらない。
+- アカウントを替えて `takt resume` するときは、先に `takt clear` で会話の ID を消す。
+  会話はアカウントの設定ディレクトリごとに保存されるので、前のアカウントの会話は見つからない。
 - アカウントの名前はマシンごとの事情なので、リポジトリには書かない。
 - 切り替えが効くのは claude の段だけである。codex と opencode の段は、それぞれの設定のアカウントで動く。
