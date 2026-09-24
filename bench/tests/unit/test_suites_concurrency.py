@@ -118,7 +118,7 @@ def make_profile(**overrides: Any) -> Profile:
         "seed": 7,
         "timeout": {"connect_s": 5.0, "first_event_s": 5.0, "idle_s": 5.0, "total_s": 20.0},
         "chars_per_token": {"prose_en": 4.0, "prose_ja": 1.6, "code": 3.2, "log": 3.4},
-        "concurrency": {"levels": [4], "rounds": 1, "max_tokens": 8, "input_tokens": 40},
+        "concurrency": {"levels": [4], "rounds": 1, "max_tokens": 8, "input_tokens": 400},
     }
     data.update(overrides)
     return Profile.model_validate(data)
@@ -188,6 +188,14 @@ async def _collect(
     suite: ConcurrencySuite, ctx: SuiteContext, plan: ConditionPlan
 ) -> list[TrialRecord]:
     return [record async for record in suite.run_condition(ctx, plan)]
+
+
+@pytest.fixture
+def suite() -> ConcurrencySuite:
+    """試験ごとに新しい実体を使う (issue #9: 包みの計測を run_id ごとに覚えるので、
+    module の共有実体 `SUITE` を使い回すと、同じ RUN_ID の試験間で値が持ち越される)。
+    """
+    return ConcurrencySuite()
 
 
 # --- 計画: 鍵、主な結果と参考、設定の値 (4.1、4.4) ------------------------
@@ -262,16 +270,16 @@ def test_suite_module_exposes_a_ready_instance() -> None:
 
 
 async def test_streams_in_a_round_have_distinct_headers_and_documents(
-    fake_server: FakeServer,
+    fake_server: FakeServer, suite: ConcurrencySuite
 ) -> None:
     fake_server.set_response(token_stream_response(output_tokens=4))
     n = 4
     profile = make_profile(
-        concurrency={"levels": [n], "rounds": 1, "max_tokens": 8, "input_tokens": 40}
+        concurrency={"levels": [n], "rounds": 1, "max_tokens": 8, "input_tokens": 400}
     )
     async with suite_ctx(fake_server, profile=profile) as (ctx, sink):
-        plan = _plan_for(ctx, level=n, rounds=1, max_tokens=8, input_tokens=40, warmup_trials=0)
-        records = await _collect(SUITE, ctx, plan)
+        plan = _plan_for(ctx, level=n, rounds=1, max_tokens=8, input_tokens=400, warmup_trials=0)
+        records = await _collect(suite, ctx, plan)
 
     assert len(records) == n
     by_ref = dict(zip(sink.refs, sink.bodies, strict=True))
@@ -283,20 +291,20 @@ async def test_streams_in_a_round_have_distinct_headers_and_documents(
 
 
 async def test_measured_round_gets_the_same_document_but_a_different_header_across_runs(
-    fake_server: FakeServer,
+    fake_server: FakeServer, suite: ConcurrencySuite
 ) -> None:
     """測った回 r・ストリーム k の文章は計測ランをまたいでも同じ (トークンの試験の RUN_ID の注)。"""
     n = 2
     profile = make_profile(
-        concurrency={"levels": [n], "rounds": 2, "max_tokens": 8, "input_tokens": 40}
+        concurrency={"levels": [n], "rounds": 2, "max_tokens": 8, "input_tokens": 400}
     )
 
     async def bodies_for(run_id: str) -> dict[tuple[int, int], dict[str, Any]]:
         fake_server.reset()
         fake_server.set_response(token_stream_response(output_tokens=4))
         async with suite_ctx(fake_server, profile=profile, run_id=run_id) as (ctx, sink):
-            plan = _plan_for(ctx, level=n, rounds=2, max_tokens=8, input_tokens=40)
-            records = await _collect(SUITE, ctx, plan)
+            plan = _plan_for(ctx, level=n, rounds=2, max_tokens=8, input_tokens=400)
+            records = await _collect(suite, ctx, plan)
         by_ref = dict(zip(sink.refs, sink.bodies, strict=True))
         return {
             (record.round_id, record.stream_index): by_ref[record.request_body_ref]  # type: ignore[misc]
@@ -322,7 +330,7 @@ async def test_measured_round_gets_the_same_document_but_a_different_header_acro
 
 
 async def test_c4_round_sends_four_requests_with_a_small_median_arrival_spread(
-    fake_server: FakeServer,
+    fake_server: FakeServer, suite: ConcurrencySuite
 ) -> None:
     """tasks.md 3.4 の完了の状態: 同時 4 本で、送り始めの時刻の幅が 50 ミリ秒以内。
 
@@ -345,8 +353,8 @@ async def test_c4_round_sends_four_requests_with_a_small_median_arrival_spread(
         }
     )
     async with suite_ctx(fake_server, profile=profile) as (ctx, _):
-        plan = _plan_for(ctx, level=n, rounds=measured_rounds, max_tokens=8, input_tokens=60)
-        records = await _collect(SUITE, ctx, plan)
+        plan = _plan_for(ctx, level=n, rounds=measured_rounds, max_tokens=8, input_tokens=400)
+        records = await _collect(suite, ctx, plan)
 
     total_rounds = DEFAULT_CONNECTION_WARMUP_TRIALS + measured_rounds
     assert len(records) == total_rounds * n
@@ -380,7 +388,9 @@ async def test_c4_round_sends_four_requests_with_a_small_median_arrival_spread(
 # --- 一部の失敗 (4.5 は分析の仕事。ここでは記録だけ確かめる) ---------------
 
 
-async def test_one_failed_stream_still_yields_n_records(fake_server: FakeServer) -> None:
+async def test_one_failed_stream_still_yields_n_records(
+    fake_server: FakeServer, suite: ConcurrencySuite
+) -> None:
     n = 4
     fake_server.set_response_sequence(
         [
@@ -391,11 +401,11 @@ async def test_one_failed_stream_still_yields_n_records(fake_server: FakeServer)
         ]
     )
     profile = make_profile(
-        concurrency={"levels": [n], "rounds": 1, "max_tokens": 8, "input_tokens": 40}
+        concurrency={"levels": [n], "rounds": 1, "max_tokens": 8, "input_tokens": 400}
     )
     async with suite_ctx(fake_server, profile=profile) as (ctx, _):
-        plan = _plan_for(ctx, level=n, rounds=1, max_tokens=8, input_tokens=40, warmup_trials=0)
-        records = await _collect(SUITE, ctx, plan)
+        plan = _plan_for(ctx, level=n, rounds=1, max_tokens=8, input_tokens=400, warmup_trials=0)
+        records = await _collect(suite, ctx, plan)
 
     assert len(records) == n
     failures = [record for record in records if record.result.error is not None]
@@ -413,17 +423,19 @@ async def test_one_failed_stream_still_yields_n_records(fake_server: FakeServer)
 # --- レコードの中身と、JSON への往復 ----------------------------------------
 
 
-async def test_record_identity_fields_and_json_round_trip(fake_server: FakeServer) -> None:
+async def test_record_identity_fields_and_json_round_trip(
+    fake_server: FakeServer, suite: ConcurrencySuite
+) -> None:
     n = 3
     fake_server.set_response(token_stream_response(output_tokens=4))
     profile = make_profile(
-        concurrency={"levels": [n], "rounds": 1, "max_tokens": 8, "input_tokens": 40}
+        concurrency={"levels": [n], "rounds": 1, "max_tokens": 8, "input_tokens": 400}
     )
     async with suite_ctx(fake_server, profile=profile) as (ctx, _):
         # 計画には plan() の本数ごとの決めごと (4.4) と同じ "reference" を渡す
         # (ここで確かめたいのは、計画の tier がレコードにそのまま運ばれること)
-        plan = _plan_for(ctx, level=n, rounds=1, max_tokens=8, input_tokens=40, tier="reference")
-        records = await _collect(SUITE, ctx, plan)
+        plan = _plan_for(ctx, level=n, rounds=1, max_tokens=8, input_tokens=400, tier="reference")
+        records = await _collect(suite, ctx, plan)
 
     warmup_records = [r for r in records if r.warmup]
     measured_records = [r for r in records if not r.warmup]
@@ -447,18 +459,20 @@ async def test_record_identity_fields_and_json_round_trip(fake_server: FakeServe
 
 
 async def test_a_put_body_failure_before_the_gate_does_not_hang_the_round(
-    fake_server: FakeServer,
+    fake_server: FakeServer, suite: ConcurrencySuite
 ) -> None:
     n = 4
     profile = make_profile(
-        concurrency={"levels": [n], "rounds": 1, "max_tokens": 8, "input_tokens": 40}
+        concurrency={"levels": [n], "rounds": 1, "max_tokens": 8, "input_tokens": 400}
     )
     sink = RaisingSink(fail_at=2)
 
     async def consume() -> None:
         async with suite_ctx(fake_server, profile=profile, put_body=sink.put) as (ctx, _):
-            plan = _plan_for(ctx, level=n, rounds=1, max_tokens=8, input_tokens=40, warmup_trials=0)
-            async for _ in SUITE.run_condition(ctx, plan):
+            plan = _plan_for(
+                ctx, level=n, rounds=1, max_tokens=8, input_tokens=400, warmup_trials=0
+            )
+            async for _ in suite.run_condition(ctx, plan):
                 pass
 
     with pytest.raises(RuntimeError, match="put_body boom"):
@@ -469,18 +483,18 @@ async def test_a_put_body_failure_before_the_gate_does_not_hang_the_round(
 
 
 async def test_cancelling_run_condition_mid_round_leaves_no_pending_tasks(
-    fake_server: FakeServer,
+    fake_server: FakeServer, suite: ConcurrencySuite
 ) -> None:
     n = 3
     fake_server.set_response(replace(token_stream_response(output_tokens=4), first_delay_s=5.0))
     profile = make_profile(
-        concurrency={"levels": [n], "rounds": 1, "max_tokens": 8, "input_tokens": 40}
+        concurrency={"levels": [n], "rounds": 1, "max_tokens": 8, "input_tokens": 400}
     )
     async with suite_ctx(fake_server, profile=profile) as (ctx, _):
-        plan = _plan_for(ctx, level=n, rounds=1, max_tokens=8, input_tokens=40, warmup_trials=0)
+        plan = _plan_for(ctx, level=n, rounds=1, max_tokens=8, input_tokens=400, warmup_trials=0)
 
         async def consume() -> None:
-            async for _ in SUITE.run_condition(ctx, plan):
+            async for _ in suite.run_condition(ctx, plan):
                 pass
 
         before = {task for task in asyncio.all_tasks() if not task.done()}
@@ -497,7 +511,7 @@ async def test_cancelling_run_condition_mid_round_leaves_no_pending_tasks(
 
 
 async def test_the_gate_holds_every_stream_until_the_slowest_one_has_stored_its_body(
-    fake_server: FakeServer,
+    fake_server: FakeServer, suite: ConcurrencySuite
 ) -> None:
     """合図なし・最初の 1 本で解放・回をまたいだ使い回しを、まとめて検出する。
 
@@ -533,7 +547,7 @@ async def test_the_gate_holds_every_stream_until_the_slowest_one_has_stored_its_
             "levels": [n],
             "rounds": measured_rounds,
             "max_tokens": 8,
-            "input_tokens": 40,
+            "input_tokens": 400,
         }
     )
     # 慣らし (1 回) + 測った 1 回目 (n 本) + 測った 2 回目の最後のストリーム、
@@ -542,8 +556,8 @@ async def test_the_gate_holds_every_stream_until_the_slowest_one_has_stored_its_
     sink = SlowSink(slow_call=slow_call)
 
     async with suite_ctx(fake_server, profile=profile, put_body=sink.put) as (ctx, _):
-        plan = _plan_for(ctx, level=n, rounds=measured_rounds, max_tokens=8, input_tokens=40)
-        records = await _collect(SUITE, ctx, plan)
+        plan = _plan_for(ctx, level=n, rounds=measured_rounds, max_tokens=8, input_tokens=400)
+        records = await _collect(suite, ctx, plan)
 
     assert sink.calls == (DEFAULT_CONNECTION_WARMUP_TRIALS + measured_rounds) * n
     measured_records = [record for record in records if not record.warmup]
@@ -567,7 +581,7 @@ async def test_the_gate_holds_every_stream_until_the_slowest_one_has_stored_its_
 
 
 async def test_expect_full_output_is_fixed_true_short_stop_reasons_get_flagged(
-    fake_server: FakeServer,
+    fake_server: FakeServer, suite: ConcurrencySuite
 ) -> None:
     """`run_trial(..., expect_full_output=True)` が固定されていることを、印で確かめる (2.6)。"""
     n = 2
@@ -575,29 +589,29 @@ async def test_expect_full_output_is_fixed_true_short_stop_reasons_get_flagged(
         replace(token_stream_response(output_tokens=20), stop_reason="end_turn")
     )
     profile = make_profile(
-        concurrency={"levels": [n], "rounds": 1, "max_tokens": 1024, "input_tokens": 40}
+        concurrency={"levels": [n], "rounds": 1, "max_tokens": 1024, "input_tokens": 400}
     )
     async with suite_ctx(fake_server, profile=profile) as (ctx, _):
-        plan = _plan_for(ctx, level=n, rounds=1, max_tokens=1024, input_tokens=40, warmup_trials=0)
-        records = await _collect(SUITE, ctx, plan)
+        plan = _plan_for(ctx, level=n, rounds=1, max_tokens=1024, input_tokens=400, warmup_trials=0)
+        records = await _collect(suite, ctx, plan)
 
     assert len(records) == n
     assert all(TrialFlag.SHORT_OUTPUT in record.flags for record in records)
 
 
 async def test_measures_decode_speed_is_fixed_true_short_outputs_get_flagged(
-    fake_server: FakeServer,
+    fake_server: FakeServer, suite: ConcurrencySuite
 ) -> None:
     """`run_trial(..., measures_decode_speed=True)` が固定されていることを、印で確かめる (2.6)。"""
     n = 2
     # output_tokens は 16 未満。stop_reason は既定の "max_tokens" のまま (SHORT_OUTPUT とは分ける)
     fake_server.set_response(token_stream_response(output_tokens=4))
     profile = make_profile(
-        concurrency={"levels": [n], "rounds": 1, "max_tokens": 8, "input_tokens": 40}
+        concurrency={"levels": [n], "rounds": 1, "max_tokens": 8, "input_tokens": 400}
     )
     async with suite_ctx(fake_server, profile=profile) as (ctx, _):
-        plan = _plan_for(ctx, level=n, rounds=1, max_tokens=8, input_tokens=40, warmup_trials=0)
-        records = await _collect(SUITE, ctx, plan)
+        plan = _plan_for(ctx, level=n, rounds=1, max_tokens=8, input_tokens=400, warmup_trials=0)
+        records = await _collect(suite, ctx, plan)
 
     assert len(records) == n
     assert all(TrialFlag.TOO_FEW_OUTPUT_TOKENS in record.flags for record in records)
@@ -607,7 +621,7 @@ async def test_measures_decode_speed_is_fixed_true_short_outputs_get_flagged(
 
 
 async def test_context_limit_hit_yields_all_n_records_before_aborting(
-    fake_server: FakeServer,
+    fake_server: FakeServer, suite: ConcurrencySuite
 ) -> None:
     """要件 8.1: 上限に当たっても、n 本のレコードが全部残ってから打ち切られる。
 
@@ -623,11 +637,11 @@ async def test_context_limit_hit_yields_all_n_records_before_aborting(
     )
     async with suite_ctx(fake_server, profile=profile) as (ctx, _):
         assert ctx.context_limit is None  # 申告を知らないので、計画では飛ばさない
-        plan = _plan_for(ctx, level=n, rounds=1, max_tokens=8, input_tokens=200, warmup_trials=0)
+        plan = _plan_for(ctx, level=n, rounds=1, max_tokens=8, input_tokens=1000, warmup_trials=0)
 
         collected: list[TrialRecord] = []
         with pytest.raises(ConditionAborted):
-            async for record in SUITE.run_condition(ctx, plan):
+            async for record in suite.run_condition(ctx, plan):
                 collected.append(record)
 
     assert len(collected) == n
@@ -642,7 +656,7 @@ async def test_context_limit_hit_yields_all_n_records_before_aborting(
 
 
 async def test_round_records_are_yielded_in_ascending_stream_index_order(
-    fake_server: FakeServer,
+    fake_server: FakeServer, suite: ConcurrencySuite
 ) -> None:
     """完了の順に `yield` する変異を検出する。
 
@@ -655,14 +669,17 @@ async def test_round_records_are_yielded_in_ascending_stream_index_order(
     """
     n = 4
     profile = make_profile(
-        concurrency={"levels": [n], "rounds": 1, "max_tokens": 8, "input_tokens": 40}
+        concurrency={"levels": [n], "rounds": 1, "max_tokens": 8, "input_tokens": 400}
     )
     condition_key = f"concurrency/c{n}"
     corpus = TemplateCorpus(profile.chars_per_token)
     expected_documents: dict[str, int] = {}
     for stream_index in range(n):
         seed = trial_seed(profile.seed, condition_key, 0, warmup=False, stream_index=stream_index)
-        expected_documents[corpus.prose("en", 40, seed)] = stream_index
+        # 送る文章は `target − 計測した包み` なので、正確な長さは事前に分からない。
+        # `prose` の先頭の一致 (synth.py「先頭の一致」) を使い、短い方の出力で
+        # ストリームを見分ける (大きい target の出力は小さい方で始まる)。
+        expected_documents[corpus.prose("en", 20, seed)] = stream_index
 
     def factory(body: dict[str, Any]) -> Script:
         text = str(body["messages"][0]["content"][0]["text"])
@@ -675,8 +692,8 @@ async def test_round_records_are_yielded_in_ascending_stream_index_order(
     fake_server.set_response_factory(factory)
 
     async with suite_ctx(fake_server, profile=profile) as (ctx, _):
-        plan = _plan_for(ctx, level=n, rounds=1, max_tokens=8, input_tokens=40, warmup_trials=0)
-        records = await _collect(SUITE, ctx, plan)
+        plan = _plan_for(ctx, level=n, rounds=1, max_tokens=8, input_tokens=400, warmup_trials=0)
+        records = await _collect(suite, ctx, plan)
 
     assert len(records) == n
     assert [record.stream_index for record in records] == list(range(n))
@@ -686,17 +703,17 @@ async def test_round_records_are_yielded_in_ascending_stream_index_order(
 
 
 async def test_the_long_output_instruction_is_included_in_every_request(
-    fake_server: FakeServer,
+    fake_server: FakeServer, suite: ConcurrencySuite
 ) -> None:
     """長く書かせる指示を落とす変異を検出する。"""
     n = 2
     fake_server.set_response(token_stream_response(output_tokens=4))
     profile = make_profile(
-        concurrency={"levels": [n], "rounds": 1, "max_tokens": 8, "input_tokens": 40}
+        concurrency={"levels": [n], "rounds": 1, "max_tokens": 8, "input_tokens": 400}
     )
     async with suite_ctx(fake_server, profile=profile) as (ctx, sink):
-        plan = _plan_for(ctx, level=n, rounds=1, max_tokens=8, input_tokens=40, warmup_trials=0)
-        records = await _collect(SUITE, ctx, plan)
+        plan = _plan_for(ctx, level=n, rounds=1, max_tokens=8, input_tokens=400, warmup_trials=0)
+        records = await _collect(suite, ctx, plan)
 
     by_ref = dict(zip(sink.refs, sink.bodies, strict=True))
     for record in records:

@@ -581,6 +581,9 @@ def test_no_secret_no_prompt_and_no_response_text_leaves_the_raw_data(
     assert code == EXIT_OK
     # 仕掛けの裏取り: 認証の情報は、確かにヘッダーに付いている (1.8)
     assert fake_server.requests_for("/v1/messages")[-1].headers["x-api-key"] == API_KEY_VALUE
+    # 包みの計測 (issue #9) の count_tokens の要求にも、同じ鍵が付く
+    counted = fake_server.requests_for("/v1/messages/count_tokens")[-1]
+    assert counted.headers["x-api-key"] == API_KEY_VALUE
 
     store = RunStore.open(run_dir)
     records, _ = store.read_trials()

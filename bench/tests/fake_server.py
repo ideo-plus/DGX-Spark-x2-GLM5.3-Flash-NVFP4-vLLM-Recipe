@@ -124,6 +124,10 @@ set_response(replace(text_response("ok"), gap_s=0.05, stop_reason="max_tokens"))
 も文字数に入るので、狙ったトークン数にきっちり合わせたい試験は、この比で
 調整すること。
 
+`set_input_token_counter(fn)` で、この決め方そのものを差し替えられる。差し替えた
+関数は `/v1/messages`、`/v1/messages/count_tokens`、上限の判定のすべてに効く
+(`_count_input_tokens` を経由するため)。
+
 ## 口の有無と、対象サーバーの申告
 
 - `set_count_tokens_enabled(False)`: `POST /v1/messages/count_tokens` を 404 に
@@ -209,6 +213,7 @@ __all__ = [
     "DEFAULT_CHARS_PER_TOKEN",
     "DEFAULT_MODEL",
     "FakeServer",
+    "InputTokenCounter",
     "MetricsOptions",
     "RecordedRequest",
     "ResponseFactory",
@@ -219,6 +224,7 @@ __all__ = [
     "empty_response",
     "error_event",
     "error_stream_response",
+    "estimator_aligned_counter",
     "http_error_response",
     "over_limit_response",
     "ping_event",
@@ -234,6 +240,9 @@ __all__ = [
 ]
 
 JsonDict = dict[str, Any]
+
+InputTokenCounter = Callable[[JsonDict | None], int]
+"""要求の本文から入力のトークン数を決める関数 (`set_input_token_counter` で差し替える)。"""
 
 DEFAULT_MODEL: Final[str] = "fake-model"
 DEFAULT_CHARS_PER_TOKEN: Final[float] = 4.0
@@ -686,6 +695,51 @@ def _render_metrics(
     return "\n".join(lines) + "\n"
 
 
+def estimator_aligned_counter(
+    *, fixed: int, per_message: int = 0, chars_per_token: float = DEFAULT_CHARS_PER_TOKEN
+) -> InputTokenCounter:
+    """会話の組み立ての見積もりと同じ文字列を同じ比で数え、包みを足す数え方。
+
+    数えるのは `corpus/conversation.py` の `_preamble_tokens` / `_build_round` が
+    見積もる文字列そのもの (system、tools の JSON、text、tool_use の名前と引数の
+    JSON、tool_result の本文)。`Profile.chars_per_token` を全種 `chars_per_token` に
+    そろえた試験では、見積もりとの差が `fixed + per_message × 発話数` だけになる。
+    `fixed` が要求の包み (テンプレート、識別子の割れ方)、`per_message` が発話ごとの
+    役割の目印を模す。
+    """
+
+    def compact_json(value: object) -> str:
+        return json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+
+    def count(body: JsonDict | None) -> int:
+        if not body:
+            return 1
+        chars = 0
+        system = body.get("system")
+        if isinstance(system, str):
+            chars += len(system)
+        tools = body.get("tools")
+        if tools is not None:
+            chars += len(compact_json(tools))
+        messages = body.get("messages") or []
+        for message in messages:
+            content = message.get("content")
+            if isinstance(content, str):
+                chars += len(content)
+                continue
+            for block in content or []:
+                kind = block.get("type")
+                if kind == "text":
+                    chars += len(block.get("text", ""))
+                elif kind == "tool_use":
+                    chars += len(block.get("name", "")) + len(compact_json(block.get("input", {})))
+                elif kind == "tool_result":
+                    chars += len(block.get("content", ""))
+        return fixed + per_message * len(messages) + round(chars / chars_per_token)
+
+    return count
+
+
 # --- サーバー本体 -------------------------------------------------------
 
 
@@ -699,6 +753,7 @@ class FakeServer:
         self._condition = threading.Condition(self._lock)
         self._model = model
         self._chars_per_token = chars_per_token
+        self._input_token_counter: InputTokenCounter | None = None
         self._script: Script = text_response("ok")
         self._factory: ResponseFactory | None = None
         self._sequence: tuple[Script, ...] = ()
@@ -826,6 +881,16 @@ class FakeServer:
         with self._lock:
             self._chars_per_token = chars_per_token
 
+    def set_input_token_counter(self, counter: InputTokenCounter | None) -> None:
+        """入力のトークン数の数え方を差し替える (`None` で既定の JSON の文字数 ÷ 比に戻す)。
+
+        `/v1/messages` の usage、`count_tokens` の答え、上限の判定のすべてに効く
+        (`_count_input_tokens` を通るため)。プレフィックスキャッシュの真似の当たりの
+        長さは、これまでどおり比で決める (2 つの knob を混ぜない)。
+        """
+        with self._lock:
+            self._input_token_counter = counter
+
     def set_prefix_cache(self, enabled: bool, *, block_tokens: int = _CACHE_BLOCK_TOKENS) -> None:
         """プレフィックスキャッシュの真似の入り切り (既定は切)。"""
         with self._lock:
@@ -925,12 +990,15 @@ class FakeServer:
 
     def _count_input_tokens(self, body: JsonDict | None) -> int:
         """`system`、`messages`、`tools` の JSON の文字数から、入力のトークン数を出す。"""
+        with self._lock:
+            counter = self._input_token_counter
+            chars_per_token = self._chars_per_token
+        if counter is not None:
+            return max(1, counter(body))
         if not body:
             return 1
         payload = {key: body[key] for key in ("system", "messages", "tools") if key in body}
         text = json.dumps(payload, ensure_ascii=False, sort_keys=True)
-        with self._lock:
-            chars_per_token = self._chars_per_token
         return max(1, round(len(text) / chars_per_token))
 
     def _prefix_key(self, body: JsonDict | None) -> str:

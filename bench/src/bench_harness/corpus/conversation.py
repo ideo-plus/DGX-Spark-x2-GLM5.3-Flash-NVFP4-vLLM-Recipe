@@ -36,7 +36,8 @@
 - `ConversationPrefix.approx_tokens` は、**前置き + 履歴**のおよその長さで、
   7.2 が足す最後の 1 手 (課題の指示) は**含まない**。上限に収まるかを見る
   とき (`fits_context(limit, input_tokens, max_tokens)`) は、最後の 1 手の
-  ぶんを足してから渡すこと
+  ぶんを足してから渡すこと。`fixed_tokens` を渡したときの `approx_tokens` は
+  **包み + 履歴**の長さで、こちらは 7.2 が足す最後の 1 手まで含む (issue #9)
 
 ## 合成のツールの結果 (6.1「ファイルの中身、コマンドの出力」)
 
@@ -128,6 +129,13 @@
 手番の大きさは一定ではないので、実際の長さは狙いから最大で 1 手番ぶん
 (実際にはその半分ほど) ずれる。
 
+`fixed_tokens` を渡すと、前置きの見積もり (`_preamble_tokens`) の代わりに、
+その値を「手番以外に要求へ入る決まった分量」として使う (issue #9)。7.2 は、
+`system` + `tools` + 最後の 1 手 + チャットテンプレートの包みを対象サーバーに
+数えさせた値を渡す。文字数と比からは導けない固定の分量 (テンプレートの展開) を、
+実際のトークン数で差し引くためである。省くと、これまでどおり前置きを文字数で
+見積もる。
+
 `config/profiles.toml` の `quick` の比で測った実測値 (400 手番): 1 手番は
 最小 47、中央値 190、平均 394、最大 1528 トークン。会話 5 本での手番の数は、
 2 万トークンの段階で 36〜61、12 万トークンの段階で 286〜311 になり、狙いとの
@@ -154,6 +162,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import random
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -996,6 +1005,7 @@ def build_conversation(
     conversation_seed: int,
     *,
     chars_per_token: Mapping[ContentKind, float] | None = None,
+    fixed_tokens: float | None = None,
 ) -> ConversationPrefix:
     """takt の作業を模した会話を、狙った長さまで組み立てる (design.md corpus、6.1、6.2)。
 
@@ -1004,8 +1014,16 @@ def build_conversation(
     `Profile` の初期値)。同じ `conversation_seed` と同じ比なら、狙いが長い会話は
     狙いが短い会話を、そのまま先頭に含む (module docstring)。
 
-    返り値の `approx_tokens` は、前置き + 履歴のおよその長さで、7.2 が足す
+    `fixed_tokens` は、手番以外に要求へ入る決まった分量の実測値 (issue #9)。
+    渡すと、前置きの見積もり (`_preamble_tokens`) の代わりにこの値を使う。7.2 は
+    `system` + `tools` + 最後の 1 手 + チャットテンプレートの包みを対象サーバーに
+    数えさせた値を渡す。返り値の `approx_tokens` は、この値 + 履歴の長さになる
+    (最後の 1 手まで含む)。省くと、これまでどおり前置き + 履歴の見積もりを返し、
     最後の 1 手は含まない。
+
+    同じ引数 (同じ `fixed_tokens`) なら出力は決定的で、`fixed_tokens` を変えると
+    止める位置だけが変わる。出力そのものは変わらないので、
+    `GENERATOR_VERSION` は上げない。
     """
     if target_tokens <= 0:
         raise ValueError(
@@ -1017,6 +1035,10 @@ def build_conversation(
             f"build_conversation: target_tokens が大きすぎる "
             f"(target_tokens={target_tokens}, 上限={_MAX_TARGET_TOKENS})"
         )
+    if fixed_tokens is not None and (not math.isfinite(fixed_tokens) or fixed_tokens < 0):
+        raise ValueError(
+            f"build_conversation: fixed_tokens は 0 以上の有限の数 (fixed_tokens={fixed_tokens})"
+        )
 
     ratios = (
         dict(chars_per_token)
@@ -1027,7 +1049,7 @@ def build_conversation(
     corpus = TemplateCorpus(ratios)
 
     messages: list[InputMessage] = []
-    total = _preamble_tokens(ratios)
+    total = _preamble_tokens(ratios) if fixed_tokens is None else fixed_tokens
     round_index = 0
     while round_index < _MAX_ROUNDS:
         current = _build_round(corpus, ratios, conversation_seed, round_index)

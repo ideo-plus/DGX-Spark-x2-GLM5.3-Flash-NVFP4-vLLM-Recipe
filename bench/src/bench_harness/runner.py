@@ -25,6 +25,7 @@
 |---|---|---|
 | すべてのまとまりが終わった | `completed` | 0 |
 | 要求の失敗が続いた (10.3) | `aborted` | 2 |
+| 要求の包みのトークン数を数えられない (issue #9) | `aborted` | 2 |
 | 中断の合図を受けた (10.4) | `interrupted` | 130 |
 | 前提の不足、設定の誤り (1.4、8.5) | (作らない) | 1 (例外) |
 | 生データを保存できない (8.1) | `aborted` | 例外をそのまま投げ直す |
@@ -35,9 +36,16 @@
   1 件ごと**なので、同時処理の 1 回ぶん (n 本) が全滅すると、その 1 回で n 回
   数える (既定の 5 回なら、`concurrency/c8` の 1 回ぶんの全滅で止まる)。
   止めると決まっても、その 1 回ぶんのレコードは最後まで書く (下記)
-- **上限の超過** (3.6、6.9): `plan()` が返した `SkippedCondition` と、
-  `ConditionAborted` の `skipped` を、どちらも `manifest.skipped` に足して、
-  次の条件に進む
+- **上限の超過、送る前にわかる不成立** (3.6、6.9、issue #9): `plan()` が返した
+  `SkippedCondition` と、`ConditionAborted` の `skipped` (上限の超過のほか、
+  同時処理の狙いが要求の包み以下のとき) を、どちらも `manifest.skipped` に
+  足して、次の条件に進む
+- **包みのトークン数を数えられない** (issue #9): `concurrency` と `agent` は、
+  条件の最初に要求の包みを対象サーバーに数えさせる。数えられず `ProbeError` が
+  出たときは、黙って文字数の見積もりに戻さず、その条件の試行を送らずに、計測ラン
+  を止める。理由 (条件の鍵と、数えられなかった訳) を `manifest.warnings` と標準
+  エラーに残し、状態は `aborted`、終了の値は 2。ここまでに残した試行は生データに
+  あるので、要約は作れる
 - **中断** (10.4): `SIGINT` と `SIGTERM` を受けたら、計測の本体の task を
   取り消す。送っている途中の要求は、そのまま打ち切られる。打ち切られた試行の
   レコードは**作らない** (レコードを作れるのは、応答が終わったときだけ) ので、
@@ -63,12 +71,13 @@
 
 ## 使った公開の課題 (5.5、5.7、task 8.1)
 
-まとまりの側からは実行の条件を書けない (`SuiteContext` の口は `put_body` だけ)
-ので、`run_info()` を持つまとまり (`SupportsRunInfo`。いまは品質の検査だけ) に
-ついては、**そのまとまりを流し終えたあとに**進行の側が読み取り、
-`RunManifest.datasets` に足す。止まった計測ランでも、中断した計測ランでも、
-そこまでに使った課題は残す (未完了の要約にも、何で測ったかが要る)。コードの
-条件を飛ばした計測ランでは、使った課題がないので、何も書かない (5.7)。
+まとまりの側からは実行の条件を書けない (`SuiteContext` の保存の口は `put_body`
+だけで、数える口 `count_input_tokens` は別) ので、`run_info()` を持つまとまり
+(`SupportsRunInfo`。いまは品質の検査だけ) については、**そのまとまりを流し
+終えたあとに**進行の側が読み取り、`RunManifest.datasets` に足す。止まった
+計測ランでも、中断した計測ランでも、そこまでに使った課題は残す (未完了の
+要約にも、何で測ったかが要る)。コードの条件を飛ばした計測ランでは、使った
+課題がないので、何も書かない (5.7)。
 
 ## 内部の指標 (7.1、7.4、7.5)
 
@@ -98,12 +107,12 @@ from pydantic import JsonValue, SecretStr
 
 from bench_harness import __version__, config
 from bench_harness.client.messages import HttpxMessagesClient, MessagesClient
-from bench_harness.client.probe import is_context_limit_error, preflight
+from bench_harness.client.probe import ProbeError, is_context_limit_error, preflight
 from bench_harness.metrics import HttpxMetricsScraper, MetricsScraper, derive
 from bench_harness.store import RunStore, StoreError, new_run_id
 from bench_harness.suites import ConditionAborted, Suite, SuiteContext, make_suite_context
 from bench_harness.suites.agent import AgentSuite
-from bench_harness.suites.concurrency import SUITE as _CONCURRENCY_SUITE
+from bench_harness.suites.concurrency import ConcurrencySuite
 from bench_harness.suites.decode import decode_suite as _DECODE_SUITE
 from bench_harness.suites.prefill import SUITE as _PREFILL_SUITE
 from bench_harness.suites.quality import ProblemsLoader, QualitySuite
@@ -225,11 +234,13 @@ def default_suite_registry(
 ) -> dict[SuiteName, Suite]:
     """名前から、まとまりの実体への対応表 (計測ランごとに 1 つ作る)。
 
-    速さの 3 つ (3.2、3.3、3.4) は状態を持たないので、module の実体をそのまま
-    配る。品質の検査 (6.7) と長い会話の検査 (7.2) は、計測ランごとの覚え書き
-    (使った公開の課題、上限に当たった長さ) を持つので、**呼ばれるたびに作り
-    直す**。共有の状態そのものがなくなるので、1 つのプロセスで 2 つの計測ラン
-    を流しても混ざらない (注 7.2 → 8.1、6.7 → 8.1)。
+    状態を持たないのは decode (3.2) と prefill (3.3) なので、module の実体を
+    そのまま配る。同時処理 (3.4) は包みの計測の覚え書き (issue #9: 計測ランに
+    つき 1 回数えたトークン数) を、品質の検査 (6.7) と長い会話の検査 (7.2) は
+    計測ランごとの覚え書き (使った公開の課題、上限に当たった長さ、包みの計測の
+    結果) を持つので、**呼ばれるたびに作り直す**。共有の状態そのものがなくなる
+    ので、1 つのプロセスで 2 つの計測ランを流しても混ざらない
+    (注 7.2 → 8.1、6.7 → 8.1)。
 
     `problems_loader` は、公開のコードの課題の読み方である。既定 (`None`) は
     まとまり自身の読み方 (`humaneval.load_humaneval_plus` の既定の置き場所)。
@@ -242,7 +253,7 @@ def default_suite_registry(
     return {
         SuiteName.DECODE: _DECODE_SUITE,
         SuiteName.PREFILL: _PREFILL_SUITE,
-        SuiteName.CONCURRENCY: _CONCURRENCY_SUITE,
+        SuiteName.CONCURRENCY: ConcurrencySuite(),
         SuiteName.QUALITY: quality,
         SuiteName.AGENT: AgentSuite(),
     }
@@ -270,8 +281,9 @@ class SupportsRunInfo(Protocol):
     """`run_info()` を持つまとまり。
 
     `run_info()` は `Suite` の約束事 (design.md suites) にない。まとまりの側
-    からは実行の条件を書けない (`SuiteContext` の口は `put_body` だけ) ので、
-    進行の側が、持っているまとまりだけを見分けて書き写す。
+    からは実行の条件を書けない (`SuiteContext` の保存の口は `put_body` だけで、
+    数える口 `count_input_tokens` は別) ので、進行の側が、持っているまとまり
+    だけを見分けて書き写す。
     """
 
     def run_info(self) -> SuiteRunInfo: ...
@@ -386,7 +398,7 @@ async def execute_run(
         # 文脈を、前提の確認より先に組み立てる。使えない設定 (thinking) は、
         # 対象サーバーへ 1 件も送る前に前提の不足になり、計測ランのディレクトリ
         # も作られない (注 3.1)。上限は、このあとの前提の確認で入れ直す
-        ctx = _build_context(client, profile, target, run_id, handle)
+        ctx = _build_context(client, profile, target, run_id, handle, api_key)
         ok = await _preflight(client, target, profile, api_key)
         ctx = _with_context_limit(ctx, ok.context_limit)
         manifest = _build_manifest(req, target, profile, ok, run_id=run_id, started_at=started_at)
@@ -506,6 +518,7 @@ def _build_context(
     target: TargetDef,
     run_id: str,
     handle: _StoreHandle,
+    api_key: SecretStr | None,
 ) -> SuiteContext:
     """まとまりの文脈を組み立てる。使えない設定は前提の不足にする (注 3.1)。
 
@@ -513,6 +526,10 @@ def _build_context(
     あとで `_with_context_limit` が入れ直す。使えない設定 (thinking) の判定を、
     通信より前に済ませるための順序。判定の決まりは `make_suite_context` が持ち、
     ここでは写さない (決まりを 2 か所に持たないため)。
+
+    `api_key` は、包みの計測 (issue #9) の既定の口が、`count_tokens` の要求に
+    付けるために使う (`make_suite_context` が閉じ込める。`SuiteContext` そのもの
+    には残さない)。
     """
     try:
         return make_suite_context(
@@ -522,6 +539,7 @@ def _build_context(
             run_id=run_id,
             put_body=handle.put_body,
             context_limit=None,
+            api_key=api_key,
         )
     except ValueError as exc:
         raise PreconditionError(f"設定の誤り: {exc}") from exc
@@ -718,10 +736,17 @@ class _Run:
                         break  # 次の 1 回ぶんまで来た。保存はしたので、ここで止める
                     if group_count >= cond.concurrency:
                         break  # この 1 回ぶんは、すべて受け取った
+            except ProbeError as exc:
+                # 要求の包みのトークン数を数えられなかった (issue #9)。見積もりに戻さず、
+                # この条件の試行は送らずに、計測ランを止める。ここ (内側の try) で
+                # 扱うのは、警告を書く途中の保存の失敗を、外側の except が受け取る
+                # ようにするため
+                self._abort_because_frame_cannot_be_counted(cond, exc)
             finally:
                 await _aclose(iterator)
         except ConditionAborted as exc:
-            # 上限の超過。この条件だけを終わりにして、次の条件に進む (3.6、6.9)
+            # その条件を送れない、または続けられない (上限の超過、狙いが包み以下など)。
+            # この条件だけを終わりにして、次の条件に進む (3.6、6.9)
             self._record_skip(exc.skipped)
         except (StoreError, OSError) as exc:
             # 生データを保存できなかった (`append_trial` か `put_body`)。要求の
@@ -733,6 +758,21 @@ class _Run:
             raise
         finally:
             await self._write_metrics(cond, before, cancelled=cancelled)
+
+    # --- 包みを数えられない (issue #9) ---
+
+    def _abort_because_frame_cannot_be_counted(self, cond: ConditionPlan, exc: ProbeError) -> None:
+        """包みのトークン数を数えられなかったので、計測ランを止める合図を立てる。
+
+        状態 (`aborted`)、終了の値 (2)、理由 (警告) を、連続の失敗と同じ経路
+        (`_abort_reason` → `execute` の `_finish`) で作る。呼び出し元の
+        `_run_condition` が `_run_suite` と `_run_all` を、この合図で止める。
+        """
+        self._abort_reason = (
+            f"要求の包みのトークン数を数えられなかったので、計測ランを止めた (条件: {cond.key})。"
+            f"{exc}"
+        )
+        self._warn(self._abort_reason)
 
     # --- 連続の失敗 (10.3) ---
 

@@ -44,6 +44,7 @@ import time
 from collections import Counter
 from typing import Final
 
+import pytest
 from jsonschema import Draft202012Validator  # type: ignore[import-untyped]
 from pydantic import HttpUrl, JsonValue
 
@@ -52,6 +53,7 @@ from bench_harness.config import select_profile
 from bench_harness.corpus.conversation import (
     MESSAGES_PER_ROUND,
     SYSTEM_PROMPT,
+    _preamble_tokens,
     build_conversation,
     derive_conversation_seed,
     history_task_index,
@@ -1121,3 +1123,56 @@ def test_a_tiny_target_still_yields_one_whole_round() -> None:
     assert _round_count(prefix) == 1
     assert prefix.messages[0].role == "user"
     assert prefix.messages[-1].role == "assistant"
+
+
+# --- 7. fixed_tokens (issue #9: 包みを差し引いて狙う) ---------------------------
+
+
+def test_fixed_tokens_replaces_the_estimated_preamble() -> None:
+    """`_preamble_tokens` と同じ値を渡せば、省略時と同じ会話になる (置き換えで別物ではない)。"""
+    base = _conversation(20_000, 0, ratios=_QUICK_RATIOS)
+
+    same = build_conversation(
+        target_tokens=20_000,
+        conversation_seed=derive_conversation_seed(0, 0),
+        chars_per_token=_QUICK_RATIOS,
+        fixed_tokens=_preamble_tokens(_QUICK_RATIOS),
+    )
+
+    assert same.model_dump_json() == base.model_dump_json()
+
+
+def test_a_larger_fixed_tokens_stops_earlier_and_keeps_the_prefix() -> None:
+    """`fixed_tokens` を見積もりより大きくすると、手番が減り、短いほうが先頭になる。"""
+    seed = derive_conversation_seed(0, 0)
+    base = _conversation(20_000, 0, ratios=_QUICK_RATIOS)
+
+    bigger = build_conversation(
+        20_000,
+        seed,
+        chars_per_token=_QUICK_RATIOS,
+        fixed_tokens=_preamble_tokens(_QUICK_RATIOS) + 3_000,
+    )
+
+    assert _round_count(bigger) < _round_count(base)
+    assert base.messages[: len(bigger.messages)] == list(bigger.messages)
+    assert bigger.system == base.system
+
+
+def test_fixed_tokens_is_included_in_approx_tokens() -> None:
+    """`approx_tokens` は `fixed_tokens + 履歴` で、包みを含んだ全体の見積もりになる。"""
+    seed = derive_conversation_seed(0, 0)
+
+    prefix = build_conversation(4_000, seed, chars_per_token=_QUICK_RATIOS, fixed_tokens=5_000)
+
+    assert _round_count(prefix) == 1
+    assert prefix.approx_tokens >= 5_000
+
+
+def test_invalid_fixed_tokens_raise_value_error() -> None:
+    """負・非有限の `fixed_tokens` は、境界で即座に `ValueError` にする (黙って呑まない)。"""
+    seed = derive_conversation_seed(0, 0)
+
+    for invalid in (-1.0, math.nan, math.inf):
+        with pytest.raises(ValueError):
+            build_conversation(20_000, seed, chars_per_token=_QUICK_RATIOS, fixed_tokens=invalid)

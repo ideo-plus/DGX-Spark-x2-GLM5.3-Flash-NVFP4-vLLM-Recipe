@@ -25,6 +25,7 @@ from pydantic import JsonValue
 
 from bench_harness import runner as runner_module
 from bench_harness.client.messages import HttpxMessagesClient
+from bench_harness.client.probe import ProbeError
 from bench_harness.runner import (
     EXIT_ABORTED,
     EXIT_INTERRUPTED,
@@ -41,6 +42,7 @@ from bench_harness.runner import (
 )
 from bench_harness.store import RunStore, StoreError, list_run_dirs
 from bench_harness.suites import agent as agent_module
+from bench_harness.suites import concurrency as concurrency_module
 from bench_harness.suites import quality as quality_module
 from bench_harness.suites.agent import AgentSuite
 from bench_harness.suites.base import (
@@ -73,6 +75,7 @@ from bench_harness.types import (
 from fake_server import (
     FakeServer,
     Script,
+    estimator_aligned_counter,
     http_error_response,
     replace,
     stalled_response,
@@ -722,17 +725,21 @@ def test_the_registry_hands_out_a_fresh_quality_and_agent_suite_every_time() -> 
     """計測ランごとに作り直す (共有の状態そのものをなくす。注 7.2 → 8.1、6.7 → 8.1)。
 
     module の実体 (`SUITE`) を配ると、1 つのプロセスで 2 つの計測ランを流したとき
-    に、覚え書き (使った公開の課題、上限に当たった長さ) が持ち越されうる。
+    に、覚え書き (使った公開の課題、上限に当たった長さ) が持ち越されうる。同時
+    処理 (3.4) も、包みの計測の結果を run_id ごとに覚えるので作り直す (issue #9)。
     """
     first = default_suite_registry()
     second = default_suite_registry()
 
     assert isinstance(first[SuiteName.QUALITY], QualitySuite)
     assert isinstance(first[SuiteName.AGENT], AgentSuite)
+    assert isinstance(first[SuiteName.CONCURRENCY], concurrency_module.ConcurrencySuite)
     assert first[SuiteName.QUALITY] is not second[SuiteName.QUALITY]
     assert first[SuiteName.AGENT] is not second[SuiteName.AGENT]
+    assert first[SuiteName.CONCURRENCY] is not second[SuiteName.CONCURRENCY]
     assert first[SuiteName.QUALITY] is not quality_module.SUITE
     assert first[SuiteName.AGENT] is not agent_module.SUITE
+    assert first[SuiteName.CONCURRENCY] is not concurrency_module.SUITE
 
 
 def test_the_registry_can_be_given_a_problems_loader_for_the_quality_suite() -> None:
@@ -1168,6 +1175,110 @@ async def test_a_skipped_condition_from_plan_is_recorded_in_the_manifest(
     assert outcome.status is RunStatus.COMPLETED
     assert [skipped.key for skipped in opened(outcome).manifest().skipped] == ["quality/long"]
     assert len(trials_of(outcome)) == 1
+
+
+# --- 要求の包みを数えるとき (issue #9) -----------------------------------------
+
+
+async def test_a_concurrency_target_at_or_below_the_frame_is_skipped_with_a_reason(
+    fake_server: FakeServer, tmp_path: Path
+) -> None:
+    """狙いが包み以下の条件は、traceback を出さずに、理由つきで飛ばして完了する。
+
+    `make_bed` の `input_tokens` は 400。偽のサーバーの数え方で包みを 500 トークン以上に
+    すると、どの水準も文章を入れられない。試行の要求は 1 件も送らない (`count_tokens`
+    の 1 件だけ)。
+    """
+    fake_server.set_response(text_response("ok"))
+    fake_server.set_input_token_counter(estimator_aligned_counter(fixed=500))
+    bed = make_bed(tmp_path, fake_server, concurrency_levels=(1, 2))
+
+    outcome = await execute(bed, suites=[SuiteName.CONCURRENCY])
+
+    assert outcome.status is RunStatus.COMPLETED
+    assert outcome.exit_code == EXIT_OK
+    manifest = opened(outcome).manifest()
+    assert manifest.status is RunStatus.COMPLETED
+    assert [skipped.key for skipped in manifest.skipped] == ["concurrency/c1", "concurrency/c2"]
+    frame_tokens = fake_server.requests_for("/v1/messages/count_tokens")[0].input_tokens
+    assert frame_tokens >= 500
+    for skipped in manifest.skipped:
+        assert skipped.suite is SuiteName.CONCURRENCY
+        assert "400" in skipped.reason
+        assert str(frame_tokens) in skipped.reason
+    assert trials_of(outcome) == []
+    assert fake_server.call_count("/v1/messages/count_tokens") == 1
+
+
+class ProbeFailingSuite(StubSuite):
+    """条件 `b` の最初の 1 件を送る前に、包みを数えられずに `ProbeError` を投げるまとまり。
+
+    本物の `concurrency` / `agent` と同じ場所 (`run_condition` の最初の `__anext__`) で
+    投げる。条件 `a` は、`StubSuite` のとおりに流れる。
+    """
+
+    async def run_condition(
+        self, ctx: SuiteContext, cond: ConditionPlan
+    ) -> AsyncIterator[TrialRecord]:
+        if cond.key == condition_key(self.name, "b"):
+            raise ProbeError("boom")
+        async for record in super().run_condition(ctx, cond):
+            yield record
+
+
+async def test_a_frame_that_cannot_be_counted_aborts_the_run_with_a_reason(
+    fake_server: FakeServer, tmp_path: Path
+) -> None:
+    """包みを数えられないと、計測ランは `aborted`・終了の値 2 で止まり、理由が残る。
+
+    `running` のまま残さない (要約と比較が「異常終了した跡」と読み違えない)。数えられない
+    条件の試行は 1 件も送らず、飛ばした条件にも数えない。
+    """
+    fake_server.set_response(text_response("ok"))
+    bed = make_bed(tmp_path, fake_server)
+    registry = stub_registry(
+        ProbeFailingSuite([StubCondition(key="a", trials=1), StubCondition(key="b", trials=1)])
+    )
+
+    outcome = await execute(bed, suites=[SuiteName.QUALITY], registry=registry)
+
+    assert outcome.status is RunStatus.ABORTED
+    assert outcome.exit_code == EXIT_ABORTED
+    manifest = opened(outcome).manifest()
+    assert manifest.status is RunStatus.ABORTED
+    assert any("boom" in warning and "quality/b" in warning for warning in manifest.warnings)
+    assert [record.condition for record in trials_of(outcome)] == ["quality/a"]
+    assert manifest.skipped == []
+
+
+async def test_a_storage_failure_while_recording_the_frame_failure_still_marks_the_run_aborted(
+    fake_server: FakeServer, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """理由 (警告) を書く途中で保存に失敗したら、保存の失敗の取り決めに従う (8.1)。
+
+    状態を `aborted` にして印を残し、例外は外へ出す (`ProbeError` の理由が残せなくても、
+    `running` のまま残さない)。
+    """
+    fake_server.set_response(text_response("ok"))
+    bed = make_bed(tmp_path, fake_server)
+    registry = stub_registry(
+        ProbeFailingSuite([StubCondition(key="a", trials=1), StubCondition(key="b", trials=1)])
+    )
+    original = RunStore.update_manifest
+
+    def fail_on_warnings(self: RunStore, **changes: Any) -> Any:
+        if "warnings" in changes:
+            raise StoreError("試験のための警告の保存の失敗")
+        return original(self, **changes)
+
+    monkeypatch.setattr(RunStore, "update_manifest", fail_on_warnings)
+
+    with pytest.raises(StoreError):
+        await execute(bed, suites=[SuiteName.QUALITY], registry=registry)
+
+    run_dirs = list_run_dirs(bed.results_root)
+    assert len(run_dirs) == 1
+    assert RunStore.open(run_dirs[0]).manifest().status is RunStatus.ABORTED
 
 
 # --- 内部の指標 (7.1、7.4、7.5) -----------------------------------------------
