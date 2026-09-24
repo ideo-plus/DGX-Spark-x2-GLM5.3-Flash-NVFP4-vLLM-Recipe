@@ -1,57 +1,60 @@
-# HAND_OFF — GPU クロック上限と、smoke・full 構成での計測の後
+# HAND_OFF — 熱対策の常設と、agent 20k の初回計測の後
 
-最終更新: 2026-09-23 16:30 JST。GPU クロック上限を決め、smoke 構成で decode・quality を、full 構成（文脈長 163840、同時実行 16）で prefill・concurrency・quality を計測した。
+最終更新: 2026-09-24 08:30 JST。
+熱源を X925 の張り付きと特定し、GPU と X925 の 2 つの上限を systemd で常設した。
+そのうえで、agent 20k を初めて計測した。
 推論サーバーは停止済み。次の実機操作は計測者の指示を待つ。
 
 ## 最初に読む要約
 
-- 自前イメージで実重み TP=2 を起動し、IB 経路、日本語・英語の短い応答、SSE での decode 計測まで確認した。
-  結果は [GPU クロック上限と初回 decode 計測](docs/results/2026-09-23-decode-gpu-clock-cap.md)。
-- decode（同時実行 1、文脈長 4096、`quick`）は 4 条件とも約 13.9〜14.2 tok/s、失敗 0。
-- quality（`quick`）: toolcall 37/50（解釈は 50 件とも成功。不正解は下調べのツールを先に呼んだもの）。
-  code 26/40（不正解 14 件はすべて出力上限 1024 に達した打ち切り）。
-- full 構成（[記録](docs/results/2026-09-23-full-context.md)）:
-  - KV は 1,708,119 トークン
-  - cold prefill は約 1,500 tok/s（128k で最初のトークンまで 86 秒）
-  - concurrency の合計は 8 本で約 51 tok/s
-  - needle は 128k まで 15 条件すべて正解（各 2 試行）
-- full 構成の head の prefill で、ACPI 熱区域 0・4 が 89.8℃ に達した（90℃ まで 0.2℃）。
-  X925 の 1 コアが常に 100% だが、それだけでは説明できない。agent のような長時間の cold prefill は熱の余裕が乏しい。
-- **両台に `nvidia-smi -lgc 300,1800` を手動で設定している。** 全力負荷で ACPI 熱区域 80℃・電力ピーク約 54 W に収まった。
-  既定クロックでは 92.6℃ まで上がった。再起動で消えるので、計測前に毎回確認する。
-  上限で decode は約 3.3% 下がった（参考値）。行列積は約 15% 下がる。
-- 両台の `/etc/sudoers.d/nvidia-clock` で、`nvidia-smi -lgc *` と `nvidia-smi -rgc` だけを NOPASSWD で許可した。
-  そのほかの sudo にはパスワードが要る。
-- GB10 の減速の理由（clocks_event_reasons）とカウンタは当てにならない。クロック・TFLOPS・温度の実測で判断する。
-- 16:07 JST の停止後、両台ともコンテナは absent、GPU プロセスは 0 件だった。再開時は状態を読み直す。
-- agent（長い会話）と長時間運転は未確認。
-- TAKT の割り当てを変更し、Codex の利用上限（9/27 19:38 まで）のあいだは codex の割り当てを Claude に移している（下記「TAKT と CI」）。
-- 短い応答の確認には `serve smoke ... --max-tokens 512` を使う。既定の 64 では日本語の本文が空だった。
+- **計測の条件（常設）:** 両台で `spark-power-caps.service` が次の 2 つを起動のたびに入れる。
+  - GPU の上限 `-lgc 300,1800`
+  - X925（CPU 5〜9、15〜19）の上限 3.0 GHz
+
+  値は `/etc/default/spark-power-caps`、写し元は `serving/payload/spark-power-caps.default`。
+  値の変更と反映は、sudoers で許した固定形でパスワードなしに行える（[README](ops/spark-power-caps/README.md)）。
+- **上限の確かめ方:** 計測中の上限は、`serve watch` の `result.json` で確かめる。
+  - CPU は `cpu_cluster_max_freq_khz`（x925 が 3000000）
+  - GPU は `gpu_sm_clock_range_mhz`（1800 以下）
+
+  GB10 の `nvidia-smi` には、GPU の上限の設定状態が出ない。減速の理由とカウンタも当てにならない。
+- **熱:** ACPI 熱区域 0・4 の余分な熱は、処理中に X925 の 2 コアが張り付くこと（推論サーバーの待ち受けと推定）による（[記録](docs/results/2026-09-23-thermal-source.md)）。
+  - X925 を 3.0 GHz にすると、head の最高は 86.9℃ から 70.8℃ に下がった。
+  - 代わりに、cold 128k の prefill が約 4% 下がる。
+- **結果の記録:**
+  - smoke 構成（文脈長 4096、同時実行 1）の decode・quality: [記録](docs/results/2026-09-23-decode-gpu-clock-cap.md)
+  - full 構成（文脈長 163840、同時実行 16）の prefill・concurrency・needle: [記録](docs/results/2026-09-23-full-context.md)
+  - agent 20k: [記録](docs/results/2026-09-24-agent-20k.md)。50/50 が正しく、崩れは 0。ただし「試行の数が足りない」。熱区域の最高は 64.9℃。
+- **停止の状態:** 08:10 JST 過ぎの停止後、両台ともコンテナは absent、GPU プロセスは 0 件。再開時は状態を読み直す。
+- **TAKT:** 準備作業は、依頼を GitHub issue に書き、`takt --pipeline --auto-pr -b <branch> -i <番号>` で PR まで流す（下記「TAKT と CI」）。
+- **計測者への依頼の仕方:** 長いコマンドや sudo の手打ちを頼まない。モバイルからは打てない。
+  root が要る変更は、NOPASSWD の固定形で対話側が実行できる設計にし、了承は返事だけで済むようにする。
+- **作業の規則:** `docs/rules/**/*.md` を毎回読む。Claude Code ではフックが入れる。今はボーイスカウトルールがある。
 
 ## 再開手順
 
-1. `AGENTS.md`、`CLAUDE.md`、このファイル、[最新の記録](docs/results/2026-09-23-decode-gpu-clock-cap.md) を読み、
-   `git status` で未コミットの差分を確認する。
-2. 両台の GPU クロック上限を読み取りで確かめる。`nvidia-smi -q -d CLOCK` や、負荷中の SM が 1800 付近かで見る。
-   再起動などで外れていれば `ssh <host> 'sudo -n nvidia-smi -lgc 300,1800'` で入れ直す。状態変更なので計測者の了承を取る。
-3. 生成済みの `serving/var/nope-build-0961bbae/tp2.toml`（Git 対象外）があるか確認する。
+1. `AGENTS.md`、`CLAUDE.md`、`docs/rules/`、このファイル、最新の記録を読み、`git status` で未コミットの差分を確認する。
+2. 両台で次を読み取りで確かめる。
+   - `systemctl is-active spark-power-caps.service` が `active`
+   - X925 の `scaling_max_freq` が 3000000
+   - コンテナが absent
+3. 生成済みの構成 `serving/var/nope-build-0961bbae/tp2.toml`（smoke）と `tp2-full.toml`（full）があるか確認する（Git 対象外）。
 4. 実機操作は対話側で行う。全関門を再検査して起動し、ready と**今回分**の IB を確認する。
    PID が過去と同じで NCCL ログが上書きされることがあるので、開始時刻と初期化回数で帰属を確かめる。
-5. 計測中は GPU の温度・SM クロック・電力、ACPI 熱区域の最高値を 10 秒ごとに記録する。
-   記録には `serving/var/thermal-20260923/sample.sh` が使える（読み取りだけ。Git 対象外なので、ツール化を [#12](https://github.com/ideo-plus/DGX-Spark-GLM5.3-Flash-Recipe/issues/12) で扱う）。
-   ACPI が 90℃ に近づいたら、その区間を基準値として扱わない。
-6. 計測後はログ回収・所有確認・停止まで行い、結果と未確認範囲を記録する。
+5. 計測中は `serve watch --interval 10s` を並べる。熱区域と hwmon を見つけるのに、起動から約 2 分半かかる。
+   ACPI が 90℃ に達した区間は、基準値として扱わない。
+6. 計測後はログ回収・所有確認・停止まで行い、`result.json` で上限と熱を確かめてから記録する。
 
 以下は参照用のコマンド。作業ディレクトリはリポジトリ直下。
 
 ```bash
-uv run --directory serving serve check p2-nope-tp2-smoke --configs var/nope-build-0961bbae/tp2.toml
-uv run --directory serving serve start p2-nope-tp2-smoke --configs var/nope-build-0961bbae/tp2.toml --timeout 3h --yes
-uv run --directory serving serve smoke p2-nope-tp2-smoke --configs var/nope-build-0961bbae/tp2.toml --max-tokens 512
-uv run --directory bench bench run --target p2-nope-tp2-smoke --suite quality --profile quick
+uv run --directory serving serve check p2-nope-tp2-full --configs var/nope-build-0961bbae/tp2-full.toml
+uv run --directory serving serve start p2-nope-tp2-full --configs var/nope-build-0961bbae/tp2-full.toml --timeout 3h --yes
+uv run --directory serving serve smoke p2-nope-tp2-full --configs var/nope-build-0961bbae/tp2-full.toml --max-tokens 512
+uv run --directory serving serve watch p2-nope-tp2-full --configs var/nope-build-0961bbae/tp2-full.toml --interval 10s --duration 3h
+uv run --directory bench bench run --target p2-nope-tp2-full --suite agent --profile quick --set agent.end_tokens=20000
 ```
 
-同時実行は 1、文脈長は 4096。長文脈や並列性能の結果と混同しない。
 `quality` は toolcall だけを選択できず、code・needle も計画する。`quality.code_problem_limit=0` は無効。
 `serving` は本文を保存しない。一方、`bench` は PLAN.md の方針に従い、合成データの本文を Git 対象外の
 `results/` に保存する。公開記録には本文を含めない。`serve smoke` の stderr（応答の本文）はファイルに保存しない。
@@ -82,14 +85,16 @@ NCCL のログは古いものも回収される。所有確認済みコンテナ
 使っている TAKT は 0.66.0。固定したワークフローの導入元、使い分け、検証結果は
 [開発手順](docs/development/takt-preparation.md) を参照する。
 `.takt/runtime.yaml` は profile 名の割り当て、モデル・接続先の実体は `~/.takt/runtime.yaml` にある。
-`--pipeline --skip-git` で実行しており、worktree は作っていない。今後 worktree を使う場合は `mise trust` を実行する。
+PR まで作る依頼は GitHub issue の本文に書き、`--pipeline --auto-pr -b <branch> -i <番号>` で渡す（`--task` では全文が PR タイトルになり失敗する）。
+TAKT のコミットが、依頼で分けるよう求めた変更を 1 つにまとめることがあるので、PR の前に差分を確かめる。
+worktree は作っていない。今後 worktree を使う場合は `mise trust` を実行する。
 
 2026-09-23 に `~/.takt/` の設定を次のように変えた（Git 対象外。控えは `~/.takt/*.bak-20260923`・`*.codex-20260923`）。
 
 | 項目 | 設定 |
 |---|---|
 | `t2` | `claude-opus-5-5` |
-| `t0-production-code` | 本来は codex / `gpt-6-luna`。**9/27 19:38 までは claude / `claude-sonnet-5`** |
+| `t0-production-code` | **2026-09-24 から opencode / `opencode-go/deepseek-v4.1-flash`（計測者の指示で試行中）**。以前は claude / `claude-sonnet-5`、本来は codex / `gpt-6-luna` |
 | `t3-judge` | 本来は codex / `gpt-6-astra`。**9/27 19:38 までは claude / `claude-opus-5-5`** |
 | `rate_limit_fallback` | `claude-opus-5-5`。本来は続けて codex / `gpt-6-sol`（上限中はコメントアウト） |
 | `codex_cli_path` | mise の codex 0.156.0 の実体。codex を更新したらパスも直す |
@@ -192,13 +197,11 @@ SSE、ツール呼び出し、品質・性能、長文脈は未確認。[最新�
 
 ## 再開時の選択肢と保留事項
 
-1. **推奨: 熱の余裕を確かめてから agent に進む（[#11](https://github.com/ideo-plus/DGX-Spark-GLM5.3-Flash-Recipe/issues/11)）。**
-   ACPI 熱区域 0・4 の熱源を探す。例えば、張り付いた X925 のコアや CPU の上限を変えて、cold 128k の prefill だけを比べる。
-   そのうえで `--suite agent --set agent.end_tokens=20000` から段階的に始める（`full-context-procedure.md` §5）。
-2. 上限 1800 を再起動後も保つ systemd サービスにする（[#10](https://github.com/ideo-plus/DGX-Spark-GLM5.3-Flash-Recipe/issues/10)）。Spark の設定を長く変えるので、計測者の了承が要る。
+1. **推奨: agent の試行を増やして崩れの割合を判定する（`--set agent.trials_per_stage=300`）。**
+   20k だけなら約 30 分。そのあと 40k〜120k の段を足す。
+2. vLLM が X925 を張り付かせる待ち受けを抑える設定を、TAKT で調べる。熱の元そのものを減らせるかを確かめる。
 3. code の出力上限を上げて比べる。`--set` で変えられるかを先に確かめる。
-4. concurrency を `--set concurrency.rounds=20` で測り直し、再現性を確かめる（入力の長さのずれは [#9](https://github.com/ideo-plus/DGX-Spark-GLM5.3-Flash-Recipe/issues/9)）。
-   入力が狙いより 7〜9% 長い原因も調べる。
+4. concurrency と agent の入力が狙いより 5〜9% 長い原因を調べる（[#9](https://github.com/ideo-plus/DGX-Spark-GLM5.3-Flash-Recipe/issues/9)）。
 
 別途判断する事項:
 
