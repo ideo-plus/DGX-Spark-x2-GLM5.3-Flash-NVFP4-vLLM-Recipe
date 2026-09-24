@@ -136,6 +136,13 @@
 実際のトークン数で差し引くためである。省くと、これまでどおり前置きを文字数で
 見積もる。
 
+`history_scale` は、履歴の見積もりに対する対象サーバーの実測の比 (issue #24)。
+7.2 が段階 × 会話ごとに組み立てた会話を数えさせ、`(数えた長さ − 包み) ÷ 履歴の
+見積もり` で決めた値を渡す。手番を足すたびの見積もりにこの比を掛けるので、止める
+位置が「実測では狙いに近い手番の境界」になる。既定の 1.0 は今までと同じ見積もりで、
+出力の内容 (手番そのもの) は比によって変わらない。よって `GENERATOR_VERSION` は
+上げない。
+
 `config/profiles.toml` の `quick` の比で測った実測値 (400 手番): 1 手番は
 最小 47、中央値 190、平均 394、最大 1528 トークン。会話 5 本での手番の数は、
 2 万トークンの段階で 36〜61、12 万トークンの段階で 286〜311 になり、狙いとの
@@ -1006,6 +1013,7 @@ def build_conversation(
     *,
     chars_per_token: Mapping[ContentKind, float] | None = None,
     fixed_tokens: float | None = None,
+    history_scale: float = 1.0,
 ) -> ConversationPrefix:
     """takt の作業を模した会話を、狙った長さまで組み立てる (design.md corpus、6.1、6.2)。
 
@@ -1021,9 +1029,15 @@ def build_conversation(
     (最後の 1 手まで含む)。省くと、これまでどおり前置き + 履歴の見積もりを返し、
     最後の 1 手は含まない。
 
-    同じ引数 (同じ `fixed_tokens`) なら出力は決定的で、`fixed_tokens` を変えると
-    止める位置だけが変わる。出力そのものは変わらないので、
-    `GENERATOR_VERSION` は上げない。
+    `history_scale` は、履歴の見積もりに対する対象サーバーの実測の比 (issue #24)。
+    手番を足すたびの見積もりに掛ける。7.2 が `(数えた長さ − 包み) ÷ 履歴の
+    見積もり` で決めた値を渡す。`approx_tokens` は
+    `round(fixed_tokens + history_scale × Σ手番の見積もり)` になる。出力そのもの
+    (system、tools、手番の中身) は比によって変わらないので、`GENERATOR_VERSION` は
+    上げない。
+
+    同じ引数なら出力は決定的で、`fixed_tokens` と `history_scale` を変えると
+    止める位置だけが変わる。
     """
     if target_tokens <= 0:
         raise ValueError(
@@ -1039,6 +1053,11 @@ def build_conversation(
         raise ValueError(
             f"build_conversation: fixed_tokens は 0 以上の有限の数 (fixed_tokens={fixed_tokens})"
         )
+    if not math.isfinite(history_scale) or history_scale <= 0:
+        raise ValueError(
+            f"build_conversation: history_scale は 0 より大きい有限の数 "
+            f"(history_scale={history_scale})"
+        )
 
     ratios = (
         dict(chars_per_token)
@@ -1053,7 +1072,7 @@ def build_conversation(
     round_index = 0
     while round_index < _MAX_ROUNDS:
         current = _build_round(corpus, ratios, conversation_seed, round_index)
-        candidate = total + current.approx_tokens
+        candidate = total + history_scale * current.approx_tokens
         if messages and abs(candidate - target_tokens) > abs(total - target_tokens):
             break  # 足すと狙いから遠ざかる。手番の境界で止める
         messages.extend(current.messages)

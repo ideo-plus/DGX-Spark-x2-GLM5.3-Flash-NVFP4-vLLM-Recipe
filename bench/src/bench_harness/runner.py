@@ -25,7 +25,7 @@
 |---|---|---|
 | すべてのまとまりが終わった | `completed` | 0 |
 | 要求の失敗が続いた (10.3) | `aborted` | 2 |
-| 要求の包みのトークン数を数えられない (issue #9) | `aborted` | 2 |
+| 要求の入力のトークン数を数えられない (上限の超過を除く。issue #9、#24) | `aborted` | 2 |
 | 中断の合図を受けた (10.4) | `interrupted` | 130 |
 | 前提の不足、設定の誤り (1.4、8.5) | (作らない) | 1 (例外) |
 | 生データを保存できない (8.1) | `aborted` | 例外をそのまま投げ直す |
@@ -38,14 +38,21 @@
   止めると決まっても、その 1 回ぶんのレコードは最後まで書く (下記)
 - **上限の超過、送る前にわかる不成立** (3.6、6.9、issue #9): `plan()` が返した
   `SkippedCondition` と、`ConditionAborted` の `skipped` (上限の超過のほか、
-  同時処理の狙いが要求の包み以下のとき) を、どちらも `manifest.skipped` に
-  足して、次の条件に進む
-- **包みのトークン数を数えられない** (issue #9): `concurrency` と `agent` は、
-  条件の最初に要求の包みを対象サーバーに数えさせる。数えられず `ProbeError` が
-  出たときは、黙って文字数の見積もりに戻さず、その条件の試行を送らずに、計測ラン
-  を止める。理由 (条件の鍵と、数えられなかった訳) を `manifest.warnings` と標準
-  エラーに残し、状態は `aborted`、終了の値は 2。ここまでに残した試行は生データに
-  あるので、要約は作れる
+  同時処理の狙いが要求の包み以下のとき、`agent` の会話の計測が上限を超えて
+  断られたとき) を、どちらも `manifest.skipped` に足して、次の条件に進む
+- **要求の入力のトークン数を数えられない** (issue #9、#24): `concurrency` と
+  `agent` は、条件の最初に要求の包みを、`agent` はさらに段階 × 会話ごとに
+  組み立てた会話を、対象サーバーに数えさせる (`agent` の会話の計測は、その会話の
+  最初の試行の直前に遅延して行う)。数えられず `ProbeError` が出たときは、黙って
+  文字数の見積もりに戻さず、その条件では、数えられなかった会話の試行を送らずに
+  計測ランを止める (それより前に送った会話の試行は生データに残る)。理由 (条件の
+  鍵と、数えられなかった訳) を `manifest.warnings` と標準エラーに残し、状態は
+  `aborted`、終了の値は 2。ここまでに残した試行は生データにあるので、要約は作れる。
+  例外は、`agent` の会話の計測が、入力の長さの上限を超えて断られたとき
+  (`InputOverContextLimitError`) で、これは `ProbeError` として出ず、suite が
+  `ConditionAborted` に変えるので、上の「上限の超過」と同じく、その段階を飛ばして
+  次に進む (状態は `completed`、終了の値は 0)。包みの計測が上限を超えて断られた
+  ときは、この例外に入らず、`ProbeError` のまま `aborted` になる
 - **中断** (10.4): `SIGINT` と `SIGTERM` を受けたら、計測の本体の task を
   取り消す。送っている途中の要求は、そのまま打ち切られる。打ち切られた試行の
   レコードは**作らない** (レコードを作れるのは、応答が終わったときだけ) ので、
@@ -737,11 +744,11 @@ class _Run:
                     if group_count >= cond.concurrency:
                         break  # この 1 回ぶんは、すべて受け取った
             except ProbeError as exc:
-                # 要求の包みのトークン数を数えられなかった (issue #9)。見積もりに戻さず、
-                # この条件の試行は送らずに、計測ランを止める。ここ (内側の try) で
+                # 要求の入力のトークン数を数えられなかった (issue #9、#24)。見積もりに戻さず、
+                # 数えられなかった会話の試行は送らずに、計測ランを止める。ここ (内側の try) で
                 # 扱うのは、警告を書く途中の保存の失敗を、外側の except が受け取る
                 # ようにするため
-                self._abort_because_frame_cannot_be_counted(cond, exc)
+                self._abort_because_input_cannot_be_counted(cond, exc)
             finally:
                 await _aclose(iterator)
         except ConditionAborted as exc:
@@ -759,18 +766,18 @@ class _Run:
         finally:
             await self._write_metrics(cond, before, cancelled=cancelled)
 
-    # --- 包みを数えられない (issue #9) ---
+    # --- 要求の入力を数えられない (issue #9、#24) ---
 
-    def _abort_because_frame_cannot_be_counted(self, cond: ConditionPlan, exc: ProbeError) -> None:
-        """包みのトークン数を数えられなかったので、計測ランを止める合図を立てる。
+    def _abort_because_input_cannot_be_counted(self, cond: ConditionPlan, exc: ProbeError) -> None:
+        """要求の入力のトークン数を数えられなかったので、計測ランを止める合図を立てる。
 
         状態 (`aborted`)、終了の値 (2)、理由 (警告) を、連続の失敗と同じ経路
         (`_abort_reason` → `execute` の `_finish`) で作る。呼び出し元の
         `_run_condition` が `_run_suite` と `_run_all` を、この合図で止める。
         """
         self._abort_reason = (
-            f"要求の包みのトークン数を数えられなかったので、計測ランを止めた (条件: {cond.key})。"
-            f"{exc}"
+            "要求の入力のトークン数を数えられなかったので、計測ランを止めた "
+            f"(条件: {cond.key})。{exc}"
         )
         self._warn(self._abort_reason)
 

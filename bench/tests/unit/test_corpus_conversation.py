@@ -1176,3 +1176,66 @@ def test_invalid_fixed_tokens_raise_value_error() -> None:
     for invalid in (-1.0, math.nan, math.inf):
         with pytest.raises(ValueError):
             build_conversation(20_000, seed, chars_per_token=_QUICK_RATIOS, fixed_tokens=invalid)
+
+
+# --- 7. history_scale (issue #24: 履歴の見積もりを、実測の比で補正する) --------
+
+
+def test_history_scale_of_one_matches_the_default_conversation() -> None:
+    """`history_scale=1.0` (省略時) は、今までと同じ会話になる (内容と順序を変えない)。"""
+    base = _conversation(20_000, 0, ratios=_QUICK_RATIOS)
+
+    same = build_conversation(
+        target_tokens=20_000,
+        conversation_seed=derive_conversation_seed(0, 0),
+        chars_per_token=_QUICK_RATIOS,
+        fixed_tokens=_preamble_tokens(_QUICK_RATIOS),
+        history_scale=1.0,
+    )
+
+    assert same.model_dump_json() == base.model_dump_json()
+
+
+def test_a_history_scale_above_one_stops_earlier_and_keeps_the_prefix() -> None:
+    """`history_scale` を 1 より大きくすると、手番が減り、短いほうが先頭になる。"""
+    seed = derive_conversation_seed(0, 0)
+    base = _conversation(20_000, 0, ratios=_QUICK_RATIOS)
+
+    scaled = build_conversation(
+        20_000,
+        seed,
+        chars_per_token=_QUICK_RATIOS,
+        history_scale=1.2,
+    )
+
+    assert _round_count(scaled) < _round_count(base)
+    assert base.messages[: len(scaled.messages)] == list(scaled.messages)
+    assert scaled.system == base.system
+
+
+def test_history_scale_multiplies_the_history_estimate() -> None:
+    """`approx_tokens = round(fixed + scale × Σ手番の見積もり)` が成り立つ。
+
+    狙いを 1 にすると、手番は必ず 1 つだけ入る (前置きより小さい狙いでも 1 手番は
+    返す既存の決まり)。`fixed_tokens=0` なら、`approx_tokens` は手番 1 つの
+    見積もりを丸めた値になる。scale を 2 倍にすると、丸め (各 0.5) の幅だけを
+    許して 2 倍になる。
+    """
+    seed = derive_conversation_seed(0, 0)
+    base = build_conversation(1, seed, chars_per_token=_QUICK_RATIOS, fixed_tokens=0)
+    scaled = build_conversation(
+        1, seed, chars_per_token=_QUICK_RATIOS, fixed_tokens=0, history_scale=2.0
+    )
+
+    assert _round_count(base) == 1
+    assert _round_count(scaled) == 1
+    assert scaled.approx_tokens == pytest.approx(2 * base.approx_tokens, abs=1)
+
+
+def test_invalid_history_scale_raises_value_error() -> None:
+    """0 以下・非有限の `history_scale` は、境界で即座に `ValueError` にする。"""
+    seed = derive_conversation_seed(0, 0)
+
+    for invalid in (0.0, -1.0, math.nan, math.inf, -math.inf):
+        with pytest.raises(ValueError):
+            build_conversation(20_000, seed, chars_per_token=_QUICK_RATIOS, history_scale=invalid)

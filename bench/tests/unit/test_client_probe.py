@@ -19,6 +19,7 @@ from pydantic import SecretStr
 from bench_harness.client import probe
 from bench_harness.client.messages import HttpxMessagesClient
 from bench_harness.client.probe import (
+    InputOverContextLimitError,
     ProbeError,
     count_input_tokens,
     fits_context,
@@ -457,8 +458,32 @@ async def test_count_input_tokens_raises_probe_error_when_both_fail(
     request = make_request(TOKEN_TEXT)
 
     async with client_for(fake_server) as client:
-        with pytest.raises(ProbeError):
+        with pytest.raises(ProbeError) as excinfo:
             await count_input_tokens(client, target, request)
+
+    # 上限の超過ではない失敗 (500) は、区別された型にならない (issue #24)
+    assert not isinstance(excinfo.value, InputOverContextLimitError)
+
+
+async def test_count_input_tokens_distinguishes_a_fallback_request_over_the_context_limit(
+    fake_server: FakeServer,
+) -> None:
+    """口がなく、代わりの要求が上限を超えて HTTP 400 になったときだけ区別された型になる (#24)。
+
+    `ProbeError` として受け取る側 (計測ランの進行、`calibrate`、同時処理の包みの計測) は、
+    今までどおり `ProbeError` として扱える (派生型)。
+    """
+    fake_server.set_count_tokens_enabled(False)
+    fake_server.set_context_limit(1)  # 入力 + max_tokens=1 が 1 を超える。偽のサーバーが 400 を返す
+    target = target_for(fake_server)
+    request = make_request(TOKEN_TEXT)
+
+    async with client_for(fake_server) as client:
+        with pytest.raises(ProbeError) as excinfo:
+            await count_input_tokens(client, target, request)
+
+    assert isinstance(excinfo.value, InputOverContextLimitError)
+    assert fake_server.call_count("/v1/messages") == 1, "代わりの要求を 1 件だけ送った"
 
 
 async def test_count_input_tokens_fallback_uses_the_total_input_tokens(
@@ -561,6 +586,8 @@ async def test_count_tokens_non_missing_http_status_raises_probe_error_without_f
 
     assert SECRET not in str(excinfo.value)
     assert fake_server.call_count("/v1/messages") == 0, "代わりの要求を送ってはいけない"
+    # 口そのものの HTTP 400 は、設定の誤りとして素の ProbeError のまま (issue #24)
+    assert not isinstance(excinfo.value, InputOverContextLimitError)
 
 
 @pytest.mark.parametrize("payload", [{"input_tokens": -1}, {"input_tokens": -5}])
