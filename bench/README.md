@@ -26,8 +26,13 @@ Anthropic 互換の `/v1/messages` 経由で測る、コマンドラインの計
   合ったパーサーが有効**であること (GLM-5.3-Flash なら `glm47`)
 - **キャッシュの効きを応答から確かめたいなら、入力のトークンの内訳を返す設定が有効**であること
   (vLLM なら `--enable-prompt-tokens-details`)。なくても `/metrics` の増分で確かめられる
-- **`bench calibrate` を使うなら、`POST /v1/messages/count_tokens`** があること (vLLM なら
-  v0.17.0 以降)。なければ、出力 1 トークンの要求を送って、返ってきた入力のトークン数で代える
+- **`bench calibrate`、または `bench run` の `concurrency` / `agent` を使うなら、
+  `POST /v1/messages/count_tokens`** があること (vLLM なら v0.17.0 以降)。なければ、出力 1 トークンの
+  要求を送って、返ってきた入力のトークン数で代える (`concurrency` / `agent` は、要求の包み (識別子の
+  行、指示、`system` と `tools`、最後の 1 手、チャットテンプレート) を、計測ランの最初に 1 回だけ
+  この口で数えて差し引く。issue #9)。**数えられないときは、黙って文字数の見積もりに戻さない。**
+  口が 404/405/501 以外で失敗した場合と、代わりの出力 1 トークンの要求も失敗した場合は、エラーを
+  出して終了の値 1 で止まる (計測ランは `running` のまま。`bench summarize` で要約は作れる)
 - **計測の間、ほかの利用者が対象サーバーを使わない**こと。始める前に実行中の要求の数を読み、
   0 でなければ警告を記録する
 
@@ -36,7 +41,7 @@ Anthropic 互換の `/v1/messages` 経由で測る、コマンドラインの計
 | 口 | いつ使うか | なければ |
 |---|---|---|
 | `POST /v1/messages` | すべての試行 | 計測できない |
-| `POST /v1/messages/count_tokens` | `bench calibrate` だけ | 出力 1 トークンの要求で代える |
+| `POST /v1/messages/count_tokens` | `bench calibrate` と、`bench run` の `concurrency`・`agent` (包みを計測ランの最初に 1 回数える) | 出力 1 トークンの要求で代える (試行としては保存しない) |
 | `GET /v1/models` | 前提の確認 (入力の長さの上限 `max_model_len`) | `targets.toml` の `max_context_tokens` → 不明、の順で決める |
 | `GET /version` | 前提の確認 (サーバーの版の記録) | 「不明」と記録して続ける |
 | `GET /metrics` | まとまりと条件の前後、計測の間の定期的な読み取り | 内部の指標なしで続ける (得られなかった名前を残す) |
@@ -131,6 +136,49 @@ uv run bench calibrate --target candidate-d --profile quick
 prose_en = 4.012  # 8024 文字 / 2000 トークン (count_tokens)
 ...
 ```
+
+#### `chars_per_token` を測り直す (`p2-nope-tp2-full`)
+
+`profiles.toml` の比は、2026-09-20 に `http://10.0.1.60:8001` の EXL3 の対象で測った値である
+(`profiles.toml` のコメント)。**別の対象 (`p2-nope-tp2-full` など) のトークナイザーやチャット
+テンプレートが同じと言い切れないなら、測り直す。**
+
+```bash
+# bench/ で
+uv run bench calibrate --target p2-nope-tp2-full --profile quick
+```
+
+出てきた比を、`[profiles.quick.chars_per_token]` と `[profiles.full.chars_per_token]` の**両方**に
+書き写す (`profiles.toml` の `full` は「quick と同じ」と決めてある)。コメントの日付と対象も直す。
+
+```bash
+uv run pytest tests/unit/test_corpus_conversation.py
+```
+
+`_GOLDEN_QUICK_CONVERSATION_HASH` は quick の比に依存する。比を書き換えると、意図どおりの変更でも
+ハッシュが変わる。会話の型紙・語彙・乱数の並びは変えていないので、`GENERATOR_VERSION` は据え置き、
+ハッシュだけを新しい値に更新する。
+
+**測り直すかどうかの判断材料:**
+
+- (a) 比を測った対象と、これから測る対象のトークナイザーとチャットテンプレートが同じと言い切れない
+  なら、測り直す (`p2-nope-tp2-full` は自前のイメージ、`:8000`、served name が違う)
+- (b) 再計測後の `summary.md` で、`prefill` の「実際の入力 (中央値)」が狙いと同じ向きに 2% 以上
+  ずれる、または `concurrency` / `agent` の測った試行に「長さが外れた」が残るなら、比例のずれが
+  疑わしいので測り直す
+- (c) 短い入力ほど割合が大きくずれる分 (固定の包み) は、issue #9 の差し引きで直る。比の測り直しでは
+  直らないので、これだけを理由に測り直さない
+- (d) 差が 1% 未満なら書き換えない (書き換えると、過去の計測ランと入力が変わる)
+
+**再計測の手順:**
+
+```bash
+uv run bench run --target p2-nope-tp2-full --profile quick --suite concurrency
+uv run bench run --target p2-nope-tp2-full --profile quick --suite agent
+```
+
+`summary.md` の「実際の入力 (中央値)」と印を見る。残る見込みのずれは、`agent` が手番ごとの包みで
+約 2%、`concurrency` が比の誤差と文字数の許容で ±2% である。
 
 ### `bench run` — 計測ランを 1 回流す
 
@@ -324,9 +372,9 @@ docs/results/<計測ランの識別子>/  # bench publish で写した要約だ�
 |---|---|---|
 | `decode` | 48 (4 条件 × (10 + 慣らし 2)) | 88 |
 | `prefill` | 36 (6 条件 × (5 + 慣らし 1)) | 66 |
-| `concurrency` | 90 ((5 回 + 慣らし 1 回) × (1+2+4+8) 本) | 165 |
+| `concurrency` | 90 ((5 回 + 慣らし 1 回) × (1+2+4+8) 本) + 包みの計測 1 回 | 165 (+1) |
 | `quality` | 120 (ツール 50 + コード 40 + 探す課題 30) | 423 |
-| `agent` | 300 (6 段階 × 50) | 1,800 |
+| `agent` | 300 (6 段階 × 50) + 包みの計測 1 回 | 1,800 (+1) |
 
 **実機でかかった時間 (2026-09-20、head の 8001 番の glm-5.3-flash、EXL3、TP=2、`quick` の設定):**
 速さの 3 つのまとまりが 45 分 (`decode` だけで 23 分)、`quality` が 20 分半、`agent` の 6 段階が

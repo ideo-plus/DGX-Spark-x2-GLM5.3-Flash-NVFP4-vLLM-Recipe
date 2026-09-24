@@ -23,6 +23,28 @@
 (`run_trial(..., expect_full_output=True)` が、届かなければ `SHORT_OUTPUT`
 を付ける)。
 
+文章の狙いは `target_input_tokens − 包み` である (issue #9)。`target_input_tokens`
+だけでは、識別子の行、システムプロンプト 2 行目、指示、チャットテンプレートの
+包みが足されて、実際の入力が狙いより長くなる。包みの分をあらかじめ引いてから
+文章を作る。
+
+## 包みの計測 (issue #9)
+
+包み (文章と、それを包む決まった分量) は、計測ランにつき 1 回だけ、対象
+サーバーに数えさせる。`_measure_frame` が、試行と同じ組み立て関数
+(`_system_for` / `_user_text`) を使い、文章を空にした要求を
+`measure_frame_tokens` に渡す。数える要求は、口があれば `count_tokens` の
+1 件、口がなければ `max_tokens=1` の要求 1 件である (`put_body` には保存されず、
+試行としては残らないが、その条件の `/metrics` の増分には入る)。数えられない
+ときは `ProbeError` が伝播する (黙って文字数の見積もりに戻さない)。結果は
+`run_id` ごとに覚えておき、`plan()` が消す (`ConcurrencySuite` は
+`default_suite_registry` が計測ランごとに作り直す)。
+
+包みを測る要求のシステムプロンプトの 1 行目は、`_FRAME_NONCE_KEY` から作る
+名前空間に置く (条件の鍵 `concurrency/c{n}` とは別で、どの試行の先頭とも
+重ならない)。狙いが包み以下なら、文章を入れられないので、送る前に `ValueError`
+で止める。
+
 ## 識別子 (`trial_index` / `round_id` / `stream_index`)
 
 `(condition, warmup, trial_index, stream_index)` の 4 つ組が、1 つのレコード
@@ -77,6 +99,7 @@ from bench_harness.suites.base import (
     cold_prefix_nonce,
     condition_key,
     iter_trials,
+    measure_frame_tokens,
     plan_condition,
     run_trial,
     single_user_message,
@@ -102,6 +125,17 @@ _LONG_OUTPUT_INSTRUCTION: Final[str] = (
     "上の文章をそのまま繰り返さず、関連する話題を広げながら、"
     "出力の上限に達するまでできるだけ長く書き続けること。"
 )
+
+_FRAME_NONCE_KEY: Final[str] = "concurrency/frame"
+"""包みを測る要求の識別子の名前空間 (issue #9)。
+
+条件の鍵 (`concurrency/c{n}`) とは別なので、包みを測る要求の先頭の行は、
+どの試行の先頭の行とも重ならない。
+"""
+
+_SYSTEM_LINES: Final[tuple[str, ...]] = ("長く書くこと。",)
+"""システムプロンプトの 1 行目 (識別子の行) のあとに置く行。試行と包みの計測で
+同じものを使う (包みを取りこぼさないため)。"""
 
 
 class _RoundGate:
@@ -132,10 +166,53 @@ def _tier_for(level: int) -> Tier:
     return "primary" if level <= 2 else "reference"
 
 
+def _system_for(nonce: str) -> str:
+    """試行と包みの計測で共通のシステムプロンプト。"""
+    return system_with_prefix(nonce, *_SYSTEM_LINES)
+
+
+def _user_text(document: str) -> str:
+    """文章と、出力の上限まで書かせる指示をまとめた本文。"""
+    return f"{document}\n\n{_LONG_OUTPUT_INSTRUCTION}"
+
+
+async def _measure_frame(ctx: SuiteContext) -> int:
+    """要求の包み (文章と、それを包む決まった分量) を 1 回数える (issue #9)。
+
+    試行と同じ組み立て関数 (`_system_for` / `_user_text`) を使い、文章だけを
+    空にする。これで、識別子の行・システムプロンプト 2 行目・指示・チャット
+    テンプレートの包みが、すべて 1 回の計測に入る (`ProbeError` は伝播する)。
+    """
+    nonce = ctx.corpus.prefix_nonce(ctx.profile.seed, _FRAME_NONCE_KEY, ctx.run_id)
+    return await measure_frame_tokens(
+        ctx, system=_system_for(nonce), messages=single_user_message(_user_text(""))
+    )
+
+
+def _document_tokens(cond: ConditionPlan, frame_tokens: int) -> int:
+    """文章に割り当てるトークン数 (`target_input_tokens − 包み`) (issue #9)。
+
+    狙いが包み以下なら、文章を入れられないので、送る前に `ValueError` で止める。
+    """
+    target_tokens = cond.target_input_tokens
+    if target_tokens is None:
+        # plan() は必ず profile.concurrency.input_tokens を渡す。ここに来るのは
+        # 呼び出し側が計画を自分で組み立てた誤りだけ (注 2.7 に合わせて早く落とす)
+        raise ValueError("concurrency: target_input_tokens のない計画は扱えない")
+    document_tokens = target_tokens - frame_tokens
+    if document_tokens < 1:
+        raise ValueError(
+            f"concurrency: 狙いの入力 {target_tokens} トークンが要求の包み "
+            f"{frame_tokens} トークン以下なので、文章を入れられない"
+        )
+    return document_tokens
+
+
 def _round_input(
     ctx: SuiteContext,
     cond: ConditionPlan,
     *,
+    document_tokens: int,
     round_index: int,
     warmup: bool,
     stream_index: int,
@@ -145,6 +222,8 @@ def _round_input(
     先頭の識別子 (`cold_prefix_nonce`) と、文章そのものを作る種
     (`trial_seed`) の両方に `stream_index` を混ぜるので、同じ回の n 本は、
     システムプロンプトの 1 行目も、文章の中身も、互いに重ならない。
+    `document_tokens` は、狙いから包みを引いたあとの、文章に割り当てる
+    トークン数 (`_document_tokens`)。
     """
     nonce = cold_prefix_nonce(
         ctx, cond, trial_index=round_index, warmup=warmup, stream_index=stream_index
@@ -152,21 +231,15 @@ def _round_input(
     seed = trial_seed(
         ctx.profile.seed, cond.key, round_index, warmup=warmup, stream_index=stream_index
     )
-    target_tokens = cond.target_input_tokens
-    if target_tokens is None:
-        # plan() は必ず profile.concurrency.input_tokens を渡す。ここに来るのは
-        # 呼び出し側が計画を自分で組み立てた誤りだけ (注 2.7 に合わせて早く落とす)
-        raise ValueError("concurrency: target_input_tokens のない計画は扱えない")
-    document = ctx.corpus.prose(_DOCUMENT_LANG, target_tokens, seed)
-    system = system_with_prefix(nonce, "長く書くこと。")
-    messages = single_user_message(f"{document}\n\n{_LONG_OUTPUT_INSTRUCTION}")
-    return system, messages
+    document = ctx.corpus.prose(_DOCUMENT_LANG, document_tokens, seed)
+    return _system_for(nonce), single_user_message(_user_text(document))
 
 
 async def _run_stream(
     ctx: SuiteContext,
     cond: ConditionPlan,
     *,
+    document_tokens: int,
     round_index: int,
     warmup: bool,
     stream_index: int,
@@ -174,7 +247,12 @@ async def _run_stream(
 ) -> TrialRecord:
     """1 本を、合図で送り始めて実行する。"""
     system, messages = _round_input(
-        ctx, cond, round_index=round_index, warmup=warmup, stream_index=stream_index
+        ctx,
+        cond,
+        document_tokens=document_tokens,
+        round_index=round_index,
+        warmup=warmup,
+        stream_index=stream_index,
     )
     return await run_trial(
         ctx,
@@ -192,7 +270,12 @@ async def _run_stream(
 
 
 async def _run_round(
-    ctx: SuiteContext, cond: ConditionPlan, *, round_index: int, warmup: bool
+    ctx: SuiteContext,
+    cond: ConditionPlan,
+    *,
+    document_tokens: int,
+    round_index: int,
+    warmup: bool,
 ) -> list[TrialRecord]:
     """1 回ぶんの `cond.concurrency` 本を、合図で同時に送り始める。
 
@@ -209,6 +292,7 @@ async def _run_round(
             _run_stream(
                 ctx,
                 cond,
+                document_tokens=document_tokens,
                 round_index=round_index,
                 warmup=warmup,
                 stream_index=stream_index,
@@ -228,11 +312,21 @@ async def _run_round(
 
 
 class ConcurrencySuite:
-    """同時処理のまとまり (design.md suites の `concurrency` の行)。"""
+    """同時処理のまとまり (design.md suites の `concurrency` の行)。
+
+    包みの計測の結果を、計測ランごとに 1 つだけ覚えておく (module の docstring
+    「包みの計測」)。状態は `plan()` が消し、`default_suite_registry` は計測ラン
+    ごとに新しい実体を作るので、計測ランをまたいで混ざらない。
+    """
 
     name = SuiteName.CONCURRENCY
 
+    def __init__(self) -> None:
+        self._frame_run_id: str | None = None
+        self._frame_tokens: int | None = None
+
     def plan(self, ctx: SuiteContext) -> list[ConditionPlan | SkippedCondition]:
+        self._forget_frame()
         settings = ctx.profile.concurrency
         return [
             plan_condition(
@@ -251,12 +345,33 @@ class ConcurrencySuite:
     async def run_condition(
         self, ctx: SuiteContext, cond: ConditionPlan
     ) -> AsyncIterator[TrialRecord]:
+        frame_tokens = await self._frame_tokens_for(ctx)
+        document_tokens = _document_tokens(cond, frame_tokens)
         for round_index, warmup in iter_trials(cond):
-            records = await _run_round(ctx, cond, round_index=round_index, warmup=warmup)
+            records = await _run_round(
+                ctx,
+                cond,
+                document_tokens=document_tokens,
+                round_index=round_index,
+                warmup=warmup,
+            )
             for record in records:
                 yield record
             for record in records:
                 abort_if_context_limit(cond, record)
+
+    def _forget_frame(self) -> None:
+        self._frame_run_id = None
+        self._frame_tokens = None
+
+    async def _frame_tokens_for(self, ctx: SuiteContext) -> int:
+        """包みを、同じ計測ランでは 1 回だけ数えて覚えておく (issue #9)。"""
+        if self._frame_run_id == ctx.run_id and self._frame_tokens is not None:
+            return self._frame_tokens
+        frame_tokens = await _measure_frame(ctx)
+        self._frame_run_id = ctx.run_id
+        self._frame_tokens = frame_tokens
+        return frame_tokens
 
 
 SUITE: Final[ConcurrencySuite] = ConcurrencySuite()

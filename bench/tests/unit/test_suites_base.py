@@ -21,10 +21,10 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 import pytest
-from pydantic import JsonValue
+from pydantic import JsonValue, SecretStr
 
 from bench_harness.client.messages import HttpxMessagesClient, build_request_body
-from bench_harness.client.probe import preflight
+from bench_harness.client.probe import ProbeError, TokenCount, preflight
 from bench_harness.corpus.synth import PREFIX_NONCE_HEX_LEN, TemplateCorpus, prefix_header_line
 from bench_harness.suites.base import (
     DEFAULT_CONNECTION_WARMUP_TRIALS,
@@ -35,6 +35,7 @@ from bench_harness.suites.base import (
     condition_key,
     iter_trials,
     make_suite_context,
+    measure_frame_tokens,
     plan_condition,
     run_trial,
     single_user_message,
@@ -59,6 +60,7 @@ from bench_harness.types import (
     TextBlockParam,
     ToolCallOutcome,
     ToolCallVerdict,
+    ToolDef,
     TrialFlag,
     TrialRecord,
 )
@@ -955,3 +957,84 @@ async def test_make_suite_context_builds_the_corpus_from_the_profile(
         assert 500 * 8.0 * 0.98 <= len(text) <= 500 * 8.0 * 1.02
         assert ctx.profile is profile
         assert ctx.run_id == RUN_ID
+
+
+# --- 要求の包みを測る (issue #9: measure_frame_tokens) ----------------------
+
+
+async def test_measure_frame_tokens_uses_count_tokens_and_returns_the_servers_count(
+    fake_server: FakeServer,
+) -> None:
+    async with HttpxMessagesClient(fake_server.base_url) as client:
+        ctx = make_suite_context(
+            client=client,
+            profile=make_profile(),
+            target=target_for(fake_server),
+            run_id=RUN_ID,
+            put_body=BodySink().put,
+        )
+        tokens = await measure_frame_tokens(
+            ctx, system="sys", messages=user_message("hello"), tools=[ToolDef(name="t")]
+        )
+
+    assert fake_server.call_count("/v1/messages/count_tokens") == 1
+    assert fake_server.call_count("/v1/messages") == 0
+    recorded = fake_server.requests_for("/v1/messages/count_tokens")[0]
+    assert recorded.body is not None
+    assert recorded.body["system"] == "sys"
+    assert recorded.body["tools"][0]["name"] == "t"
+    assert "max_tokens" not in recorded.body
+    assert tokens == recorded.input_tokens
+
+
+async def test_measure_frame_tokens_falls_back_to_a_one_token_request_when_the_endpoint_is_missing(
+    fake_server: FakeServer,
+) -> None:
+    fake_server.set_count_tokens_enabled(False)
+    fake_server.set_response(text_response("ok"))
+
+    async with suite_ctx(fake_server) as (ctx, sink):
+        await measure_frame_tokens(ctx, system="sys", messages=user_message("hello"))
+
+    requests = fake_server.requests_for("/v1/messages")
+    assert len(requests) == 1
+    assert requests[0].body is not None
+    assert requests[0].body["max_tokens"] == 1
+    assert sink.bodies == []
+
+
+async def test_measure_frame_tokens_does_not_swallow_probe_error(fake_server: FakeServer) -> None:
+    async def failing(request: MessagesRequest) -> TokenCount:
+        raise ProbeError("boom")
+
+    async with HttpxMessagesClient(fake_server.base_url) as client:
+        ctx = make_suite_context(
+            client=client,
+            profile=make_profile(),
+            target=target_for(fake_server),
+            run_id=RUN_ID,
+            put_body=BodySink().put,
+            count_input_tokens=failing,
+        )
+        with pytest.raises(ProbeError):
+            await measure_frame_tokens(ctx, system="sys", messages=user_message("hello"))
+
+    assert fake_server.call_count("/v1/messages") == 0
+
+
+async def test_make_suite_context_passes_the_api_key_to_count_tokens(
+    fake_server: FakeServer,
+) -> None:
+    async with HttpxMessagesClient(fake_server.base_url) as client:
+        ctx = make_suite_context(
+            client=client,
+            profile=make_profile(),
+            target=target_for(fake_server),
+            run_id=RUN_ID,
+            put_body=BodySink().put,
+            api_key=SecretStr("k-frame"),
+        )
+        await measure_frame_tokens(ctx, system="sys", messages=user_message("hello"))
+
+    recorded = fake_server.requests_for("/v1/messages/count_tokens")[-1]
+    assert recorded.headers["x-api-key"] == "k-frame"

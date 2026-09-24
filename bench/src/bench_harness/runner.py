@@ -63,12 +63,13 @@
 
 ## 使った公開の課題 (5.5、5.7、task 8.1)
 
-まとまりの側からは実行の条件を書けない (`SuiteContext` の口は `put_body` だけ)
-ので、`run_info()` を持つまとまり (`SupportsRunInfo`。いまは品質の検査だけ) に
-ついては、**そのまとまりを流し終えたあとに**進行の側が読み取り、
-`RunManifest.datasets` に足す。止まった計測ランでも、中断した計測ランでも、
-そこまでに使った課題は残す (未完了の要約にも、何で測ったかが要る)。コードの
-条件を飛ばした計測ランでは、使った課題がないので、何も書かない (5.7)。
+まとまりの側からは実行の条件を書けない (`SuiteContext` の保存の口は `put_body`
+だけで、数える口 `count_input_tokens` は別) ので、`run_info()` を持つまとまり
+(`SupportsRunInfo`。いまは品質の検査だけ) については、**そのまとまりを流し
+終えたあとに**進行の側が読み取り、`RunManifest.datasets` に足す。止まった
+計測ランでも、中断した計測ランでも、そこまでに使った課題は残す (未完了の
+要約にも、何で測ったかが要る)。コードの条件を飛ばした計測ランでは、使った
+課題がないので、何も書かない (5.7)。
 
 ## 内部の指標 (7.1、7.4、7.5)
 
@@ -103,7 +104,7 @@ from bench_harness.metrics import HttpxMetricsScraper, MetricsScraper, derive
 from bench_harness.store import RunStore, StoreError, new_run_id
 from bench_harness.suites import ConditionAborted, Suite, SuiteContext, make_suite_context
 from bench_harness.suites.agent import AgentSuite
-from bench_harness.suites.concurrency import SUITE as _CONCURRENCY_SUITE
+from bench_harness.suites.concurrency import ConcurrencySuite
 from bench_harness.suites.decode import decode_suite as _DECODE_SUITE
 from bench_harness.suites.prefill import SUITE as _PREFILL_SUITE
 from bench_harness.suites.quality import ProblemsLoader, QualitySuite
@@ -225,11 +226,13 @@ def default_suite_registry(
 ) -> dict[SuiteName, Suite]:
     """名前から、まとまりの実体への対応表 (計測ランごとに 1 つ作る)。
 
-    速さの 3 つ (3.2、3.3、3.4) は状態を持たないので、module の実体をそのまま
-    配る。品質の検査 (6.7) と長い会話の検査 (7.2) は、計測ランごとの覚え書き
-    (使った公開の課題、上限に当たった長さ) を持つので、**呼ばれるたびに作り
-    直す**。共有の状態そのものがなくなるので、1 つのプロセスで 2 つの計測ラン
-    を流しても混ざらない (注 7.2 → 8.1、6.7 → 8.1)。
+    状態を持たないのは decode (3.2) と prefill (3.3) なので、module の実体を
+    そのまま配る。同時処理 (3.4) は包みの計測の覚え書き (issue #9: 計測ランに
+    つき 1 回数えたトークン数) を、品質の検査 (6.7) と長い会話の検査 (7.2) は
+    計測ランごとの覚え書き (使った公開の課題、上限に当たった長さ、包みの計測の
+    結果) を持つので、**呼ばれるたびに作り直す**。共有の状態そのものがなくなる
+    ので、1 つのプロセスで 2 つの計測ランを流しても混ざらない
+    (注 7.2 → 8.1、6.7 → 8.1)。
 
     `problems_loader` は、公開のコードの課題の読み方である。既定 (`None`) は
     まとまり自身の読み方 (`humaneval.load_humaneval_plus` の既定の置き場所)。
@@ -242,7 +245,7 @@ def default_suite_registry(
     return {
         SuiteName.DECODE: _DECODE_SUITE,
         SuiteName.PREFILL: _PREFILL_SUITE,
-        SuiteName.CONCURRENCY: _CONCURRENCY_SUITE,
+        SuiteName.CONCURRENCY: ConcurrencySuite(),
         SuiteName.QUALITY: quality,
         SuiteName.AGENT: AgentSuite(),
     }
@@ -270,8 +273,9 @@ class SupportsRunInfo(Protocol):
     """`run_info()` を持つまとまり。
 
     `run_info()` は `Suite` の約束事 (design.md suites) にない。まとまりの側
-    からは実行の条件を書けない (`SuiteContext` の口は `put_body` だけ) ので、
-    進行の側が、持っているまとまりだけを見分けて書き写す。
+    からは実行の条件を書けない (`SuiteContext` の保存の口は `put_body` だけで、
+    数える口 `count_input_tokens` は別) ので、進行の側が、持っているまとまり
+    だけを見分けて書き写す。
     """
 
     def run_info(self) -> SuiteRunInfo: ...
@@ -368,6 +372,10 @@ async def execute_run(
       ディレクトリは作っていない
     - `StoreError` / `OSError`: 生データを保存できなかった (8.1)。状態を
       `aborted` にして印を残してから、投げ直す
+    - `ProbeError`: 要求の包みのトークン数を対象サーバーに数えられなかった
+      (issue #9)。`concurrency` と `agent` は、条件の実行の最初に包みを数える
+      ので、この失敗がここまで伝播する (黙って見積もりに戻さない)。計測ランの
+      状態は `running` のまま (入口は終了の値 1 にする)
     - `asyncio.CancelledError`: 呼び出し側から取り消されたとき (中断の合図で
       はないので、握りつぶさない)
     """
@@ -386,7 +394,7 @@ async def execute_run(
         # 文脈を、前提の確認より先に組み立てる。使えない設定 (thinking) は、
         # 対象サーバーへ 1 件も送る前に前提の不足になり、計測ランのディレクトリ
         # も作られない (注 3.1)。上限は、このあとの前提の確認で入れ直す
-        ctx = _build_context(client, profile, target, run_id, handle)
+        ctx = _build_context(client, profile, target, run_id, handle, api_key)
         ok = await _preflight(client, target, profile, api_key)
         ctx = _with_context_limit(ctx, ok.context_limit)
         manifest = _build_manifest(req, target, profile, ok, run_id=run_id, started_at=started_at)
@@ -506,6 +514,7 @@ def _build_context(
     target: TargetDef,
     run_id: str,
     handle: _StoreHandle,
+    api_key: SecretStr | None,
 ) -> SuiteContext:
     """まとまりの文脈を組み立てる。使えない設定は前提の不足にする (注 3.1)。
 
@@ -513,6 +522,10 @@ def _build_context(
     あとで `_with_context_limit` が入れ直す。使えない設定 (thinking) の判定を、
     通信より前に済ませるための順序。判定の決まりは `make_suite_context` が持ち、
     ここでは写さない (決まりを 2 か所に持たないため)。
+
+    `api_key` は、包みの計測 (issue #9) の既定の口が、`count_tokens` の要求に
+    付けるために使う (`make_suite_context` が閉じ込める。`SuiteContext` そのもの
+    には残さない)。
     """
     try:
         return make_suite_context(
@@ -522,6 +535,7 @@ def _build_context(
             run_id=run_id,
             put_body=handle.put_body,
             context_limit=None,
+            api_key=api_key,
         )
     except ValueError as exc:
         raise PreconditionError(f"設定の誤り: {exc}") from exc

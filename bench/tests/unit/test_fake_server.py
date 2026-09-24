@@ -25,6 +25,7 @@ from fake_server import (
     dropped_response,
     empty_response,
     error_stream_response,
+    estimator_aligned_counter,
     http_error_response,
     over_limit_response,
     ping_event,
@@ -792,3 +793,58 @@ def test_factory_fixture_can_start_several_servers(
     second = fake_server_factory()
     assert first.base_url != second.base_url
     assert httpx.get(f"{second.base_url}/v1/models", timeout=5.0).status_code == 200
+
+
+# --- 入力トークン数の数え方の差し替え (issue #9) --------------------------
+
+
+def test_input_token_counter_applies_to_messages_and_count_tokens(server: FakeServer) -> None:
+    server.set_input_token_counter(estimator_aligned_counter(fixed=100))
+    body = make_body("x" * 400)
+
+    counted = httpx.post(
+        f"{server.base_url}/v1/messages/count_tokens", json=body, timeout=5.0
+    ).json()["input_tokens"]
+    events = stream_events(server, body)
+    started = data_of(events, "message_start")[0]["message"]["usage"]["input_tokens"]
+
+    # "x" * 400 は文字列の content (400 / chars_per_token 4.0 = 100) + fixed 100
+    assert counted == 200
+    assert started == 200
+
+    server.set_input_token_counter(None)
+    reset_counted = httpx.post(
+        f"{server.base_url}/v1/messages/count_tokens", json=body, timeout=5.0
+    ).json()["input_tokens"]
+
+    # 既定の JSON の文字数 ÷ 比に戻り、差し替え口の値とは変わる
+    assert reset_counted != 200
+
+
+def test_estimator_aligned_counter_counts_blocks_like_the_estimator() -> None:
+    counter = estimator_aligned_counter(fixed=0, per_message=1, chars_per_token=1.0)
+    tool_input = {"path": "/tmp/a"}
+    body: dict[str, Any] = {
+        "system": "SYS",
+        "messages": [
+            {"role": "user", "content": [{"type": "text", "text": "hello"}]},
+            {
+                "role": "assistant",
+                "content": [{"type": "tool_use", "name": "read_file", "input": tool_input}],
+            },
+            {"role": "user", "content": [{"type": "tool_result", "content": "ok"}]},
+        ],
+    }
+
+    tool_use_chars = len("read_file") + len(
+        json.dumps(tool_input, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+    )
+    expected = (
+        1 * len(body["messages"])  # per_message × 発話数
+        + len("SYS")  # system
+        + len("hello")  # text
+        + tool_use_chars  # tool_use: name + json.dumps(input)
+        + len("ok")  # tool_result: content
+    )
+
+    assert counter(body) == expected

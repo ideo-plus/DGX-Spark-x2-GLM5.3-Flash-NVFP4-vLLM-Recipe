@@ -85,10 +85,10 @@ takt と同じように前置きのキャッシュに当てるのが目的であ
 1. **計画**: `plan_condition` が、段階の狙いの長さ + 出力の上限を
    `fits_context` にかけ、収まらない段階を送る前に飛ばす (`SkippedCondition`)。
    段階は単調に伸びるので、1 つ飛べば、それより後ろもすべて飛ぶ
-2. **送る前**: 組み立てた会話の実際の長さ (`approx_tokens` + 最後の 1 手) で
-   もう一度 `fits_context` にかける。`approx_tokens` は最後の 1 手を含まない
-   ので、足してから渡す (注 7.1 → 7.2)。計画は**狙い**の長さで判定するので、
-   実際の会話が狙いより長い段階は、ここだけが止められる
+2. **送る前**: 組み立てた会話の実際の長さ (`approx_tokens`。issue #9 以降は
+   包み (system + tools + 最後の 1 手) を含む) でもう一度 `fits_context` に
+   かける。計画は**狙い**の長さで判定するので、実際の会話が狙いより長い段階は、
+   ここだけが止められる
 3. **送ったあと**: 上限がわからない (`context_limit is None`) ときは、対象
    サーバーの HTTP 400 で初めてわかる。`abort_if_context_limit` がレコードを
    残したあとに `ConditionAborted` を投げる (base.py の契約)
@@ -101,6 +101,22 @@ takt と同じように前置きのキャッシュに当てるのが目的であ
 
 飛ばした理由には、到達した長さを必ず入れる (6.9)。要約の「止めた理由」は、
 その計測ランで最初に飛ばした `agent` の条件の理由から作られる (4.2)。
+
+## 包みの計測 (issue #9)
+
+長い会話の入力が狙いより長くなる原因は、手番以外の決まった分量 (包み:
+`SYSTEM_PROMPT`、`TOOL_CATALOG`、最後の 1 手、チャットテンプレートの展開) が
+`build_conversation` の前置きの見積もりからずれることにある。`_measure_frame`
+が、`ConversationPrefix` と同じ `system` と `tools`、段階 0 試行 0 の課題の
+最後の 1 手をまとめた要求を、計測ランにつき 1 回だけ対象サーバーに数えさせる
+(`count_tokens` の口、なければ `max_tokens=1` の要求 1 件。`put_body` には
+保存されない)。数えた値を `build_conversation(..., fixed_tokens=…)` に渡すと、
+`approx_tokens` が包みを含む会話全体の見積もりになる (7.2 が足す最後の 1 手も
+含む)。数えられないときは `ProbeError` が伝播する (黙って見積もりに戻さない)。
+
+最後の 1 手の長さは段階・試行ごとに数十文字だけ違うが、20k の 0.1% 未満なので、
+段階 0 試行 0 の課題で代表させる。結果は `run_id` ごとに覚えておき、`plan()` が
+消す (`AgentSuite` は `_limit_*` と同じ計測ランごとの状態に持つ)。
 
 ## 注意していること
 
@@ -120,13 +136,16 @@ takt と同じように前置きのキャッシュに当てるのが目的であ
 
 from __future__ import annotations
 
-import math
-from collections.abc import AsyncIterator, Mapping, Sequence
+from collections.abc import AsyncIterator, Sequence
 from typing import Final
 
 from bench_harness.client.probe import fits_context
-from bench_harness.corpus.conversation import build_conversation, derive_conversation_seed
-from bench_harness.corpus.tools import make_tool_task
+from bench_harness.corpus.conversation import (
+    SYSTEM_PROMPT,
+    build_conversation,
+    derive_conversation_seed,
+)
+from bench_harness.corpus.tools import TOOL_CATALOG, make_tool_task
 from bench_harness.scoring.toolcall import classify_tool_call
 from bench_harness.suites.base import (
     ConditionAborted,
@@ -135,6 +154,7 @@ from bench_harness.suites.base import (
     abort_if_context_limit,
     condition_key,
     iter_trials,
+    measure_frame_tokens,
     plan_condition,
     run_trial,
     skip_condition,
@@ -142,7 +162,6 @@ from bench_harness.suites.base import (
 from bench_harness.types import (
     AgentSettings,
     ConditionPlan,
-    ContentKind,
     ConversationPrefix,
     InputMessage,
     SkippedCondition,
@@ -167,19 +186,13 @@ _TASK_INDEX_STRIDE: Final[int] = 10_000
 """課題の番号を、段階ごとに区切る幅。1 段階の試行の数は、これ以下であること
 (試行の番号は 0 から始まるので、ちょうどこの数までは、次の段階とぶつからない)。"""
 
-_FINAL_TURN_SKELETON_CHARS: Final[int] = len(
-    '{"content": [{"text": "", "type": "text"}], "role": "user"}, '
-)
-"""最後の 1 手を JSON にしたときの、本文を除いた骨組みの文字数。上限に収まるか
-を見るときの見積もりに足す (prefill.py の `_JSON_SKELETON_CHARS` と同じ考え方)。"""
-
 
 class AgentSuite:
     """長い会話でのツール呼び出しの検査のまとまり (design.md suites)。
 
-    上限に当たったことを覚えておくために、計測ランごとの状態を 1 つだけ持つ
-    (module の docstring「上限」を参照)。状態は `plan()` が消すので、`SUITE`
-    を計測ランをまたいで使い回しても混ざらない。
+    上限に当たったことと、包みの計測の結果を、計測ランごとの状態として持つ
+    (module の docstring「上限」「包みの計測」を参照)。状態は `plan()` が消すので、
+    `SUITE` を計測ランをまたいで使い回しても混ざらない。
     """
 
     name = SuiteName.AGENT
@@ -187,9 +200,11 @@ class AgentSuite:
     def __init__(self) -> None:
         self._limit_run_id: str | None = None
         self._limit_tokens: int | None = None
+        self._frame_run_id: str | None = None
+        self._frame_tokens: int | None = None
 
     def plan(self, ctx: SuiteContext) -> list[ConditionPlan | SkippedCondition]:
-        self._forget_limit()
+        self._forget_run_state()
         settings = ctx.profile.agent
         _check_trials_fit_the_index_stride(settings)
         return [
@@ -214,6 +229,7 @@ class AgentSuite:
         settings = ctx.profile.agent
         self._abort_if_limit_already_reached(ctx, cond, length)
 
+        frame_tokens = await self._frame_tokens_for(ctx)
         ordinal = _stage_ordinal(settings, length)
         sizes = conversation_sizes(cond.trials, settings.conversations_per_stage)
         built: dict[int, ConversationPrefix] = {}
@@ -222,10 +238,10 @@ class AgentSuite:
             conversation_index = conversation_for(trial_index, sizes)
             prefix = built.get(conversation_index)
             if prefix is None:
-                prefix = _build(ctx, length, conversation_index)
+                prefix = _build(ctx, length, conversation_index, frame_tokens=frame_tokens)
                 built[conversation_index] = prefix
             task = make_tool_task(_task_index(ordinal, trial_index), ctx.profile.seed)
-            self._abort_if_the_built_conversation_does_not_fit(ctx, cond, length, prefix, task)
+            self._abort_if_the_built_conversation_does_not_fit(ctx, cond, length, prefix)
 
             record = await run_trial(
                 ctx,
@@ -245,22 +261,32 @@ class AgentSuite:
                 abort_if_context_limit(
                     cond,
                     record,
-                    reached_input_tokens=prefix.approx_tokens
-                    + _final_turn_tokens(ctx.profile.chars_per_token, task.prompt),
+                    reached_input_tokens=prefix.approx_tokens,
                 )
             except ConditionAborted:
                 self._remember_limit(ctx.run_id, length)
                 raise
 
-    # --- 上限に当たったことを覚えておく ---
+    # --- 計測ランごとの状態 (上限と、包みの計測の結果) ---
 
-    def _forget_limit(self) -> None:
+    def _forget_run_state(self) -> None:
         self._limit_run_id = None
         self._limit_tokens = None
+        self._frame_run_id = None
+        self._frame_tokens = None
 
     def _remember_limit(self, run_id: str, length: int) -> None:
         self._limit_run_id = run_id
         self._limit_tokens = length
+
+    async def _frame_tokens_for(self, ctx: SuiteContext) -> int:
+        """包みを、同じ計測ランでは 1 回だけ数えて覚えておく (issue #9)。"""
+        if self._frame_run_id == ctx.run_id and self._frame_tokens is not None:
+            return self._frame_tokens
+        frame_tokens = await _measure_frame(ctx)
+        self._frame_run_id = ctx.run_id
+        self._frame_tokens = frame_tokens
+        return frame_tokens
 
     def _abort_if_limit_already_reached(
         self, ctx: SuiteContext, cond: ConditionPlan, length: int
@@ -284,12 +310,13 @@ class AgentSuite:
         cond: ConditionPlan,
         length: int,
         prefix: ConversationPrefix,
-        task: ToolTask,
     ) -> None:
-        """組み立てた会話の実際の長さで、送る前にもう一度だけ確かめる (6.9)。"""
-        estimated = prefix.approx_tokens + _final_turn_tokens(
-            ctx.profile.chars_per_token, task.prompt
-        )
+        """組み立てた会話の実際の長さで、送る前にもう一度だけ確かめる (6.9)。
+
+        issue #9 以降、`approx_tokens` は包み (system + tools + 最後の 1 手) を
+        含む会話全体の見積もりなので、そのまま比べる。
+        """
+        estimated = prefix.approx_tokens
         if fits_context(ctx.context_limit, estimated, cond.max_tokens) is not False:
             return
         self._remember_limit(ctx.run_id, length)
@@ -298,8 +325,7 @@ class AgentSuite:
                 self.name,
                 cond.key,
                 "組み立てた会話が入力の長さの上限を超えるので、送る前に止めた。"
-                f"到達した長さ: {prefix.approx_tokens} トークン (会話) + "
-                f"{estimated - prefix.approx_tokens} トークン (最後の 1 手) + "
+                f"到達した長さ: {estimated} トークン (包みを含む会話) + "
                 f"出力の上限 {cond.max_tokens} トークン > 上限 {ctx.context_limit} トークン",
             )
         )
@@ -386,16 +412,22 @@ def conversation_for(trial_index: int, sizes: Sequence[int]) -> int:
     raise ValueError(f"agent: 試行の番号が会話の割り当てに収まらない (trial_index={trial_index})")
 
 
-def _build(ctx: SuiteContext, length: int, conversation_index: int) -> ConversationPrefix:
+def _build(
+    ctx: SuiteContext, length: int, conversation_index: int, *, frame_tokens: int
+) -> ConversationPrefix:
     """1 本の会話を組み立てる (段階と会話の番号ごとに 1 回だけ呼ぶ)。
 
     `chars_per_token` は必ず `Profile` の値を渡す (省くと `Profile` の初期値に
-    なり、`profiles.toml` の較正した比と食い違う。注 7.1 → 7.2)。
+    なり、`profiles.toml` の較正した比と食い違う。注 7.1 → 7.2)。`frame_tokens`
+    は、計測ランで 1 回数えた包みのトークン数 (`_measure_frame`)。これを前置きの
+    見積もりの代わりに使うので、`approx_tokens` は包みを含む会話全体の
+    見積もりになる (issue #9)。
     """
     return build_conversation(
         length,
         derive_conversation_seed(ctx.profile.seed, conversation_index),
         chars_per_token=ctx.profile.chars_per_token,
+        fixed_tokens=frame_tokens,
     )
 
 
@@ -407,10 +439,18 @@ def _final_turn(prompt: str) -> InputMessage:
     return InputMessage(role="user", content=[TextBlockParam(text=prompt)])
 
 
-def _final_turn_tokens(chars_per_token: Mapping[ContentKind, float], prompt: str) -> int:
-    """最後の 1 手の、およそのトークン数 (上限の判定にだけ使う)。"""
-    chars = len(prompt) + _FINAL_TURN_SKELETON_CHARS
-    return math.ceil(chars / chars_per_token[ContentKind.PROSE_EN])
+async def _measure_frame(ctx: SuiteContext) -> int:
+    """要求の包み (`SYSTEM_PROMPT` + `TOOL_CATALOG` + 最後の 1 手) を 1 回数える。
+
+    `ConversationPrefix.system` / `ConversationPrefix.tools` と同じ実体を渡す
+    (どの会話でも、どの段階でも同じ。7.1)。最後の 1 手は段階・試行ごとに数十文字
+    だけ違うが、20k の 0.1% 未満なので、段階 0 試行 0 の課題で代表させる。
+    `ProbeError` は伝播する (issue #9)。
+    """
+    task = make_tool_task(_task_index(0, 0), ctx.profile.seed)
+    return await measure_frame_tokens(
+        ctx, system=SYSTEM_PROMPT, tools=TOOL_CATALOG, messages=[_final_turn(task.prompt)]
+    )
 
 
 def _verdict_for(ctx: SuiteContext, task: ToolTask) -> VerdictFn:

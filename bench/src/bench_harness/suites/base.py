@@ -12,7 +12,9 @@ agent 7.2) は、この module の上に薄く載る。まとまりが自分で�
 `metrics`/`store` → `suites` → `runner` → `cli`。この module は `runner`、
 `analysis`、`cli` を読み込まない。保存の部品 (`store`) も直接は読み込まず、
 本文を保存する口を `SuiteContext.put_body` として受け取る (計測ランの進行
-(3.5) が `RunStore.put_body` を渡す)。
+(3.5) が `RunStore.put_body` を渡す)。入力の長さを数える口も同じ形で、
+`SuiteContext.count_input_tokens` として受け取る (issue #9: 包みの計測。
+既定は `client.probe.count_input_tokens` を呼ぶ `make_suite_context` が作る)。
 
 ## 使い方 (まとまりの書き方)
 
@@ -125,10 +127,17 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Mappin
 from dataclasses import dataclass
 from typing import Final, Protocol, runtime_checkable
 
-from pydantic import JsonValue
+from pydantic import JsonValue, SecretStr
 
 from bench_harness.client.messages import MessagesClient, build_request_body
-from bench_harness.client.probe import fits_context, is_context_limit_error
+from bench_harness.client.probe import (
+    TokenCount,
+    fits_context,
+    is_context_limit_error,
+)
+from bench_harness.client.probe import (
+    count_input_tokens as probe_count_input_tokens,
+)
 from bench_harness.corpus.synth import SyntheticCorpus, TemplateCorpus, prefix_header_line
 from bench_harness.scoring.sanity import (
     collect_text,
@@ -157,6 +166,7 @@ __all__ = [
     "DEFAULT_CONNECTION_WARMUP_TRIALS",
     "MIN_SPEED_OUTPUT_TOKENS",
     "ConditionAborted",
+    "CountInputTokens",
     "PutBody",
     "StartGate",
     "Suite",
@@ -167,6 +177,7 @@ __all__ = [
     "condition_key",
     "iter_trials",
     "make_suite_context",
+    "measure_frame_tokens",
     "plan_condition",
     "run_trial",
     "single_user_message",
@@ -215,6 +226,15 @@ VerdictFn = Callable[[StreamResult], ToolCallVerdict | QualityVerdict | None]
 StartGate = Callable[[], Awaitable[None]]
 """送り始める直前に待つ合図 (3.4 が、同時に送り始めるために渡す)。"""
 
+CountInputTokens = Callable[[MessagesRequest], Awaitable[TokenCount]]
+"""要求の入力のトークン数を、対象サーバーに数えさせる口 (issue #9)。
+
+既定は `client.probe.count_input_tokens` を呼ぶ関数で、`make_suite_context` が
+`api_key` を閉じ込めて作る。まとまりは `SuiteContext.count_input_tokens` 越しに
+`measure_frame_tokens` を呼ぶ (probe の規約はそのまま: 口がなければ
+`max_tokens=1` の要求で代え、それも失敗したら `ProbeError`)。
+"""
+
 
 # --- まとまりの文脈 -------------------------------------------------------
 
@@ -233,6 +253,7 @@ class SuiteContext:
     run_id: str
     put_body: PutBody
     corpus: SyntheticCorpus
+    count_input_tokens: CountInputTokens
     context_limit: int | None = None
 
     def __post_init__(self) -> None:
@@ -262,12 +283,28 @@ def make_suite_context(
     put_body: PutBody,
     context_limit: int | None = None,
     corpus: SyntheticCorpus | None = None,
+    api_key: SecretStr | None = None,
+    count_input_tokens: CountInputTokens | None = None,
 ) -> SuiteContext:
     """`SuiteContext` を作る (3.5 と試験が使う)。
 
     `corpus` を渡さなければ、`profile.chars_per_token` から `TemplateCorpus` を
     作る。`context_limit` は `preflight` が返した値 (わからなければ `None`)。
+
+    `count_input_tokens` を渡さなければ、`client.probe.count_input_tokens` を
+    `api_key` で閉じた既定の口を作る (issue #9: 包みの計測)。`api_key` はこの
+    既定の口だけが使い、`SuiteContext` そのものには残さない (秘密を下位層に
+    持たせない。`runner._build_context` が渡す)。
     """
+    if count_input_tokens is None:
+
+        async def count_with_probe(request: MessagesRequest) -> TokenCount:
+            return await probe_count_input_tokens(
+                client, target, request, timeout=profile.timeout, api_key=api_key
+            )
+
+        count_input_tokens = count_with_probe
+
     return SuiteContext(
         client=client,
         profile=profile,
@@ -275,8 +312,41 @@ def make_suite_context(
         run_id=run_id,
         put_body=put_body,
         corpus=corpus if corpus is not None else TemplateCorpus(profile.chars_per_token),
+        count_input_tokens=count_input_tokens,
         context_limit=context_limit,
     )
+
+
+async def measure_frame_tokens(
+    ctx: SuiteContext,
+    *,
+    messages: Sequence[InputMessage],
+    system: str | None = None,
+    tools: Sequence[ToolDef] | None = None,
+) -> int:
+    """要求の包み (本文から文章・履歴を抜いた、決まった分量) を 1 回数える (issue #9)。
+
+    `messages`、`system`、`tools` をそのまま 1 つの要求にまとめ、対象サーバーに
+    入力のトークン数を数えさせる。数えるのは `count_tokens` の口 (なければ
+    `max_tokens=1` の要求 1 件) で、probe の規約 (`client.probe.count_input_tokens`)
+    をそのまま使う。口がない対象で代わりの要求を送ったときは、その要求は試行と
+    しては保存されず (`put_body` を呼ばない)、その条件の `/metrics` の増分にだけ
+    入る。
+
+    文字数から比で見積もれない固定の分量 (チャットテンプレートの包み、識別子の
+    割れ方、ツール定義の展開) があるので、比ではなく対象サーバーに数えさせる。
+
+    `ProbeError` は捕まえない。黙って文字数の見積もりに戻すと、対象サーバーが
+    数えられないまま、狙いの長さが静かに外れる (今の probe の規約に合わせる)。
+    """
+    request = MessagesRequest(
+        model=ctx.target.model,
+        max_tokens=1,
+        messages=list(messages),
+        system=system,
+        tools=list(tools) if tools is not None else None,
+    )
+    return (await ctx.count_input_tokens(request)).tokens
 
 
 @runtime_checkable

@@ -41,6 +41,7 @@ from bench_harness.runner import (
 )
 from bench_harness.store import RunStore, StoreError, list_run_dirs
 from bench_harness.suites import agent as agent_module
+from bench_harness.suites import concurrency as concurrency_module
 from bench_harness.suites import quality as quality_module
 from bench_harness.suites.agent import AgentSuite
 from bench_harness.suites.base import (
@@ -722,17 +723,21 @@ def test_the_registry_hands_out_a_fresh_quality_and_agent_suite_every_time() -> 
     """計測ランごとに作り直す (共有の状態そのものをなくす。注 7.2 → 8.1、6.7 → 8.1)。
 
     module の実体 (`SUITE`) を配ると、1 つのプロセスで 2 つの計測ランを流したとき
-    に、覚え書き (使った公開の課題、上限に当たった長さ) が持ち越されうる。
+    に、覚え書き (使った公開の課題、上限に当たった長さ) が持ち越されうる。同時
+    処理 (3.4) も、包みの計測の結果を run_id ごとに覚えるので作り直す (issue #9)。
     """
     first = default_suite_registry()
     second = default_suite_registry()
 
     assert isinstance(first[SuiteName.QUALITY], QualitySuite)
     assert isinstance(first[SuiteName.AGENT], AgentSuite)
+    assert isinstance(first[SuiteName.CONCURRENCY], concurrency_module.ConcurrencySuite)
     assert first[SuiteName.QUALITY] is not second[SuiteName.QUALITY]
     assert first[SuiteName.AGENT] is not second[SuiteName.AGENT]
+    assert first[SuiteName.CONCURRENCY] is not second[SuiteName.CONCURRENCY]
     assert first[SuiteName.QUALITY] is not quality_module.SUITE
     assert first[SuiteName.AGENT] is not agent_module.SUITE
+    assert first[SuiteName.CONCURRENCY] is not concurrency_module.SUITE
 
 
 def test_the_registry_can_be_given_a_problems_loader_for_the_quality_suite() -> None:

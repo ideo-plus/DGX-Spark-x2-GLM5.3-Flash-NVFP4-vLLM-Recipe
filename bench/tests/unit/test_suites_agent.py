@@ -47,7 +47,7 @@ from bench_harness.store import RunStore
 from bench_harness.suites.agent import (
     SUITE,
     AgentSuite,
-    _final_turn_tokens,
+    _measure_frame,
     stage_condition_key,
 )
 from bench_harness.suites.base import ConditionAborted, SuiteContext, make_suite_context
@@ -72,6 +72,7 @@ from fake_server import (
     FakeServer,
     RecordedRequest,
     Script,
+    estimator_aligned_counter,
     http_error_response,
     over_limit_response,
     text_response,
@@ -237,11 +238,15 @@ def history_of(body: dict[str, Any]) -> list[Any]:
     return list(messages[:-1])
 
 
-def prefix_for(profile: Profile, stage_tokens: int, conversation_index: int) -> ConversationPrefix:
+def prefix_for(
+    profile: Profile, stage_tokens: int, conversation_index: int, *, frame_tokens: int
+) -> ConversationPrefix:
+    """まとまりが組み立てるのと同じ会話を、計測した包み (issue #9) で作る。"""
     return build_conversation(
         stage_tokens,
         derive_conversation_seed(profile.seed, conversation_index),
         chars_per_token=profile.chars_per_token,
+        fixed_tokens=frame_tokens,
     )
 
 
@@ -268,24 +273,6 @@ def expected_body(
         top_k=cond.sampling.top_k,
     )
     return build_request_body(request)
-
-
-def align_fake_token_counting(
-    server: FakeServer, ctx: SuiteContext, cond: ConditionPlan, stage_tokens: int
-) -> float:
-    """偽のサーバーの数え方を、段階の狙いにそろえる。
-
-    偽のサーバーは `system` / `messages` / `tools` の JSON の**文字数**を
-    `chars_per_token` で割る。会話の組み立ては本文の文字数だけを見積もるので、
-    JSON の記号のぶんだけ食い違う。狙った長さに合わせたい試験は、この比で
-    調整する (`fake_server.py` の docstring「入力のトークン数の決め方」)。
-    """
-    prefix = prefix_for(ctx.profile, stage_tokens, 0)
-    body = expected_body(ctx, cond, prefix, task_for(ctx.profile, 0, 0))
-    payload = {key: body[key] for key in ("system", "messages", "tools") if key in body}
-    ratio = len(json.dumps(payload, ensure_ascii=False, sort_keys=True)) / stage_tokens
-    server.set_chars_per_token(ratio)
-    return ratio
 
 
 # --- 応答の作り方 (偽のサーバーの responder) --------------------------------
@@ -456,9 +443,10 @@ async def test_trials_are_spread_evenly_over_conversations_in_blocks(
     async with suite_ctx(fake_server, profile=profile) as ctx:
         cond = planned_condition(ctx, "agent/stage/004k")
         await run_stage(ctx, cond)
+        frame = await _measure_frame(ctx)
         histories = [history_of(body) for body in sent_bodies(fake_server)]
-        first = prefix_for(profile, _STAGES[0], 0)
-        second = prefix_for(profile, _STAGES[0], 1)
+        first = prefix_for(profile, _STAGES[0], 0, frame_tokens=frame)
+        second = prefix_for(profile, _STAGES[0], 1, frame_tokens=frame)
 
     expected_first = json.loads(
         json.dumps([message.model_dump(mode="json") for message in first.messages])
@@ -481,8 +469,11 @@ async def test_the_remainder_goes_to_the_first_conversations(fake_server: FakeSe
     async with suite_ctx(fake_server, profile=profile) as ctx:
         cond = planned_condition(ctx, "agent/stage/004k")
         await run_stage(ctx, cond)
+        frame = await _measure_frame(ctx)
         histories = [history_of(body) for body in sent_bodies(fake_server)]
-        prefixes = [prefix_for(profile, _STAGES[0], index) for index in range(3)]
+        prefixes = [
+            prefix_for(profile, _STAGES[0], index, frame_tokens=frame) for index in range(3)
+        ]
 
     expected = [
         json.loads(json.dumps([message.model_dump(mode="json") for message in prefix.messages]))
@@ -507,12 +498,13 @@ async def test_every_request_is_the_history_plus_one_user_message_with_the_task(
     async with suite_ctx(fake_server, profile=profile) as ctx:
         cond = planned_condition(ctx, "agent/stage/006k")
         await run_stage(ctx, cond)
+        frame = await _measure_frame(ctx)
         bodies = sent_bodies(fake_server)
         expected = [
             expected_body(
                 ctx,
                 cond,
-                prefix_for(profile, _STAGES[1], 0 if trial_index < 2 else 1),
+                prefix_for(profile, _STAGES[1], 0 if trial_index < 2 else 1, frame_tokens=frame),
                 task_for(profile, 1, trial_index),
             )
             for trial_index in range(profile.agent.trials_per_stage)
@@ -694,14 +686,25 @@ async def test_a_broken_task_stops_the_suite_instead_of_becoming_a_verdict(
 
 
 async def test_a_normal_tool_call_trial_carries_no_flags(fake_server: FakeServer) -> None:
-    """ツール呼び出しの応答は短く、`tool_use` で終わる。印は 1 つも付かない。"""
-    profile = make_profile(agent=agent_settings(trials_per_stage=2, conversations_per_stage=1))
-    table = task_table(profile, _STAGES, profile.agent.trials_per_stage)
+    """ツール呼び出しの応答は短く、`tool_use` で終わる。印は 1 つも付かない。
+
+    段階は 20k にする (会話の丸めの最悪が、4k では 5% の許容を超えうるため)。
+    """
+    profile = make_profile(
+        agent=agent_settings(
+            start_tokens=20_000,
+            end_tokens=20_000,
+            step_tokens=20_000,
+            trials_per_stage=2,
+            conversations_per_stage=1,
+        )
+    )
+    fake_server.set_input_token_counter(estimator_aligned_counter(fixed=0))
+    table = task_table(profile, (20_000,), profile.agent.trials_per_stage)
     fake_server.set_response_factory(correct_responder(table))
 
     async with suite_ctx(fake_server, profile=profile) as ctx:
-        cond = planned_condition(ctx, "agent/stage/004k")
-        align_fake_token_counting(fake_server, ctx, cond, _STAGES[0])
+        cond = planned_condition(ctx, "agent/stage/020k")
         records = await run_stage(ctx, cond)
 
     for record in records:
@@ -732,9 +735,7 @@ async def test_stops_at_the_stage_beyond_an_advertised_limit_and_reports_it(
     store = RunStore.create(tmp_path / "results", make_manifest(profile, context_limit=70_000))
 
     async with suite_ctx(fake_server, profile=profile, context_limit=70_000) as ctx:
-        align_fake_token_counting(
-            fake_server, ctx, planned_condition(ctx, "agent/stage/060k"), 60_000
-        )
+        fake_server.set_input_token_counter(estimator_aligned_counter(fixed=0))
         records, skipped = await run_suite(ctx, store=store)
     store.update_manifest(skipped=[item.model_dump(mode="json") for item in skipped])
     store.set_status(RunStatus.COMPLETED, AT)
@@ -771,19 +772,20 @@ async def test_a_runtime_context_limit_aborts_the_stage_and_skips_the_longer_one
     profile = make_profile(agent=agent_settings(trials_per_stage=2, conversations_per_stage=1))
     table = task_table(profile, _STAGES, profile.agent.trials_per_stage)
     correct = correct_responder(table)
-    # 6000 の段階から、発話の数が 4000 の段階を超える。その境目で 400 を返す
-    boundary = len(prefix_for(profile, _STAGES[0], 0).messages) + 1
-
-    def factory(body: dict[str, Any]) -> Script:
-        messages = body["messages"]
-        assert isinstance(messages, list)
-        if len(messages) > boundary:
-            return over_limit_response(70_000)
-        return correct(body)
-
-    fake_server.set_response_factory(factory)
 
     async with suite_ctx(fake_server, profile=profile, context_limit=None) as ctx:
+        frame = await _measure_frame(ctx)
+        # 6000 の段階から、発話の数が 4000 の段階を超える。その境目で 400 を返す
+        boundary = len(prefix_for(profile, _STAGES[0], 0, frame_tokens=frame).messages) + 1
+
+        def factory(body: dict[str, Any]) -> Script:
+            messages = body["messages"]
+            assert isinstance(messages, list)
+            if len(messages) > boundary:
+                return over_limit_response(70_000)
+            return correct(body)
+
+        fake_server.set_response_factory(factory)
         records, skipped = await run_suite(ctx)
 
     conditions = [record.condition for record in records]
@@ -807,16 +809,16 @@ async def test_a_conversation_that_no_longer_fits_is_not_sent_at_all(
     """
     profile = make_profile(agent=agent_settings(trials_per_stage=2, conversations_per_stage=1))
     fake_server.set_response(text_response("ok"))
-    prefix = prefix_for(profile, _STAGES[0], 0)
-    estimated = prefix.approx_tokens + _final_turn_tokens(
-        profile.chars_per_token, task_for(profile, 0, 0).prompt
-    )
-    # 狙い (4000) + 出力の上限 はちょうど収まるが、実際の会話 + 最後の 1 手 は収まらない
+    # 狙い (4000) + 出力の上限 はちょうど収まるが、実際の会話 (包みを含む) は収まらない
     limit = _STAGES[0] + profile.agent.max_tokens
-    assert estimated > _STAGES[0], "この試験の前提: 実際の会話が狙いより長いこと"
-    assert estimated + profile.agent.max_tokens > limit
 
     async with suite_ctx(fake_server, profile=profile, context_limit=limit) as ctx:
+        frame = await _measure_frame(ctx)
+        prefix = prefix_for(profile, _STAGES[0], 0, frame_tokens=frame)
+        estimated = prefix.approx_tokens
+        assert estimated > _STAGES[0], "この試験の前提: 実際の会話が狙いより長いこと"
+        assert estimated + profile.agent.max_tokens > limit
+
         planned = SUITE.plan(ctx)
         assert isinstance(planned[0], ConditionPlan)  # 計画では飛ばされない
         with pytest.raises(ConditionAborted) as raised:
@@ -850,6 +852,35 @@ async def test_two_runs_with_the_same_seed_send_identical_bodies(
 
     assert len(bodies_a) == len(_STAGES) * profile.agent.trials_per_stage
     assert bodies_a == bodies_b
+
+
+async def test_the_frame_is_measured_once_per_run_and_again_for_a_new_run(
+    fake_server: FakeServer,
+) -> None:
+    """包みの計測は計測ランにつき 1 回で、run_id が変われば測り直す (issue #9)。
+
+    同時処理の `test_the_frame_is_measured_once_per_run_and_again_for_a_new_run` と
+    同じ契約を、長い会話の側でも確かめる (`AgentSuite` は同じ覚え書きの形を別に
+    実装している)。`plan()` が `_forget_run_state()` を通り、`run_id` が変われば
+    `_frame_tokens_for` がもう一度数えるので、`count_tokens` はランごとに 1 回になる。
+    """
+    profile = make_profile(agent=agent_settings(trials_per_stage=2, conversations_per_stage=1))
+    fake_server.set_response_factory(
+        correct_responder(task_table(profile, _STAGES, profile.agent.trials_per_stage))
+    )
+
+    async with suite_ctx(fake_server, profile=profile, run_id=RUN_A) as ctx:
+        records_a, skipped_a = await run_suite(ctx)
+    assert skipped_a == []
+    assert records_a
+    assert fake_server.call_count("/v1/messages/count_tokens") == 1
+
+    fake_server.reset()
+    async with suite_ctx(fake_server, profile=profile, run_id=RUN_B) as ctx:
+        records_b, skipped_b = await run_suite(ctx)
+    assert skipped_b == []
+    assert records_b
+    assert fake_server.call_count("/v1/messages/count_tokens") == 1
 
 
 # --- 中断 (10.4): 途中で打ち切っても、レコードが食い違わない ---------------
