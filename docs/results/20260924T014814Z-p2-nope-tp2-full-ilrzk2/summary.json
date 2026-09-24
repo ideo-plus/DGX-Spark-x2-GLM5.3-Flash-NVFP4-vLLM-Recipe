@@ -1,0 +1,525 @@
+{
+  "schema_version": 1,
+  "conditions": {
+    "schema_version": 1,
+    "run_id": "20260924T014814Z-p2-nope-tp2-full-ilrzk2",
+    "status": "completed",
+    "target": {
+      "name": "p2-nope-tp2-full",
+      "base_url": "http://10.0.1.60:8000/",
+      "model": "glm-5-3-flash",
+      "notes": "自前イメージの TP=2 の prefill・並列・長文脈の計測 (文脈長 163840、同時実行 16。起動側の構成名も p2-nope-tp2-full)。実機では未確認",
+      "api_key_env": null,
+      "metrics_url": null,
+      "max_context_tokens": 163840,
+      "metric_map": {},
+      "tool_markup_markers": [
+        "<tool_call>",
+        "</tool_call>",
+        "<arg_key>",
+        "<arg_value>"
+      ]
+    },
+    "server_model": "glm-5-3-flash",
+    "server_version": "0.1.dev1+g0961bbae2.d20260922",
+    "started_at": "2026-09-24T01:48:14.595532Z",
+    "finished_at": "2026-09-24T03:24:15.179568Z",
+    "suites": [
+      "agent"
+    ],
+    "profile_name": "quick",
+    "profile": {
+      "name": "quick",
+      "seed": 0,
+      "sampling": {
+        "temperature": 0.0,
+        "top_p": null,
+        "top_k": null,
+        "thinking": "server_default"
+      },
+      "chars_per_token": {
+        "prose_en": 4.831,
+        "prose_ja": 1.794,
+        "code": 3.505,
+        "log": 2.316
+      },
+      "timeout": {
+        "connect_s": 10.0,
+        "first_event_s": 120.0,
+        "idle_s": 60.0,
+        "total_s": 900.0
+      },
+      "min_successes": 5,
+      "max_consecutive_failures": 5,
+      "length_tolerance": 0.05,
+      "compare_tolerance": 0.02,
+      "metrics_interval_s": 1.0,
+      "output_sanity": {
+        "repeat_min_chars": 12,
+        "repeat_min_count": 8
+      },
+      "sandbox": {
+        "runtime": "auto",
+        "image": "bench-sandbox:py3.13-numpy2.5.3",
+        "image_digest": "sha256:f75a1d43009306248ecbe68c0cc992b700a472037ba6ea336e519404ec1d1de6",
+        "timeout_s": 20.0,
+        "memory_mb": 512,
+        "cpus": 1.0,
+        "pids_limit": 64
+      },
+      "decode": {
+        "trials": 10,
+        "warmup_trials": 2,
+        "max_tokens": 1024
+      },
+      "prefill": {
+        "trials": 5,
+        "warmup_trials": 1,
+        "max_tokens": 16,
+        "target_input_tokens": [
+          8000,
+          32000,
+          128000
+        ]
+      },
+      "concurrency": {
+        "levels": [
+          1,
+          2,
+          4,
+          8
+        ],
+        "rounds": 5,
+        "max_tokens": 256,
+        "input_tokens": 2000
+      },
+      "quality": {
+        "toolcall_tasks": 50,
+        "needle_lengths": [
+          8000,
+          32000,
+          128000
+        ],
+        "needle_depths": [
+          0,
+          25,
+          50,
+          75,
+          100
+        ],
+        "trials_per_cell": 2,
+        "code_max_tokens": 1024,
+        "code_problem_limit": 40
+      },
+      "agent": {
+        "start_tokens": 40000,
+        "end_tokens": 120000,
+        "step_tokens": 20000,
+        "trials_per_stage": 300,
+        "conversations_per_stage": 5,
+        "threshold": 0.01,
+        "max_tokens": 256
+      }
+    },
+    "harness_version": "0.1.0+g09e086b0",
+    "generator_version": 1,
+    "context_limit": 163840,
+    "warnings": [],
+    "skipped": [],
+    "datasets": []
+  },
+  "incomplete": false,
+  "results": [
+    {
+      "condition": "agent/stage/040k",
+      "metric": "agent_break_rate",
+      "tier": "primary",
+      "continuous": null,
+      "proportion": {
+        "numerator": 0,
+        "denominator": 300,
+        "rate": 0.0,
+        "ci95_low": 0.0,
+        "ci95_high": 0.012220974694293554,
+        "upper95_one_sided": 0.009936081944457711
+      },
+      "failures": 0,
+      "flags": [
+        "length_off_target"
+      ],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 180,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0,
+        "not_scored": 0
+      }
+    },
+    {
+      "condition": "agent/stage/060k",
+      "metric": "agent_break_rate",
+      "tier": "primary",
+      "continuous": null,
+      "proportion": {
+        "numerator": 0,
+        "denominator": 300,
+        "rate": 0.0,
+        "ci95_low": 0.0,
+        "ci95_high": 0.012220974694293554,
+        "upper95_one_sided": 0.009936081944457711
+      },
+      "failures": 0,
+      "flags": [
+        "length_off_target"
+      ],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 120,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0,
+        "not_scored": 0
+      }
+    },
+    {
+      "condition": "agent/stage/080k",
+      "metric": "agent_break_rate",
+      "tier": "primary",
+      "continuous": null,
+      "proportion": {
+        "numerator": 0,
+        "denominator": 300,
+        "rate": 0.0,
+        "ci95_low": 0.0,
+        "ci95_high": 0.012220974694293554,
+        "upper95_one_sided": 0.009936081944457711
+      },
+      "failures": 0,
+      "flags": [
+        "length_off_target"
+      ],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 60,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0,
+        "not_scored": 0
+      }
+    },
+    {
+      "condition": "agent/stage/100k",
+      "metric": "agent_break_rate",
+      "tier": "primary",
+      "continuous": null,
+      "proportion": {
+        "numerator": 0,
+        "denominator": 300,
+        "rate": 0.0,
+        "ci95_low": 0.0,
+        "ci95_high": 0.012220974694293554,
+        "upper95_one_sided": 0.009936081944457711
+      },
+      "failures": 0,
+      "flags": [
+        "length_off_target"
+      ],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 60,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0,
+        "not_scored": 0
+      }
+    },
+    {
+      "condition": "agent/stage/120k",
+      "metric": "agent_break_rate",
+      "tier": "primary",
+      "continuous": null,
+      "proportion": {
+        "numerator": 0,
+        "denominator": 300,
+        "rate": 0.0,
+        "ci95_low": 0.0,
+        "ci95_high": 0.012220974694293554,
+        "upper95_one_sided": 0.009936081944457711
+      },
+      "failures": 0,
+      "flags": [
+        "length_off_target"
+      ],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 120,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0,
+        "not_scored": 0
+      }
+    }
+  ],
+  "agent": {
+    "threshold": 0.01,
+    "stages": [
+      {
+        "stage_key": "agent/stage/040k",
+        "target_input_tokens": 40000,
+        "actual_input_tokens": {
+          "n": 300,
+          "mean": 41780.316666666666,
+          "median": 42019.5,
+          "min": 40650.0,
+          "max": 42780.0,
+          "stdev": 732.9165107714705,
+          "iqr": 899.0,
+          "cv": 0.017542148294826324
+        },
+        "trials": 300,
+        "outcome_counts": {
+          "correct": 300,
+          "no_call": 0,
+          "unknown_tool": 0,
+          "args_unparseable": 0,
+          "args_schema_invalid": 0,
+          "markup_leaked": 0,
+          "wrong_call": 0,
+          "empty_or_truncated": 0,
+          "request_failed": 0
+        },
+        "request_failures": 0,
+        "break_rate": {
+          "numerator": 0,
+          "denominator": 300,
+          "rate": 0.0,
+          "ci95_low": 0.0,
+          "ci95_high": 0.012220974694293554,
+          "upper95_one_sided": 0.009936081944457711
+        },
+        "verdict": "below"
+      },
+      {
+        "stage_key": "agent/stage/060k",
+        "target_input_tokens": 60000,
+        "actual_input_tokens": {
+          "n": 300,
+          "mean": 62279.19666666666,
+          "median": 62198.5,
+          "min": 60991.0,
+          "max": 63614.0,
+          "stdev": 975.1369741649122,
+          "iqr": 1665.5,
+          "cv": 0.015657507263365667
+        },
+        "trials": 300,
+        "outcome_counts": {
+          "correct": 300,
+          "no_call": 0,
+          "unknown_tool": 0,
+          "args_unparseable": 0,
+          "args_schema_invalid": 0,
+          "markup_leaked": 0,
+          "wrong_call": 0,
+          "empty_or_truncated": 0,
+          "request_failed": 0
+        },
+        "request_failures": 0,
+        "break_rate": {
+          "numerator": 0,
+          "denominator": 300,
+          "rate": 0.0,
+          "ci95_low": 0.0,
+          "ci95_high": 0.012220974694293554,
+          "upper95_one_sided": 0.009936081944457711
+        },
+        "verdict": "below"
+      },
+      {
+        "stage_key": "agent/stage/080k",
+        "target_input_tokens": 80000,
+        "actual_input_tokens": {
+          "n": 300,
+          "mean": 82808.17333333334,
+          "median": 83135.0,
+          "min": 81114.0,
+          "max": 84236.0,
+          "stdev": 1049.1004188916415,
+          "iqr": 1054.25,
+          "cv": 0.01266904433054726
+        },
+        "trials": 300,
+        "outcome_counts": {
+          "correct": 300,
+          "no_call": 0,
+          "unknown_tool": 0,
+          "args_unparseable": 0,
+          "args_schema_invalid": 0,
+          "markup_leaked": 0,
+          "wrong_call": 0,
+          "empty_or_truncated": 0,
+          "request_failed": 0
+        },
+        "request_failures": 0,
+        "break_rate": {
+          "numerator": 0,
+          "denominator": 300,
+          "rate": 0.0,
+          "ci95_low": 0.0,
+          "ci95_high": 0.012220974694293554,
+          "upper95_one_sided": 0.009936081944457711
+        },
+        "verdict": "below"
+      },
+      {
+        "stage_key": "agent/stage/100k",
+        "target_input_tokens": 100000,
+        "actual_input_tokens": {
+          "n": 300,
+          "mean": 103618.04666666666,
+          "median": 103074.0,
+          "min": 102336.0,
+          "max": 105849.0,
+          "stdev": 1272.5627335649967,
+          "iqr": 1549.25,
+          "cv": 0.012281284723101936
+        },
+        "trials": 300,
+        "outcome_counts": {
+          "correct": 300,
+          "no_call": 0,
+          "unknown_tool": 0,
+          "args_unparseable": 0,
+          "args_schema_invalid": 0,
+          "markup_leaked": 0,
+          "wrong_call": 0,
+          "empty_or_truncated": 0,
+          "request_failed": 0
+        },
+        "request_failures": 0,
+        "break_rate": {
+          "numerator": 0,
+          "denominator": 300,
+          "rate": 0.0,
+          "ci95_low": 0.0,
+          "ci95_high": 0.012220974694293554,
+          "upper95_one_sided": 0.009936081944457711
+        },
+        "verdict": "below"
+      },
+      {
+        "stage_key": "agent/stage/120k",
+        "target_input_tokens": 120000,
+        "actual_input_tokens": {
+          "n": 300,
+          "mean": 124400.05666666667,
+          "median": 123199.0,
+          "min": 122317.0,
+          "max": 127372.0,
+          "stdev": 1959.5948083294313,
+          "iqr": 3056.0,
+          "cv": 0.015752362666362915
+        },
+        "trials": 300,
+        "outcome_counts": {
+          "correct": 300,
+          "no_call": 0,
+          "unknown_tool": 0,
+          "args_unparseable": 0,
+          "args_schema_invalid": 0,
+          "markup_leaked": 0,
+          "wrong_call": 0,
+          "empty_or_truncated": 0,
+          "request_failed": 0
+        },
+        "request_failures": 0,
+        "break_rate": {
+          "numerator": 0,
+          "denominator": 300,
+          "rate": 0.0,
+          "ci95_low": 0.0,
+          "ci95_high": 0.012220974694293554,
+          "upper95_one_sided": 0.009936081944457711
+        },
+        "verdict": "below"
+      }
+    ],
+    "first_exceeded_tokens": null,
+    "reached_tokens": 120000,
+    "stopped_reason": null
+  },
+  "server_metrics": {
+    "agent/stage/040k": {
+      "spec_acceptance_rate": null,
+      "mean_acceptance_length": null,
+      "decode_steps": 8148.0,
+      "tokens_per_step": 121.21784486990673,
+      "prefix_cache_hit_rate": 0.9218503609554579,
+      "kv_usage_peak": 0.039337474120082816,
+      "preemptions": 0.0,
+      "missing": [
+        "spec_drafts",
+        "spec_draft_tokens",
+        "spec_accepted_tokens"
+      ]
+    },
+    "agent/stage/060k": {
+      "spec_acceptance_rate": null,
+      "mean_acceptance_length": null,
+      "decode_steps": 8219.0,
+      "tokens_per_step": 63.55736707628665,
+      "prefix_cache_hit_rate": 0.9724809659555125,
+      "kv_usage_peak": 0.0496894409937888,
+      "preemptions": 0.0,
+      "missing": [
+        "spec_drafts",
+        "spec_draft_tokens",
+        "spec_accepted_tokens"
+      ]
+    },
+    "agent/stage/080k": {
+      "spec_acceptance_rate": null,
+      "mean_acceptance_length": null,
+      "decode_steps": 8073.0,
+      "tokens_per_step": 82.55431685866469,
+      "prefix_cache_hit_rate": 0.9734974631328662,
+      "kv_usage_peak": 0.06004140786749479,
+      "preemptions": 0.0,
+      "missing": [
+        "spec_drafts",
+        "spec_draft_tokens",
+        "spec_accepted_tokens"
+      ]
+    },
+    "agent/stage/100k": {
+      "spec_acceptance_rate": null,
+      "mean_acceptance_length": null,
+      "decode_steps": 8306.0,
+      "tokens_per_step": 108.8244642427161,
+      "prefix_cache_hit_rate": 0.9711893816180155,
+      "kv_usage_peak": 0.07039337474120078,
+      "preemptions": 0.0,
+      "missing": [
+        "spec_drafts",
+        "spec_draft_tokens",
+        "spec_accepted_tokens"
+      ]
+    },
+    "agent/stage/120k": {
+      "spec_acceptance_rate": null,
+      "mean_acceptance_length": null,
+      "decode_steps": 8194.0,
+      "tokens_per_step": 75.5541859897486,
+      "prefix_cache_hit_rate": 0.9836308488283915,
+      "kv_usage_peak": 0.08074534161490687,
+      "preemptions": 0.0,
+      "missing": [
+        "spec_drafts",
+        "spec_draft_tokens",
+        "spec_accepted_tokens"
+      ]
+    }
+  },
+  "datasets": []
+}

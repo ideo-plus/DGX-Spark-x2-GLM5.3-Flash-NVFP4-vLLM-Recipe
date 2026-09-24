@@ -24,8 +24,8 @@
 - **結果の記録:**
   - smoke 構成（文脈長 4096、同時実行 1）の decode・quality: [記録](docs/results/2026-09-23-decode-gpu-clock-cap.md)
   - full 構成（文脈長 163840、同時実行 16）の prefill・concurrency・needle: [記録](docs/results/2026-09-23-full-context.md)
-  - agent 20k: [記録](docs/results/2026-09-24-agent-20k.md)。300/300 が正しく、崩れの割合は 1% 未満と判定（片側 95% の上限 0.010）。熱区域の最高は 66.8℃。
-- **停止の状態:** 09:41 JST の停止後、両台ともコンテナは absent、GPU プロセスは 0 件。再開時は状態を読み直す。
+  - agent 20k〜120k: [記録](docs/results/2026-09-24-agent-20k.md)。6 段とも 300/300 が正しく、崩れの割合は 1% 未満と判定（片側 95% の上限 0.010）。熱区域の最高は 71.6℃。
+- **停止の状態:** 12:26 JST の停止後、両台ともコンテナは absent、GPU プロセスは 0 件。再開時は状態を読み直す。
 - **TAKT:** 準備作業は、依頼を GitHub issue に書き、`takt --pipeline --auto-pr -b <branch> -i <番号>` で PR まで流す（下記「TAKT と CI」）。
 - **計測者への依頼の仕方:** 長いコマンドや sudo の手打ちを頼まない。モバイルからは打てない。
   root が要る変更は、NOPASSWD の固定形で対話側が実行できる設計にし、了承は返事だけで済むようにする。
@@ -197,7 +197,7 @@ SSE、ツール呼び出し、品質・性能、長文脈は未確認。[最新�
 
 ## 再開時の選択肢と保留事項
 
-1. **推奨: agent の 40k〜120k の段を、300 試行で測る。** 20k は 1% 未満と判定済み。
+1. **推奨: 張り付きの対策を決める（#17）。** agent は 20k〜120k まで判定済み。
 2. 張り付きの対策（[#17](https://github.com/ideo-plus/DGX-Spark-GLM5.3-Flash-Recipe/issues/17)）。原因は、head が vLLM の shm の待ち受け、両台が NCCL の proxy と推定。待ち受けを短くする案は、イメージの条件に関わるので判断が要る。
 3. code の出力上限を上げて比べる。`--set` で変えられるかを先に確かめる。
 4. concurrency と agent の入力が狙いより 5〜9% 長い原因を調べる（[#9](https://github.com/ideo-plus/DGX-Spark-GLM5.3-Flash-Recipe/issues/9)）。
