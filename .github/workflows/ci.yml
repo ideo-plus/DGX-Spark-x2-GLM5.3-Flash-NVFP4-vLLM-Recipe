@@ -51,6 +51,8 @@ jobs:
           uv run --frozen ruff format --check ../experiments/nope-mla
           sh -n ../scripts/run-takt-preparation.sh
           sh -n ../scripts/hooks/load-rules.sh
+          sh -n ../scripts/run-takt.sh
+          sh -n ../scripts/takt-claude.sh
           CLAUDE_PROJECT_DIR="$GITHUB_WORKSPACE" sh ../scripts/hooks/load-rules.sh | grep -q '<!-- docs/rules/'
 
   ops:

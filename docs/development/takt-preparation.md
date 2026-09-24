@@ -141,3 +141,22 @@ TAKT 0.66.0 に同梱の codex 0.153.4 は、ChatGPT アカウントで `gpt-6-l
 そのため、PR まで作る依頼は GitHub issue の本文に書き、`--issue <番号>` で渡す。
 このとき PR のタイトルは `[#番号] <issue のタイトル>`、コミットメッセージは `feat: <issue のタイトル> (#番号)` になる。
 PR へのレビューコメントは、`takt --pr <番号>` で取り込む。
+
+## claude のアカウントを切り替えて起動する (2026-09-24)
+
+TAKT 0.66.0 は、環境変数 `TAKT_CLAUDE_CLI_PATH`（または `~/.takt/config.yaml` の `claude_cli_path`）に指定した実行ファイルで claude を起動する。
+指定しなければ、起動したシェルの `CLAUDE_CONFIG_DIR` のアカウントがそのまま使われる。
+その場合、対話側のセッションと同じアカウントの上限を分け合うことになる。
+
+アカウントの上限に当たったときは、`scripts/run-takt.sh` で別のアカウントを指定して起動する。
+
+```bash
+scripts/run-takt.sh --claude-account ~/.claude-<アカウント> --pipeline --auto-pr -b <ブランチ> -i <issue> --workflow spark-preparation
+scripts/run-takt.sh --claude-account ~/.claude-<アカウント> resume
+```
+
+- `run-takt.sh` は、`TAKT_CLAUDE_CLI_PATH` に `scripts/takt-claude.sh` を絶対パスで渡す。`--claude-account` の後ろの引数は、そのまま `takt` に渡す。
+- `takt-claude.sh` は、そのアカウントの `CLAUDE_CONFIG_DIR` で `claude` を起動する。
+- アカウントの指定がない、または設定ディレクトリがないときは、既定のアカウントに黙って戻さず失敗する。
+- アカウントの名前はマシンごとの事情なので、リポジトリには書かない。
+- 切り替えが効くのは claude の段だけである。codex と opencode の段は、それぞれの設定のアカウントで動く。

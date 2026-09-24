@@ -1,9 +1,50 @@
-# HAND_OFF — 熱対策の常設と、agent 20k の初回計測の後
+# HAND_OFF — agent 20k〜120k の判定と、#9 の途中停止の後
 
-最終更新: 2026-09-24 08:30 JST。
-熱源を X925 の張り付きと特定し、GPU と X925 の 2 つの上限を systemd で常設した。
-そのうえで、agent 20k を初めて計測した。
+最終更新: 2026-09-24 18:00 JST。
+
+- 熱源を X925 の張り付きと特定し、GPU と X925 の 2 つの上限を systemd で常設した。
+- agent を 20k〜120k の 6 段、各 300 試行で測り、全段で崩れの割合 1% 未満と判定した。
+- 張り付きの原因を調べた（#17）。
+- 入力の長さのずれの修正（#9）を TAKT で進めたが、Claude の週の上限に当たり、レビューの指摘を直す手前で止まっている（下の「進行中の作業」）。
+
 推論サーバーは停止済み。次の実機操作は計測者の指示を待つ。
+
+## 進行中の作業
+
+### #9: concurrency と agent の入力が狙いより長い
+
+- **ブランチ:** `fix/bench-input-length`。途中経過をコミット `8469278`（wip）で push 済み。
+  PR: [#20](https://github.com/ideo-plus/DGX-Spark-GLM5.3-Flash-Recipe/pull/20)（下書き）。
+- **原因:** システムの指示、ツールの定義、要求の包みといった決まった分量が、見積もりに入っていなかった。
+  狙いが短いほど、ずれの割合が大きくなっていた。
+- **修正の方式:** 要求の包みを `count_tokens` で計測ランにつき 1 回だけ実測し、差し引いて合成する。
+  測れないときは、黙って推定に戻さず止める。
+- **ここまで:**
+  - 試験の作成: `claude-sonnet-5`（最初の `ollama/glm-5.3-flash:cloud` は、試験を 1 つも作らず差し戻された）
+  - 実装: `opencode-go/deepseek-v4.1-flash`
+  - bench の試験 1,485 件と、ruff・format・mypy が通る
+- **残り（レビューの裁定）:**
+  1. 包みの計測で `ProbeError` が起きると、状態が `running` のまま残る。終了の値は 1 で、止まり方の表（`runner.py`）にもない（重大度: 中）。
+  2. 狙いが包み以下のときの `ValueError` を、CLI も runner も捕まえず、traceback が出る（重大度: 低）。
+  3. 「計測ランにつき 1 回数える」覚え書きが、concurrency と agent に重複している（重大度: 低）。
+
+  裁定の全文は `.takt/runs/20260924-072905-issue-9-bench-concurrency-agen-eh9erj/reports/` の下の `review-resolution.md` にある（Git 対象外）。
+- **止まった理由:** 修正の計画の段で、Claude の週の上限に当たった。上限は 2026-09-27 01:00 JST に戻る。
+  上限時の切り替え先に Claude 以外が残っておらず、切り替えずに止まった。
+- **再開の仕方:** PR のレビューコメントとして 3 件を書き、`takt --pr <番号>` で取り込む。
+  または、止まった実行を `takt resume` で再開する。
+- **実機で残ること:**
+  - `bench calibrate --target p2-nope-tp2-full` で `chars_per_token` を測り直す（手順は PR の `bench/README.md`）。
+  - 再計測で、`length_off_target` が消えることを確かめる。
+  - 実機の `count_tokens` が、チャットテンプレートの包みまで数えるかは、まだ分かっていない。
+
+### #17: 張り付きの原因（調査済み、対策は未決定）
+
+- TAKT の research による調査と、計測中の `top -H` による特定の結果（[コメント](https://github.com/ideo-plus/DGX-Spark-GLM5.3-Flash-Recipe/issues/17#issuecomment-5805304861)）。
+  - head: `EngineCore` と `Worker_TP0` のメインスレッド。vLLM の `shm_broadcast.py` の `busy_loop_s = 1` の間、`sched_yield()` で回る。
+  - 両台: `Worker_TP` の中の、メイン以外のスレッド 1 本。NCCL の proxy と推定。
+- この版の vLLM には、待ち受けの時間を変える設定がない。上流の PR [#52814](https://github.com/vllm-project/vllm/pull/52814) と [#52848](https://github.com/vllm-project/vllm/pull/52848) が、変えられるようにする（未マージ）。
+- 今は、X925 の上限 3.0 GHz で熱を抑えている。対策としてコードを差し替えると、承認済みのイメージの条件が変わるので、計測者の判断が要る。
 
 ## 最初に読む要約
 
@@ -24,8 +65,9 @@
 - **結果の記録:**
   - smoke 構成（文脈長 4096、同時実行 1）の decode・quality: [記録](docs/results/2026-09-23-decode-gpu-clock-cap.md)
   - full 構成（文脈長 163840、同時実行 16）の prefill・concurrency・needle: [記録](docs/results/2026-09-23-full-context.md)
-  - agent 20k〜120k: [記録](docs/results/2026-09-24-agent-20k.md)。6 段とも 300/300 が正しく、崩れの割合は 1% 未満と判定（片側 95% の上限 0.010）。熱区域の最高は 71.6℃。
-- **停止の状態:** 12:26 JST の停止後、両台ともコンテナは absent、GPU プロセスは 0 件。再開時は状態を読み直す。
+  - agent 20k〜120k: [記録](docs/results/2026-09-24-agent-20k.md)。6 段とも 300/300 が正しく、崩れの割合は 1% 未満と判定（片側 95% の上限 0.010）。
+    熱区域の最高は 71.6℃。プレフィックスキャッシュが効き、120k でも最初のトークンまでの中央値は 1.7 秒。
+- **停止の状態:** 2026-09-24 12:26 JST の停止後、両台ともコンテナは absent、GPU プロセスは 0 件。再開時は状態を読み直す。
 - **TAKT:** 準備作業は、依頼を GitHub issue に書き、`takt --pipeline --auto-pr -b <branch> -i <番号>` で PR まで流す（下記「TAKT と CI」）。
 - **計測者への依頼の仕方:** 長いコマンドや sudo の手打ちを頼まない。モバイルからは打てない。
   root が要る変更は、NOPASSWD の固定形で対話側が実行できる設計にし、了承は返事だけで済むようにする。
@@ -93,13 +135,30 @@ worktree は作っていない。今後 worktree を使う場合は `mise trust`
 
 | 項目 | 設定 |
 |---|---|
-| `t2` | `claude-opus-5-5` |
-| `t0-production-code` | **2026-09-24 から opencode / `opencode-go/deepseek-v4.1-flash`（計測者の指示で試行中）**。以前は claude / `claude-sonnet-5`、本来は codex / `gpt-6-luna` |
+| `t0-test-code` | **2026-09-24 から opencode / `opencode-go/deepseek-v4.1-flash`**。以前は `ollama/glm-5.3-flash:cloud` |
+| `t0-production-code` | **2026-09-24 から opencode / `opencode-go/deepseek-v4.1-flash`**。以前は claude / `claude-sonnet-5`、本来は codex / `gpt-6-luna` |
+| `t1` | claude / `claude-sonnet-5` |
+| `t2` | claude / `claude-opus-5-5` |
 | `t3-judge` | 本来は codex / `gpt-6-astra`。**9/27 19:38 までは claude / `claude-opus-5-5`** |
 | `rate_limit_fallback` | `claude-opus-5-5`。本来は続けて codex / `gpt-6-sol`（上限中はコメントアウト） |
 | `codex_cli_path` | mise の codex 0.156.0 の実体。codex を更新したらパスも直す |
 
 Codex の割り当てに戻すときは、`~/.takt/runtime.yaml` と `config.yaml` のコメント行を戻す。`codex_cli_path` は残す。
+
+各サービスの利用上限（2026-09-24 時点）:
+
+| サービス | 状態 | 戻る時刻 |
+|---|---|---|
+| Codex（ChatGPT） | 上限に達している | 2026-09-27 19:38 |
+| Claude（TAKT が使う claude CLI） | 週の上限に達している | 2026-09-27 01:00 JST |
+| OpenCode Go の DeepSeek | 使える | ワークスペースのプライバシー設定を Global にする必要があった（計測者が設定済み） |
+
+Claude の上限の間は、Claude を使う段（計画・レビュー・修正、`t1`、`t2`、`t3-*`）が動かない。
+TAKT を動かすなら、それらを一時的に DeepSeek（例: `opencode-go/deepseek-v4-pro`）へ移し、`rate_limit_fallback` にも Claude 以外を足す。
+その場合は、計画とレビューの質が下がりうることを承知する。
+
+`takt resume` は、止まった実行を通常の実行として再開する。pipeline ではないので、コミットと PR は作られない。
+入力がないと、対話の選択肢は既定の「Requeue」になる。
 
 TAKT 0.66.0 で確認した問題:
 
@@ -197,10 +256,12 @@ SSE、ツール呼び出し、品質・性能、長文脈は未確認。[最新�
 
 ## 再開時の選択肢と保留事項
 
-1. **推奨: 張り付きの対策を決める（#17）。** agent は 20k〜120k まで判定済み。
-2. 張り付きの対策（[#17](https://github.com/ideo-plus/DGX-Spark-GLM5.3-Flash-Recipe/issues/17)）。原因は、head が vLLM の shm の待ち受け、両台が NCCL の proxy と推定。待ち受けを短くする案は、イメージの条件に関わるので判断が要る。
-3. code の出力上限を上げて比べる。`--set` で変えられるかを先に確かめる。
-4. concurrency と agent の入力が狙いより 5〜9% 長い原因を調べる（[#9](https://github.com/ideo-plus/DGX-Spark-GLM5.3-Flash-Recipe/issues/9)）。
+1. **推奨: #9 を仕上げる。** 残りの 3 件を、Claude の上限が戻った後（2026-09-27 01:00 JST 以降）に `takt --pr` で直す。
+   マージしたら、実機で `bench calibrate` と再計測を行う。
+2. #9 を今すぐ進める。Claude を使う段を一時的に DeepSeek に移して、`takt resume` する。
+3. 張り付きの対策を決める（[#17](https://github.com/ideo-plus/DGX-Spark-GLM5.3-Flash-Recipe/issues/17)）。
+   まず `NCCL_SET_THREAD_NAME=1` の構成で、NCCL の proxy であることを確定させる。待ち受けを短くする案は、イメージの条件に関わる。
+4. code の出力上限を上げて比べる。`--set` で変えられるかを先に確かめる。
 
 別途判断する事項:
 
