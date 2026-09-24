@@ -11,6 +11,11 @@
 対象サーバーでは `max_tokens=1` の要求で代える (research.md の Decision
 「入力の長さは、文字数とトークン数の比で狙う」の Follow-up)。この関数だけは
 計測者が直接呼ぶ道具なので、両方の数え方に失敗したら `ProbeError` を投げる。
+ただし、代わりの要求が入力の長さの上限を超えて HTTP 400 で断られたときだけは、
+`ProbeError` の派生型 `InputOverContextLimitError` を投げ、ほかの失敗と区別
+できるようにする (issue #24: 数える対象が上限を超えていたことを、段階を飛ばす
+扱いにするため。口の側の HTTP 400 は設定の誤りとして、今までどおり素の
+`ProbeError`)。
 
 `fits_context` と `is_context_limit_error` は、条件が入力の長さの上限に収まる
 かどうかを判定する純粋な関数 (3.1、3.6、6.9 で使う)。上限を超えた応答の
@@ -51,6 +56,7 @@ from bench_harness.types import (
 )
 
 __all__ = [
+    "InputOverContextLimitError",
     "ProbeError",
     "TokenCount",
     "count_input_tokens",
@@ -305,7 +311,24 @@ class ProbeError(Exception):
     道具で、上にやり直す仕組みがないので、例外にしてよい。投げる場面は 2 つ:
     (1) `count_tokens` が「口がない」(404/405/501) 以外の失敗をしたとき (黙って
     代わりの数え方に落とすと、設定の誤りに気づけない)、(2) 口がなく、代わりの
-    数え方 (`max_tokens=1` の要求) も失敗したとき。
+    数え方 (`max_tokens=1` の要求) も失敗したとき。(2) のうち、入力の長さの
+    上限を超えた HTTP 400 だけは、派生型の `InputOverContextLimitError` で区別する。
+    """
+
+
+class InputOverContextLimitError(ProbeError):
+    """代わりの数え方 (`max_tokens=1` の要求) が、入力の長さの上限を超えて断られたとき。
+
+    口 (`count_tokens`) がなく、代わりの要求を送ったところ、対象サーバーが上限を
+    超える入力として HTTP 400 を返した場合だけ投げる (`is_context_limit_error` と
+    同じ判定)。数える対象の入力が長すぎたという事実で、対象サーバーの故障や設定の
+    誤りとは別なので、呼び出し側 (7.2 の agent) は、この派生型だけを段階を飛ばす
+    扱いにできる。`ProbeError` の派生型なので、区別しない呼び出し側 (計測ランの進行、
+    `calibrate`、同時処理の包みの計測) は、今までどおり `ProbeError` として扱う。
+
+    口そのものが返した HTTP 400 は、この型ではない (口が入力の長さで断ったのか、
+    要求の形の誤りなのかを、状態の番号だけでは区別できないので、設定の誤りとして
+    素の `ProbeError` のままにする)。
     """
 
 
@@ -330,7 +353,9 @@ async def count_input_tokens(
     含む) で代える (research.md の Decision「入力の長さは、文字数とトークン数
     の比で狙う」の Follow-up)。口はあるのに 404/405/501 以外の理由で失敗した
     ときは、代わりの数え方に落とさず `ProbeError` を投げる (設定の誤りに
-    気づけるように)。代わりの数え方も失敗したときも同様。
+    気づけるように)。代わりの数え方も失敗したときも同様だが、その失敗が入力の
+    長さの上限を超えた HTTP 400 (`is_context_limit_error`) のときだけは、
+    `ProbeError` の派生型 `InputOverContextLimitError` を投げて区別する。
     """
     tokens = await _try_count_tokens_endpoint(target, request, api_key, aux_timeout_s)
     if tokens is not None:
@@ -345,10 +370,13 @@ async def count_input_tokens(
         return TokenCount(tokens=result.usage.total_input_tokens, method="one_token_request")
 
     detail = result.error.message if result.error is not None else "トークン数が返らなかった"
-    raise ProbeError(
+    message = (
         "入力のトークン数を数える口 (count_tokens) がなく、"
         f"代わりの要求 (max_tokens=1) も失敗した: {detail}"
     )
+    if is_context_limit_error(result):
+        raise InputOverContextLimitError(message)
+    raise ProbeError(message)
 
 
 _COUNT_TOKENS_ONLY_GENERATION_FIELDS: Final[frozenset[str]] = frozenset(

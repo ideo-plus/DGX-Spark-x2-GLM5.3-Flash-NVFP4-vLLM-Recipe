@@ -85,10 +85,16 @@ takt と同じように前置きのキャッシュに当てるのが目的であ
 1. **計画**: `plan_condition` が、段階の狙いの長さ + 出力の上限を
    `fits_context` にかけ、収まらない段階を送る前に飛ばす (`SkippedCondition`)。
    段階は単調に伸びるので、1 つ飛べば、それより後ろもすべて飛ぶ
-2. **送る前**: 組み立てた会話の実際の長さ (`approx_tokens`。issue #9 以降は
-   包み (system + tools + 最後の 1 手) を含む) でもう一度 `fits_context` に
-   かける。計画は**狙い**の長さで判定するので、実際の会話が狙いより長い段階は、
-   ここだけが止められる
+2. **送る前**: 組み立てた会話の、対象サーバーが数えた長さ (`_FittedConversation.
+   input_tokens`。issue #24 以降は包み (system + tools + 最後の 1 手) と履歴を
+   含む会話全体) でもう一度 `fits_context` にかける。計画は**狙い**の長さで判定
+   するので、実際の会話が狙いより長い段階は、ここだけが止められる。数えさせた
+   要求そのものが上限を超えて HTTP 400 で断られたとき (口がなく、代わりの
+   `max_tokens=1` の要求が断られた場合。`InputOverContextLimitError`) は、数えた
+   長さがない。1 本目の候補なら、その段階には 1 件も送らずに `ConditionAborted` を
+   投げ、理由の「到達した長さ」には、文字数からの見積もり (`approx_tokens`) を、
+   対象サーバーが数えていないとわかる書き方で入れる。2 本目以降の候補なら、数え
+   終えた候補のうち狙いに最も近いものを送る (数えた長さのある候補だけを送る)
 3. **送ったあと**: 上限がわからない (`context_limit is None`) ときは、対象
    サーバーの HTTP 400 で初めてわかる。`abort_if_context_limit` がレコードを
    残したあとに `ConditionAborted` を投げる (base.py の契約)
@@ -99,26 +105,50 @@ takt と同じように前置きのキャッシュに当てるのが目的であ
 投げてよい」)。覚えているのは `run_id` ごとで、`plan()` が呼ばれるたびに
 消す (`SUITE` は module に 1 つの実体なので、計測ランをまたいで残さない)。
 
-飛ばした理由には、到達した長さを必ず入れる (6.9)。要約の「止めた理由」は、
+飛ばした理由には、到達した長さを必ず入れる (6.9)。対象サーバーが数えた値でない
+ときは (数える要求が断られた場合)、見積もりだとわかる書き方にする。要約の「止めた理由」は、
 その計測ランで最初に飛ばした `agent` の条件の理由から作られる (4.2)。
 
-## 包みの計測 (issue #9)
+## 包みの計測と、会話の長さの合わせ込み (issue #9、#24)
 
-長い会話の入力が狙いより長くなる原因は、手番以外の決まった分量 (包み:
-`SYSTEM_PROMPT`、`TOOL_CATALOG`、最後の 1 手、チャットテンプレートの展開) が
-`build_conversation` の前置きの見積もりからずれることにある。`_measure_frame`
-が、`ConversationPrefix` と同じ `system` と `tools`、段階 0 試行 0 の課題の
-最後の 1 手をまとめた要求を、計測ランにつき 1 回だけ対象サーバーに数えさせる
-(`count_tokens` の口、なければ `max_tokens=1` の要求 1 件。`put_body` には
-保存されない)。数えた値を `build_conversation(..., fixed_tokens=…)` に渡すと、
-`approx_tokens` が包みを含む会話全体の見積もりになる (7.2 が足す最後の 1 手も
-含む)。数えられないときは `ProbeError` が伝播する (黙って見積もりに戻さない。
-runner が計測ランを `aborted` にして止める)。
+長い会話の入力が狙いより長くなる原因の候補は、2 つある。1 つは、手番以外の決まった
+分量 (包み: `SYSTEM_PROMPT`、`TOOL_CATALOG`、最後の 1 手、チャットテンプレートの
+展開) が `build_conversation` の前置きの見積もりからずれること (issue #9)。
+もう 1 つは、履歴に比例する分 (発話ごとの役割の目印、`tool_use` / `tool_result` を
+チャットテンプレートが包む分、結果の本文の生成器と較正の標本の比の差) で、文字数と
+比からは導けない。後者は実装側の未確認の仮説で、issue #24 が示した推定ではない
+(issue #24 の推定は、測った包みが組み立てに効いていない可能性と、試験の偽の数え方が
+実機と違う可能性の 2 つ)。内訳を切り分ける計測はリポジトリに無く、実機での再計測は
+未実施で、残るずれの原因は特定できていない。
 
-最後の 1 手の長さは段階・試行ごとに数十文字だけ違うが、20k の 0.1% 未満なので、
-段階 0 試行 0 の課題で代表させる。結果は `FrameTokensPerRun` が `run_id` ごとに
-覚え、`plan()` が消す (`AgentSuite` は上限に当たった長さと同じく、計測ランごとの
-状態として持つ)。
+`_measure_frame` が、`ConversationPrefix` と同じ `system` と `tools`、段階 0
+試行 0 の課題の最後の 1 手をまとめた要求を、計測ランにつき 1 回だけ対象サーバーに
+数えさせる (`count_tokens` の口、なければ `max_tokens=1` の要求 1 件。`put_body`
+には保存されない)。数えた値を `build_conversation(..., fixed_tokens=…)` に渡すと、
+前置きの見積もりが実測に置き換わる。ただし、issue #24 の実機の計測では、この置き換え
+(issue #9) の前後で 6 段のうち 5 段の中央値がほとんど動かなかった (20k: 21,090 →
+21,094)。これは前置きの見積もりと実測がほぼ等しい (E ≈ F) ためと推定されるが、
+見積もりと実測を直接比べた記録はなく、未確認である。この置き換えだけでは止める位置が
+動かないので、次の合わせ込みを足した。
+
+そこで `_fit_conversation` が、段階 × 会話ごとに、組み立てた会話 (最後の 1 手を
+含む要求そのもの) を対象サーバーに数えさせ、実測と履歴の見積もりの比
+(`history_scale`) で止める手番を組み直す。手番の数が変わらなくなったら収束と
+して止め、訪れた候補のうち数えた長さが狙いに最も近いものを送る (収束の判定は
+数えたあとなので、止まる回も数えて 2〜4 回。上限 `_MAX_LENGTH_COUNTS` 回)。手番の
+中身は変えないので `GENERATOR_VERSION` は据え置き、「同じ対象なら同じ入力」
+(ADR 0001) と、段階をまたいだ先頭の一致は保たれる。数える要求は `put_body` には
+残らず、その条件の `/metrics` の増分にだけ入る。
+
+数えられないときは、包みでも会話でも `ProbeError` が伝播する (黙って見積もりに
+戻さない。runner が計測ランを `aborted` にして止める)。例外は、会話の計測が
+入力の長さの上限を超えて断られたとき (`InputOverContextLimitError`) だけで、
+これは上限 (6.9) の扱いで段階を飛ばす (計測ランは止まらない)。包みの計測が上限を
+超えて断られたときは、今までどおり `ProbeError` のまま計測ランを `aborted` にする。
+包みの最後の 1 手の長さは段階・試行ごとに数十文字だけ違うが、20k の 0.1% 未満
+なので、段階 0 試行 0 の課題で代表させる。包みの結果は `FrameTokensPerRun` が
+`run_id` ごとに覚え、`plan()` が消す (`AgentSuite` は上限に当たった長さと同じく、
+計測ランごとの状態として持つ)。
 
 ## 注意していること
 
@@ -139,10 +169,12 @@ runner が計測ランを `aborted` にして止める)。
 from __future__ import annotations
 
 from collections.abc import AsyncIterator, Sequence
+from dataclasses import dataclass
 from typing import Final
 
-from bench_harness.client.probe import fits_context
+from bench_harness.client.probe import InputOverContextLimitError, fits_context
 from bench_harness.corpus.conversation import (
+    MESSAGES_PER_ROUND,
     SYSTEM_PROMPT,
     build_conversation,
     derive_conversation_seed,
@@ -189,6 +221,16 @@ _TASK_INDEX_STRIDE: Final[int] = 10_000
 """課題の番号を、段階ごとに区切る幅。1 段階の試行の数は、これ以下であること
 (試行の番号は 0 から始まるので、ちょうどこの数までは、次の段階とぶつからない)。"""
 
+_MAX_LENGTH_COUNTS: Final[int] = 4
+"""1 つの段階 × 会話で、組み立てた会話を対象サーバーに数えさせる回数の上限。
+
+比の更新で手番の数が変われば組み立て直して数え直し、手番の数が変わらなく
+なった回で止める。収束の判定は数えたあとに行う (変わらなかった回も数える) ので、
+2〜4 回になる。上限は振動と無限ループの防止で、上限に達したら、訪れた候補の
+うち最も近いものを送る。数える要求が入力の長さの上限を超えて断られたときは、
+この回数の途中で止まる (`_fit_conversation`: 1 本目なら段階を飛ばし、2 本目以降
+なら数え終えた候補を送る)。"""
+
 
 async def _measure_frame(ctx: SuiteContext) -> int:
     """要求の包み (`SYSTEM_PROMPT` + `TOOL_CATALOG` + 最後の 1 手) を 1 回数える。
@@ -199,12 +241,22 @@ async def _measure_frame(ctx: SuiteContext) -> int:
     `ConversationPrefix.system` / `ConversationPrefix.tools` と同じ実体を渡す
     (どの会話でも、どの段階でも同じ。7.1)。最後の 1 手は段階・試行ごとに数十文字
     だけ違うが、20k の 0.1% 未満なので、段階 0 試行 0 の課題で代表させる。
-    `ProbeError` は伝播する (issue #9)。
+    `ProbeError` は伝播する (issue #9)。包みが入力の長さの上限を超えて断られた
+    ときも同じで、段階を飛ばさず、runner が計測ランを `aborted` にする。
     """
     task = make_tool_task(_task_index(0, 0), ctx.profile.seed)
     return await measure_frame_tokens(
         ctx, system=SYSTEM_PROMPT, tools=TOOL_CATALOG, messages=[_final_turn(task.prompt)]
     )
+
+
+@dataclass(frozen=True)
+class _FittedConversation:
+    """数えて長さを合わせ込んだ 1 本の会話 (issue #24)。"""
+
+    prefix: ConversationPrefix
+    input_tokens: int
+    """対象サーバーが数えた、最後の 1 手を含む要求全体の長さ。"""
 
 
 class AgentSuite:
@@ -252,24 +304,39 @@ class AgentSuite:
         frame_tokens = await self._frame.tokens_for(ctx)
         ordinal = _stage_ordinal(settings, length)
         sizes = conversation_sizes(cond.trials, settings.conversations_per_stage)
-        built: dict[int, ConversationPrefix] = {}
+        built: dict[int, _FittedConversation] = {}
 
         for trial_index, warmup in iter_trials(cond):
             conversation_index = conversation_for(trial_index, sizes)
-            prefix = built.get(conversation_index)
-            if prefix is None:
-                prefix = _build(ctx, length, conversation_index, frame_tokens=frame_tokens)
-                built[conversation_index] = prefix
+            fitted = built.get(conversation_index)
+            if fitted is None:
+                measuring_task = make_tool_task(_task_index(ordinal, 0), ctx.profile.seed)
+                try:
+                    fitted = await _fit_conversation(
+                        ctx,
+                        cond,
+                        length,
+                        conversation_index,
+                        frame_tokens=frame_tokens,
+                        final_turn=_final_turn(measuring_task.prompt),
+                    )
+                except ConditionAborted:
+                    # 数えさせた会話が、対象サーバーに上限を超えるものとして断られた (6.9)
+                    self._remember_limit(ctx.run_id, length)
+                    raise
+                built[conversation_index] = fitted
             task = make_tool_task(_task_index(ordinal, trial_index), ctx.profile.seed)
-            self._abort_if_the_built_conversation_does_not_fit(ctx, cond, length, prefix)
+            self._abort_if_the_built_conversation_does_not_fit(
+                ctx, cond, length, fitted.input_tokens
+            )
 
             record = await run_trial(
                 ctx,
                 cond,
                 trial_index=trial_index,
                 warmup=warmup,
-                system=prefix.system,
-                messages=[*prefix.messages, _final_turn(task.prompt)],
+                system=fitted.prefix.system,
+                messages=[*fitted.prefix.messages, _final_turn(task.prompt)],
                 tools=task.tools,
                 measures_decode_speed=False,
                 expect_full_output=False,
@@ -277,11 +344,11 @@ class AgentSuite:
             )
             yield record
             try:
-                # 到達した長さには、段階の狙いではなく、実際に送った会話の見積もりを残す
+                # 到達した長さには、段階の狙いではなく、対象サーバーが数えた長さを残す
                 abort_if_context_limit(
                     cond,
                     record,
-                    reached_input_tokens=prefix.approx_tokens,
+                    reached_input_tokens=fitted.input_tokens,
                 )
             except ConditionAborted:
                 self._remember_limit(ctx.run_id, length)
@@ -319,15 +386,15 @@ class AgentSuite:
         ctx: SuiteContext,
         cond: ConditionPlan,
         length: int,
-        prefix: ConversationPrefix,
+        input_tokens: int,
     ) -> None:
         """組み立てた会話の実際の長さで、送る前にもう一度だけ確かめる (6.9)。
 
-        issue #9 以降、`approx_tokens` は包み (system + tools + 最後の 1 手) を
-        含む会話全体の見積もりなので、そのまま比べる。
+        issue #24 以降、ここで比べるのは対象サーバーが数えた長さ (`input_tokens`。
+        包みと履歴と最後の 1 手を含む会話全体)。見積もり (`approx_tokens`) は
+        数えた長さに置き換わっているので、そのまま比べる。
         """
-        estimated = prefix.approx_tokens
-        if fits_context(ctx.context_limit, estimated, cond.max_tokens) is not False:
+        if fits_context(ctx.context_limit, input_tokens, cond.max_tokens) is not False:
             return
         self._remember_limit(ctx.run_id, length)
         raise ConditionAborted(
@@ -335,7 +402,7 @@ class AgentSuite:
                 self.name,
                 cond.key,
                 "組み立てた会話が入力の長さの上限を超えるので、送る前に止めた。"
-                f"到達した長さ: {estimated} トークン (包みを含む会話) + "
+                f"到達した長さ: {input_tokens} トークン (対象サーバーが数えた、包みを含む会話) + "
                 f"出力の上限 {cond.max_tokens} トークン > 上限 {ctx.context_limit} トークン",
             )
         )
@@ -422,23 +489,87 @@ def conversation_for(trial_index: int, sizes: Sequence[int]) -> int:
     raise ValueError(f"agent: 試行の番号が会話の割り当てに収まらない (trial_index={trial_index})")
 
 
-def _build(
-    ctx: SuiteContext, length: int, conversation_index: int, *, frame_tokens: int
-) -> ConversationPrefix:
-    """1 本の会話を組み立てる (段階と会話の番号ごとに 1 回だけ呼ぶ)。
+async def _fit_conversation(
+    ctx: SuiteContext,
+    cond: ConditionPlan,
+    length: int,
+    conversation_index: int,
+    *,
+    frame_tokens: int,
+    final_turn: InputMessage,
+) -> _FittedConversation:
+    """1 本の会話を、対象サーバーに数えさせて狙いに合わせ込む (issue #24)。
 
     `chars_per_token` は必ず `Profile` の値を渡す (省くと `Profile` の初期値に
     なり、`profiles.toml` の較正した比と食い違う。注 7.1 → 7.2)。`frame_tokens`
-    は、計測ランで 1 回数えた包みのトークン数 (`_measure_frame`)。これを前置きの
-    見積もりの代わりに使うので、`approx_tokens` は包みを含む会話全体の
-    見積もりになる (issue #9)。
+    は、計測ランで 1 回数えた包みのトークン数 (`_measure_frame`)。
+
+    `scale=1.0` で組み立てた会話 (`system` + `tools` + 履歴 + `final_turn`) を
+    1 つの要求として数えさせ、実測と見積もりの比で止める手番を組み直す。手番の
+    数が変わらなくなったら収束として止める (上限 `_MAX_LENGTH_COUNTS` 回)。訪れた
+    候補のうち、数えた長さが狙いに最も近いものを返す。手番の中身は比によって
+    変わらないので、`GENERATOR_VERSION` は上がらない。
+
+    数える要求が、対象サーバーに入力の長さの上限を超えるものとして断られたとき
+    (`InputOverContextLimitError`。口がなく、代わりの `max_tokens=1` の要求が
+    HTTP 400 になった場合) だけは、`ProbeError` のまま伝えずに扱いを分ける (6.9)。
+
+    - 1 本目の候補 (数え終えた候補がまだない) なら、その段階には 1 件も送らずに
+      `ConditionAborted` を投げる。到達した長さには、数えられなかった候補の
+      見積もり (`approx_tokens`) を、見積もりだとわかる書き方で入れる
+    - 2 本目以降の候補なら、数え終えた候補のうち狙いに最も近いものを返す
+      (反復の上限に達したときと同じ規則。数えた長さのある候補だけを返す)
+
+    それ以外の数えられない理由の `ProbeError` は捕まえない (黙って見積もりに
+    戻さない。runner が計測ランを `aborted` にして止める)。数える要求は `put_body`
+    には保存されず、その条件の `/metrics` の増分にだけ入る (`measure_frame_tokens`)。
     """
-    return build_conversation(
-        length,
-        derive_conversation_seed(ctx.profile.seed, conversation_index),
-        chars_per_token=ctx.profile.chars_per_token,
-        fixed_tokens=frame_tokens,
-    )
+    scale = 1.0
+    best: _FittedConversation | None = None
+    seen: set[int] = set()
+    for _ in range(_MAX_LENGTH_COUNTS):
+        prefix = build_conversation(
+            length,
+            derive_conversation_seed(ctx.profile.seed, conversation_index),
+            chars_per_token=ctx.profile.chars_per_token,
+            fixed_tokens=frame_tokens,
+            history_scale=scale,
+        )
+        try:
+            counted = await measure_frame_tokens(
+                ctx,
+                system=prefix.system,
+                tools=prefix.tools,
+                messages=[*prefix.messages, final_turn],
+            )
+        except InputOverContextLimitError as exc:
+            if best is not None:
+                break  # 数え終えた候補で止める。数えられなかった候補は送らない
+            raise ConditionAborted(
+                skip_condition(
+                    cond.suite,
+                    cond.key,
+                    "組み立てた会話の計測が、対象サーバーに入力の長さの上限を超えるもの "
+                    "(HTTP 400) として断られたので、この段階には送らなかった。"
+                    f"到達した長さ: {prefix.approx_tokens} トークン "
+                    "(文字数からの見積もり。対象サーバーは数えていない)。"
+                    f"数える要求の結果: {exc}",
+                )
+            ) from exc
+        if best is None or abs(counted - length) < abs(best.input_tokens - length):
+            best = _FittedConversation(prefix, counted)
+
+        rounds = len(prefix.messages) // MESSAGES_PER_ROUND
+        if rounds in seen:
+            break  # 手番の数が変わらなくなった。収束として止める
+        seen.add(rounds)
+        history = (prefix.approx_tokens - frame_tokens) / scale
+        if history <= 0 or counted <= frame_tokens:
+            break  # 比を作れない。訪れた候補で止める
+        scale = (counted - frame_tokens) / history
+
+    assert best is not None, "_fit_conversation は 1 回目で必ず数える"
+    return best
 
 
 # --- 最後の 1 手 ---------------------------------------------------------------

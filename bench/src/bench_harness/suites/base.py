@@ -13,8 +13,9 @@ agent 7.2) は、この module の上に薄く載る。まとまりが自分で�
 `analysis`、`cli` を読み込まない。保存の部品 (`store`) も直接は読み込まず、
 本文を保存する口を `SuiteContext.put_body` として受け取る (計測ランの進行
 (3.5) が `RunStore.put_body` を渡す)。入力の長さを数える口も同じ形で、
-`SuiteContext.count_input_tokens` として受け取る (issue #9: 包みの計測。
-既定は `client.probe.count_input_tokens` を呼ぶ `make_suite_context` が作る)。
+`SuiteContext.count_input_tokens` として受け取る (issue #9: 包みの計測、issue #24:
+組み立てた会話の計測。既定は `client.probe.count_input_tokens` を呼ぶ
+`make_suite_context` が作る)。
 
 ## 使い方 (まとまりの書き方)
 
@@ -326,14 +327,15 @@ async def measure_frame_tokens(
     system: str | None = None,
     tools: Sequence[ToolDef] | None = None,
 ) -> int:
-    """要求の包み (本文から文章・履歴を抜いた、決まった分量) を 1 回数える (issue #9)。
+    """要求の包み、または組み立てた会話を 1 つの要求として 1 回数える (issue #9、#24)。
 
     `messages`、`system`、`tools` をそのまま 1 つの要求にまとめ、対象サーバーに
     入力のトークン数を数えさせる。数えるのは `count_tokens` の口 (なければ
     `max_tokens=1` の要求 1 件) で、probe の規約 (`client.probe.count_input_tokens`)
-    をそのまま使う。口がない対象で代わりの要求を送ったときは、その要求は試行と
-    しては保存されず (`put_body` を呼ばない)、その条件の `/metrics` の増分にだけ
-    入る。
+    をそのまま使う。7.2 は包みの単独計測 (issue #9) と、組み立てた会話の計測
+    (issue #24) の両方に使う。口がない対象で代わりの要求を送ったときは、その要求は
+    試行としては保存されず (`put_body` を呼ばない)、その条件の `/metrics` の増分に
+    だけ入る。
 
     文字数から比で見積もれない固定の分量 (チャットテンプレートの包み、識別子の
     割れ方、ツール定義の展開) があるので、比ではなく対象サーバーに数えさせる。
