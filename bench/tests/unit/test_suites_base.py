@@ -29,6 +29,7 @@ from bench_harness.corpus.synth import PREFIX_NONCE_HEX_LEN, TemplateCorpus, pre
 from bench_harness.suites.base import (
     DEFAULT_CONNECTION_WARMUP_TRIALS,
     ConditionAborted,
+    FrameTokensPerRun,
     SuiteContext,
     abort_if_context_limit,
     cold_prefix_nonce,
@@ -1038,3 +1039,79 @@ async def test_make_suite_context_passes_the_api_key_to_count_tokens(
 
     recorded = fake_server.requests_for("/v1/messages/count_tokens")[-1]
     assert recorded.headers["x-api-key"] == "k-frame"
+
+
+# --- 包みを、計測ランにつき 1 回だけ数える規則 (issue #9: FrameTokensPerRun) --------
+
+
+class CountingMeasure:
+    """`FrameTokensPerRun` に渡す測る中身の代わり。呼ばれた `run_id` を数える。"""
+
+    def __init__(self, *, tokens: int = 100, failures: int = 0) -> None:
+        self.tokens = tokens
+        self.failures = failures
+        self.run_ids: list[str] = []
+
+    async def __call__(self, ctx: SuiteContext) -> int:
+        self.run_ids.append(ctx.run_id)
+        if self.failures > 0:
+            self.failures -= 1
+            raise ProbeError("boom")
+        return self.tokens
+
+
+async def test_frame_tokens_per_run_measures_once_for_the_same_run(
+    fake_server: FakeServer,
+) -> None:
+    measure = CountingMeasure(tokens=123)
+    frame = FrameTokensPerRun(measure)
+
+    async with suite_ctx(fake_server) as (ctx, _):
+        first = await frame.tokens_for(ctx)
+        second = await frame.tokens_for(ctx)
+
+    assert (first, second) == (123, 123)
+    assert measure.run_ids == [RUN_ID]
+
+
+async def test_frame_tokens_per_run_measures_again_for_a_new_run(
+    fake_server: FakeServer,
+) -> None:
+    measure = CountingMeasure()
+    frame = FrameTokensPerRun(measure)
+
+    async with suite_ctx(fake_server, run_id="20260920-000000-aaaaaa") as (ctx_a, _):
+        await frame.tokens_for(ctx_a)
+    async with suite_ctx(fake_server, run_id="20260920-111111-bbbbbb") as (ctx_b, _):
+        await frame.tokens_for(ctx_b)
+
+    assert measure.run_ids == ["20260920-000000-aaaaaa", "20260920-111111-bbbbbb"]
+
+
+async def test_frame_tokens_per_run_forget_makes_the_next_call_measure_again(
+    fake_server: FakeServer,
+) -> None:
+    measure = CountingMeasure()
+    frame = FrameTokensPerRun(measure)
+
+    async with suite_ctx(fake_server) as (ctx, _):
+        await frame.tokens_for(ctx)
+        frame.forget()
+        await frame.tokens_for(ctx)
+
+    assert measure.run_ids == [RUN_ID, RUN_ID]
+
+
+async def test_frame_tokens_per_run_does_not_remember_a_failed_measurement(
+    fake_server: FakeServer,
+) -> None:
+    measure = CountingMeasure(tokens=77, failures=1)
+    frame = FrameTokensPerRun(measure)
+
+    async with suite_ctx(fake_server) as (ctx, _):
+        with pytest.raises(ProbeError):
+            await frame.tokens_for(ctx)
+        tokens = await frame.tokens_for(ctx)
+
+    assert tokens == 77
+    assert measure.run_ids == [RUN_ID, RUN_ID]

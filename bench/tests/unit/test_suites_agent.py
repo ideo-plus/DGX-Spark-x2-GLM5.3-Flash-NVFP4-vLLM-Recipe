@@ -860,9 +860,9 @@ async def test_the_frame_is_measured_once_per_run_and_again_for_a_new_run(
     """包みの計測は計測ランにつき 1 回で、run_id が変われば測り直す (issue #9)。
 
     同時処理の `test_the_frame_is_measured_once_per_run_and_again_for_a_new_run` と
-    同じ契約を、長い会話の側でも確かめる (`AgentSuite` は同じ覚え書きの形を別に
-    実装している)。`plan()` が `_forget_run_state()` を通り、`run_id` が変われば
-    `_frame_tokens_for` がもう一度数えるので、`count_tokens` はランごとに 1 回になる。
+    同じ契約を、長い会話の側でも確かめる (どちらも `suites.base.FrameTokensPerRun`
+    が規則を持つ)。`plan()` が覚えた値を消し、`run_id` が変われば包みをもう一度
+    数えるので、`count_tokens` はランごとに 1 回になる。
     """
     profile = make_profile(agent=agent_settings(trials_per_stage=2, conversations_per_stage=1))
     fake_server.set_response_factory(

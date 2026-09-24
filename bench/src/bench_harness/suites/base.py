@@ -106,7 +106,8 @@ class DecodeSuite:
 - `plan()` が返す `SkippedCondition` は、そのまま `manifest.skipped` に足す
 - `run_condition()` から `ConditionAborted` が出たら、`exc.skipped` を
   `manifest.skipped` に足し、**その条件だけ**を終わりにして、次の条件に進む。
-  上限の超過は「連続の失敗」に数えない (design.md Error Handling)
+  上限の超過や、送る前にわかる条件の不成立 (同時処理の狙いが包み以下、issue #9)
+  は「連続の失敗」に数えない (design.md Error Handling)
 - `ConditionAborted` が出る前に `yield` されたレコードは、ふつうのレコードと
   同じように書く (400 の試行も 8.1 の対象)
 - `ConditionAborted` は、1 つもレコードを `yield` せずに出ることもある。段階を
@@ -167,6 +168,7 @@ __all__ = [
     "MIN_SPEED_OUTPUT_TOKENS",
     "ConditionAborted",
     "CountInputTokens",
+    "FrameTokensPerRun",
     "PutBody",
     "StartGate",
     "Suite",
@@ -349,6 +351,36 @@ async def measure_frame_tokens(
     return (await ctx.count_input_tokens(request)).tokens
 
 
+class FrameTokensPerRun:
+    """要求の包みのトークン数を、計測ランにつき 1 回だけ数えて覚える (issue #9)。
+
+    測る中身 (どんな要求を数えさせるか) は、まとまりが `measure` として渡す。
+    この部品が持つのは規則だけである。
+
+    - 同じ `run_id` では、覚えた値を返し、数え直さない (測る要求の数を最小にする)
+    - `run_id` が変われば、数え直す
+    - `forget()` で消す (まとまりは `plan()` の最初に呼ぶ)
+
+    `measure` が投げた例外 (`ProbeError` など) は、そのまま伝播し、何も覚えない。
+    """
+
+    def __init__(self, measure: Callable[[SuiteContext], Awaitable[int]]) -> None:
+        self._measure = measure
+        self._remembered: tuple[str, int] | None = None
+
+    def forget(self) -> None:
+        """覚えた値を消す。"""
+        self._remembered = None
+
+    async def tokens_for(self, ctx: SuiteContext) -> int:
+        """`ctx.run_id` の計測ランの包みのトークン数を返す (なければ数えて覚える)。"""
+        if self._remembered is not None and self._remembered[0] == ctx.run_id:
+            return self._remembered[1]
+        tokens = await self._measure(ctx)
+        self._remembered = (ctx.run_id, tokens)
+        return tokens
+
+
 @runtime_checkable
 class Suite(Protocol):
     """測る項目のまとまりの約束事 (design.md suites)。
@@ -367,7 +399,11 @@ class Suite(Protocol):
 
 
 class ConditionAborted(Exception):
-    """上限の超過で、その条件を打ち切ること (3.6、6.9)。
+    """その条件を、送れない、または続けられないので打ち切ること (3.6、6.9)。
+
+    上限の超過 (HTTP 400、組み立てた会話が上限を超える) のほか、送る前にわかる
+    設定と対象サーバーの組み合わせの不成立 (同時処理の狙いが包み以下、issue #9) や、
+    隔離の実行が続けて失敗したとき (品質の検査) でも使う。
 
     `skipped` に、飛ばした条件と理由が入る。計測ランの進行 (3.5) は、これを
     捕まえて `manifest.skipped` に足し、連続の失敗には数えず、次の条件に進む。

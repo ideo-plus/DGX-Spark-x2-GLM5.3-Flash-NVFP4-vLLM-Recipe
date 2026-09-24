@@ -20,13 +20,19 @@ from pydantic import JsonValue
 from bench_harness.client.messages import HttpxMessagesClient, build_request_body
 from bench_harness.client.probe import ProbeError, TokenCount
 from bench_harness.corpus.synth import TemplateCorpus
-from bench_harness.suites.base import SuiteContext, make_suite_context, trial_seed
+from bench_harness.suites.base import (
+    ConditionAborted,
+    SuiteContext,
+    make_suite_context,
+    trial_seed,
+)
 from bench_harness.suites.concurrency import _LONG_OUTPUT_INSTRUCTION, ConcurrencySuite
 from bench_harness.types import (
     ConditionPlan,
     InputMessage,
     MessagesRequest,
     Profile,
+    SuiteName,
     TargetDef,
     TextBlockParam,
     TrialFlag,
@@ -246,10 +252,10 @@ async def test_the_frame_request_uses_its_own_nonce_and_an_empty_document(
     assert frame_first_line not in other_first_lines
 
 
-# --- SCN-C1-N1: 狙いが包み以下のときは、送る前に止める -----------------------
+# --- SCN-C1-N1: 狙いが包み以下のときは、送る前に、理由つきでその条件を飛ばす ----
 
 
-async def test_a_target_at_or_below_the_frame_is_rejected_before_sending(
+async def test_a_target_at_or_below_the_frame_is_skipped_with_a_reason_before_sending(
     fake_server: FakeServer,
 ) -> None:
     fake_server.set_response(token_stream_response(output_tokens=4))
@@ -260,10 +266,39 @@ async def test_a_target_at_or_below_the_frame_is_rejected_before_sending(
     suite = ConcurrencySuite()
 
     async with suite_ctx(fake_server, profile=profile) as (ctx, _sink):
-        with pytest.raises(ValueError):
+        with pytest.raises(ConditionAborted) as raised:
             await run_all(suite, ctx)
 
+    skipped = raised.value.skipped
+    assert skipped.suite is SuiteName.CONCURRENCY
+    assert skipped.key == "concurrency/c2"
+    assert "10" in skipped.reason
+    assert str(frame_tokens_of(fake_server)) in skipped.reason
     assert fake_server.call_count("/v1/messages") == 0
+    assert fake_server.call_count("/v1/messages/count_tokens") == 1
+
+
+@pytest.mark.parametrize(("input_tokens", "skipped"), [(60, True), (61, False)])
+async def test_the_frame_boundary_decides_between_skipping_and_sending(
+    fake_server: FakeServer, input_tokens: int, skipped: bool
+) -> None:
+    """境界: 包みが 60 トークンなら、狙い 60 は飛ばし、狙い 61 (文章 1 トークン) は送る。"""
+    fake_server.set_response(token_stream_response(output_tokens=4))
+    fake_server.set_input_token_counter(lambda body: 60)
+    profile = make_profile(
+        concurrency={"levels": [2], "rounds": 1, "max_tokens": 8, "input_tokens": input_tokens}
+    )
+    suite = ConcurrencySuite()
+
+    async with suite_ctx(fake_server, profile=profile) as (ctx, _sink):
+        if skipped:
+            with pytest.raises(ConditionAborted):
+                await run_all(suite, ctx)
+        else:
+            assert await run_all(suite, ctx)
+
+    # 送る条件は、(慣らし 1 回 + 本番 1 回) × 2 本
+    assert fake_server.call_count("/v1/messages") == (0 if skipped else 2 * 2)
     assert fake_server.call_count("/v1/messages/count_tokens") == 1
 
 

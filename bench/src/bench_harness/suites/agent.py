@@ -112,11 +112,13 @@ takt と同じように前置きのキャッシュに当てるのが目的であ
 (`count_tokens` の口、なければ `max_tokens=1` の要求 1 件。`put_body` には
 保存されない)。数えた値を `build_conversation(..., fixed_tokens=…)` に渡すと、
 `approx_tokens` が包みを含む会話全体の見積もりになる (7.2 が足す最後の 1 手も
-含む)。数えられないときは `ProbeError` が伝播する (黙って見積もりに戻さない)。
+含む)。数えられないときは `ProbeError` が伝播する (黙って見積もりに戻さない。
+runner が計測ランを `aborted` にして止める)。
 
 最後の 1 手の長さは段階・試行ごとに数十文字だけ違うが、20k の 0.1% 未満なので、
-段階 0 試行 0 の課題で代表させる。結果は `run_id` ごとに覚えておき、`plan()` が
-消す (`AgentSuite` は `_limit_*` と同じ計測ランごとの状態に持つ)。
+段階 0 試行 0 の課題で代表させる。結果は `FrameTokensPerRun` が `run_id` ごとに
+覚え、`plan()` が消す (`AgentSuite` は上限に当たった長さと同じく、計測ランごとの
+状態として持つ)。
 
 ## 注意していること
 
@@ -149,6 +151,7 @@ from bench_harness.corpus.tools import TOOL_CATALOG, make_tool_task
 from bench_harness.scoring.toolcall import classify_tool_call
 from bench_harness.suites.base import (
     ConditionAborted,
+    FrameTokensPerRun,
     SuiteContext,
     VerdictFn,
     abort_if_context_limit,
@@ -187,12 +190,30 @@ _TASK_INDEX_STRIDE: Final[int] = 10_000
 (試行の番号は 0 から始まるので、ちょうどこの数までは、次の段階とぶつからない)。"""
 
 
+async def _measure_frame(ctx: SuiteContext) -> int:
+    """要求の包み (`SYSTEM_PROMPT` + `TOOL_CATALOG` + 最後の 1 手) を 1 回数える。
+
+    `AgentSuite` が `FrameTokensPerRun` に渡す、測る中身。`SUITE` を作る前に
+    定義しておく必要がある (module の上に置くのはそのため)。
+
+    `ConversationPrefix.system` / `ConversationPrefix.tools` と同じ実体を渡す
+    (どの会話でも、どの段階でも同じ。7.1)。最後の 1 手は段階・試行ごとに数十文字
+    だけ違うが、20k の 0.1% 未満なので、段階 0 試行 0 の課題で代表させる。
+    `ProbeError` は伝播する (issue #9)。
+    """
+    task = make_tool_task(_task_index(0, 0), ctx.profile.seed)
+    return await measure_frame_tokens(
+        ctx, system=SYSTEM_PROMPT, tools=TOOL_CATALOG, messages=[_final_turn(task.prompt)]
+    )
+
+
 class AgentSuite:
     """長い会話でのツール呼び出しの検査のまとまり (design.md suites)。
 
     上限に当たったことと、包みの計測の結果を、計測ランごとの状態として持つ
-    (module の docstring「上限」「包みの計測」を参照)。状態は `plan()` が消すので、
-    `SUITE` を計測ランをまたいで使い回しても混ざらない。
+    (module の docstring「上限」「包みの計測」を参照)。包みの計測の覚え方は
+    `FrameTokensPerRun` が持つ。状態は `plan()` が消すので、`SUITE` を計測ランを
+    またいで使い回しても混ざらない。
     """
 
     name = SuiteName.AGENT
@@ -200,8 +221,7 @@ class AgentSuite:
     def __init__(self) -> None:
         self._limit_run_id: str | None = None
         self._limit_tokens: int | None = None
-        self._frame_run_id: str | None = None
-        self._frame_tokens: int | None = None
+        self._frame = FrameTokensPerRun(_measure_frame)
 
     def plan(self, ctx: SuiteContext) -> list[ConditionPlan | SkippedCondition]:
         self._forget_run_state()
@@ -229,7 +249,7 @@ class AgentSuite:
         settings = ctx.profile.agent
         self._abort_if_limit_already_reached(ctx, cond, length)
 
-        frame_tokens = await self._frame_tokens_for(ctx)
+        frame_tokens = await self._frame.tokens_for(ctx)
         ordinal = _stage_ordinal(settings, length)
         sizes = conversation_sizes(cond.trials, settings.conversations_per_stage)
         built: dict[int, ConversationPrefix] = {}
@@ -272,21 +292,11 @@ class AgentSuite:
     def _forget_run_state(self) -> None:
         self._limit_run_id = None
         self._limit_tokens = None
-        self._frame_run_id = None
-        self._frame_tokens = None
+        self._frame.forget()
 
     def _remember_limit(self, run_id: str, length: int) -> None:
         self._limit_run_id = run_id
         self._limit_tokens = length
-
-    async def _frame_tokens_for(self, ctx: SuiteContext) -> int:
-        """包みを、同じ計測ランでは 1 回だけ数えて覚えておく (issue #9)。"""
-        if self._frame_run_id == ctx.run_id and self._frame_tokens is not None:
-            return self._frame_tokens
-        frame_tokens = await _measure_frame(ctx)
-        self._frame_run_id = ctx.run_id
-        self._frame_tokens = frame_tokens
-        return frame_tokens
 
     def _abort_if_limit_already_reached(
         self, ctx: SuiteContext, cond: ConditionPlan, length: int
@@ -437,20 +447,6 @@ def _build(
 def _final_turn(prompt: str) -> InputMessage:
     """会話の最後に足す、課題の指示 1 つぶんの `user` の発話。"""
     return InputMessage(role="user", content=[TextBlockParam(text=prompt)])
-
-
-async def _measure_frame(ctx: SuiteContext) -> int:
-    """要求の包み (`SYSTEM_PROMPT` + `TOOL_CATALOG` + 最後の 1 手) を 1 回数える。
-
-    `ConversationPrefix.system` / `ConversationPrefix.tools` と同じ実体を渡す
-    (どの会話でも、どの段階でも同じ。7.1)。最後の 1 手は段階・試行ごとに数十文字
-    だけ違うが、20k の 0.1% 未満なので、段階 0 試行 0 の課題で代表させる。
-    `ProbeError` は伝播する (issue #9)。
-    """
-    task = make_tool_task(_task_index(0, 0), ctx.profile.seed)
-    return await measure_frame_tokens(
-        ctx, system=SYSTEM_PROMPT, tools=TOOL_CATALOG, messages=[_final_turn(task.prompt)]
-    )
 
 
 def _verdict_for(ctx: SuiteContext, task: ToolTask) -> VerdictFn:

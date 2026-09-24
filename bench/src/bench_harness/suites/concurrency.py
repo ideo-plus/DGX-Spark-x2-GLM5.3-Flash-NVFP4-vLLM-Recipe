@@ -36,14 +36,17 @@
 `measure_frame_tokens` に渡す。数える要求は、口があれば `count_tokens` の
 1 件、口がなければ `max_tokens=1` の要求 1 件である (`put_body` には保存されず、
 試行としては残らないが、その条件の `/metrics` の増分には入る)。数えられない
-ときは `ProbeError` が伝播する (黙って文字数の見積もりに戻さない)。結果は
-`run_id` ごとに覚えておき、`plan()` が消す (`ConcurrencySuite` は
-`default_suite_registry` が計測ランごとに作り直す)。
+ときは `ProbeError` が伝播する (黙って文字数の見積もりに戻さない。runner が
+計測ランを `aborted` にして止める)。結果は
+`FrameTokensPerRun` が `run_id` ごとに覚え、`plan()` が消す (`ConcurrencySuite`
+は `default_suite_registry` が計測ランごとに作り直す)。
 
 包みを測る要求のシステムプロンプトの 1 行目は、`_FRAME_NONCE_KEY` から作る
 名前空間に置く (条件の鍵 `concurrency/c{n}` とは別で、どの試行の先頭とも
-重ならない)。狙いが包み以下なら、文章を入れられないので、送る前に `ValueError`
-で止める。
+重ならない)。狙いが包み以下なら、文章を入れられないので、その条件の試行を 1 件も
+送らずに、`ConditionAborted` で飛ばす (理由に、狙いと包みのトークン数を残す。
+runner が `manifest.skipped` に足して、次の水準に進む。`concurrency.input_tokens`
+が小さい設定と、包みが大きい対象サーバーの組み合わせで起こりうる)。
 
 ## 識別子 (`trial_index` / `round_id` / `stream_index`)
 
@@ -94,6 +97,8 @@ from collections.abc import AsyncIterator
 from typing import Final
 
 from bench_harness.suites.base import (
+    ConditionAborted,
+    FrameTokensPerRun,
     SuiteContext,
     abort_if_context_limit,
     cold_prefix_nonce,
@@ -103,6 +108,7 @@ from bench_harness.suites.base import (
     plan_condition,
     run_trial,
     single_user_message,
+    skip_condition,
     system_with_prefix,
     trial_seed,
 )
@@ -192,7 +198,9 @@ async def _measure_frame(ctx: SuiteContext) -> int:
 def _document_tokens(cond: ConditionPlan, frame_tokens: int) -> int:
     """文章に割り当てるトークン数 (`target_input_tokens − 包み`) (issue #9)。
 
-    狙いが包み以下なら、文章を入れられないので、送る前に `ValueError` で止める。
+    狙いが包み以下なら、文章を入れられない。設定 (`concurrency.input_tokens`) と
+    対象サーバーの数え方から起こりうる、想定した失敗なので、試行を 1 件も送らずに
+    `ConditionAborted` でその条件を飛ばす (狙いと包みのトークン数を理由に残す)。
     """
     target_tokens = cond.target_input_tokens
     if target_tokens is None:
@@ -201,9 +209,14 @@ def _document_tokens(cond: ConditionPlan, frame_tokens: int) -> int:
         raise ValueError("concurrency: target_input_tokens のない計画は扱えない")
     document_tokens = target_tokens - frame_tokens
     if document_tokens < 1:
-        raise ValueError(
-            f"concurrency: 狙いの入力 {target_tokens} トークンが要求の包み "
-            f"{frame_tokens} トークン以下なので、文章を入れられない"
+        raise ConditionAborted(
+            skip_condition(
+                cond.suite,
+                cond.key,
+                f"狙いの入力 {target_tokens} トークンが、要求の包み {frame_tokens} トークン"
+                "以下なので、文章を入れられず、送る前に飛ばした "
+                "(concurrency.input_tokens を包みより大きくすること)",
+            )
         )
     return document_tokens
 
@@ -315,18 +328,18 @@ class ConcurrencySuite:
     """同時処理のまとまり (design.md suites の `concurrency` の行)。
 
     包みの計測の結果を、計測ランごとに 1 つだけ覚えておく (module の docstring
-    「包みの計測」)。状態は `plan()` が消し、`default_suite_registry` は計測ラン
-    ごとに新しい実体を作るので、計測ランをまたいで混ざらない。
+    「包みの計測」)。覚えておく規則 (`run_id` ごとに 1 回数え、`plan()` で消す) は
+    `FrameTokensPerRun` が持つ。`default_suite_registry` は計測ランごとに新しい
+    実体を作るので、計測ランをまたいで混ざらない。
     """
 
     name = SuiteName.CONCURRENCY
 
     def __init__(self) -> None:
-        self._frame_run_id: str | None = None
-        self._frame_tokens: int | None = None
+        self._frame = FrameTokensPerRun(_measure_frame)
 
     def plan(self, ctx: SuiteContext) -> list[ConditionPlan | SkippedCondition]:
-        self._forget_frame()
+        self._frame.forget()
         settings = ctx.profile.concurrency
         return [
             plan_condition(
@@ -345,7 +358,7 @@ class ConcurrencySuite:
     async def run_condition(
         self, ctx: SuiteContext, cond: ConditionPlan
     ) -> AsyncIterator[TrialRecord]:
-        frame_tokens = await self._frame_tokens_for(ctx)
+        frame_tokens = await self._frame.tokens_for(ctx)
         document_tokens = _document_tokens(cond, frame_tokens)
         for round_index, warmup in iter_trials(cond):
             records = await _run_round(
@@ -359,19 +372,6 @@ class ConcurrencySuite:
                 yield record
             for record in records:
                 abort_if_context_limit(cond, record)
-
-    def _forget_frame(self) -> None:
-        self._frame_run_id = None
-        self._frame_tokens = None
-
-    async def _frame_tokens_for(self, ctx: SuiteContext) -> int:
-        """包みを、同じ計測ランでは 1 回だけ数えて覚えておく (issue #9)。"""
-        if self._frame_run_id == ctx.run_id and self._frame_tokens is not None:
-            return self._frame_tokens
-        frame_tokens = await _measure_frame(ctx)
-        self._frame_run_id = ctx.run_id
-        self._frame_tokens = frame_tokens
-        return frame_tokens
 
 
 SUITE: Final[ConcurrencySuite] = ConcurrencySuite()
