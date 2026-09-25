@@ -114,10 +114,12 @@ uv run --directory bench bench run --target p2-nope-tp2-mtp1 --suite concurrency
 - `summary.md` の `decode/code/en` と `decode/prose/ja` の `decode_tps`（tok/s）
 - `metrics/deltas.jsonl` の `mean_acceptance_length`（受理長）、`spec_acceptance_rate`（投機の当たり率）、`decode_steps`、`tokens_per_step`
 
-**1 ステップの時間**は、2 つの定義のどちらでも出せます。同じ結果になることを確かめてから使います。
+**1 ステップの時間**は、`decode/*`（1 本ずつ流す条件）では、2 つの定義のどちらでも出せます。同じ結果になることを確かめてから使います。
 
-- 「試行の生成時間 ÷ `decode_steps`」
-- `decode_tps ÷ tokens_per_step` の逆数
+- 「試行の生成時間の合計 ÷ `decode_steps`」。合計する範囲は、`deltas.jsonl` の増分と同じ区間です。その条件のすべての試行（ウォームアップを含む）を足します
+- `tokens_per_step ÷ decode_tps`
+
+`tokens_per_step` は、1 ステップあたりの**生成**トークン数（`generation_tokens` の増分 ÷ `iteration_tokens_count` の増分）です。prefill の回の入力トークンは入りません。`decode/*` では、投機なしで 1.0 になり、MTP では受理長（`mean_acceptance_length`）とほぼ一致します。`concurrency/c{n}` では、同時に流す n 本の生成が同じステップにまとめて数えられるので、値は本数に応じて大きくなり、1.0 や受理長とは一致しません。上の 2 つの定義は、`concurrency/c{n}` の値には使いません。
 
 N ごとの表の雛形です。`full`（投機なし。`p2-nope-tp2-full`）の値を並べて比べます。
 

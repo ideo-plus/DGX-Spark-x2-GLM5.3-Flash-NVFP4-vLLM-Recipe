@@ -130,6 +130,7 @@ def test_derive_computes_every_formula_from_increasing_counters() -> None:
             LogicalMetric.SPEC_ACCEPTED_TOKENS: 60.0,
             LogicalMetric.PREFIX_QUERIES: 1000.0,
             LogicalMetric.PREFIX_HITS: 200.0,
+            LogicalMetric.GENERATION_TOKENS: 4000.0,
             LogicalMetric.ITERATION_TOKENS_SUM: 5000.0,
             LogicalMetric.ITERATION_TOKENS_COUNT: 100.0,
             LogicalMetric.PREEMPTIONS: 2.0,
@@ -145,6 +146,7 @@ def test_derive_computes_every_formula_from_increasing_counters() -> None:
             LogicalMetric.SPEC_ACCEPTED_TOKENS: 100.0,  # +40
             LogicalMetric.PREFIX_QUERIES: 1200.0,  # +200
             LogicalMetric.PREFIX_HITS: 240.0,  # +40
+            LogicalMetric.GENERATION_TOKENS: 4090.0,  # +90
             LogicalMetric.ITERATION_TOKENS_SUM: 5800.0,  # +800
             LogicalMetric.ITERATION_TOKENS_COUNT: 150.0,  # +50
             LogicalMetric.PREEMPTIONS: 3.0,  # +1
@@ -157,7 +159,7 @@ def test_derive_computes_every_formula_from_increasing_counters() -> None:
     assert result.spec_acceptance_rate == pytest.approx(40 / 50)  # 当たり ÷ 下書きしたトークン
     assert result.mean_acceptance_length == pytest.approx(1 + 40 / 20)  # 1 + 当たり ÷ 下書きの回数
     assert result.decode_steps == pytest.approx(50)
-    assert result.tokens_per_step == pytest.approx(800 / 50)
+    assert result.tokens_per_step == pytest.approx(90 / 50)  # 生成トークン ÷ ステップ数
     assert result.prefix_cache_hit_rate == pytest.approx(40 / 200)
     assert result.preemptions == pytest.approx(1)
     assert result.kv_usage_peak == pytest.approx(0.4)  # kv_peak なし -> 2 つの gauge の最大
@@ -172,6 +174,7 @@ def test_derive_zero_denominator_yields_none_without_raising() -> None:
             LogicalMetric.SPEC_ACCEPTED_TOKENS: 5.0,
             LogicalMetric.PREFIX_QUERIES: 10.0,
             LogicalMetric.PREFIX_HITS: 5.0,
+            LogicalMetric.GENERATION_TOKENS: 400.0,
             LogicalMetric.ITERATION_TOKENS_SUM: 10.0,
             LogicalMetric.ITERATION_TOKENS_COUNT: 10.0,
         }
@@ -183,6 +186,7 @@ def test_derive_zero_denominator_yields_none_without_raising() -> None:
             LogicalMetric.SPEC_ACCEPTED_TOKENS: 12.0,  # +2 (分子だけ増える)
             LogicalMetric.PREFIX_QUERIES: 10.0,  # +0
             LogicalMetric.PREFIX_HITS: 8.0,  # +3
+            LogicalMetric.GENERATION_TOKENS: 410.0,  # +10 (分子はある)
             LogicalMetric.ITERATION_TOKENS_SUM: 20.0,  # +10
             LogicalMetric.ITERATION_TOKENS_COUNT: 10.0,  # +0
         }
@@ -192,7 +196,8 @@ def test_derive_zero_denominator_yields_none_without_raising() -> None:
 
     assert result.spec_acceptance_rate is None
     assert result.mean_acceptance_length is None
-    assert result.tokens_per_step is None
+    assert result.tokens_per_step is None  # 分母 (ステップ数) が 0 だから
+    assert LogicalMetric.GENERATION_TOKENS not in result.missing  # 分子の欠落ではない
     assert result.prefix_cache_hit_rate is None
     assert result.decode_steps == pytest.approx(0)  # 生の増分自体は 0 であって None ではない
 
@@ -264,6 +269,128 @@ def test_derive_kv_peak_is_none_when_the_gauge_is_missing_everywhere() -> None:
     result = derive(before, after, kv_peak=None)
 
     assert result.kv_usage_peak is None
+
+
+# --- 1 ステップあたりの生成トークン (7.3) -----------------------------------
+
+
+def test_tokens_per_step_is_one_without_speculation_despite_prefill_input_tokens() -> None:
+    before = _snapshot(
+        {
+            LogicalMetric.GENERATION_TOKENS: 500.0,
+            LogicalMetric.ITERATION_TOKENS_SUM: 1500.0,
+            LogicalMetric.ITERATION_TOKENS_COUNT: 10.0,
+        }
+    )
+    after = _snapshot(
+        {
+            # prefill の回があるので、sum の増分には入力トークン 1000 も入る。
+            # 生成トークン ÷ ステップ数だけを見れば、投機なしでは 1.0 になる。
+            LogicalMetric.GENERATION_TOKENS: 520.0,  # +20
+            LogicalMetric.ITERATION_TOKENS_SUM: 2520.0,  # +1020 (入力 1000 + 生成 20)
+            LogicalMetric.ITERATION_TOKENS_COUNT: 30.0,  # +20
+        }
+    )
+
+    result = derive(before, after, kv_peak=None)
+
+    assert result.tokens_per_step == pytest.approx(1.0)
+
+
+def test_tokens_per_step_matches_mean_acceptance_length_with_speculation() -> None:
+    before = _snapshot(
+        {
+            LogicalMetric.SPEC_DRAFTS: 100.0,
+            LogicalMetric.SPEC_DRAFT_TOKENS: 100.0,
+            LogicalMetric.SPEC_ACCEPTED_TOKENS: 60.0,
+            LogicalMetric.GENERATION_TOKENS: 500.0,
+            LogicalMetric.ITERATION_TOKENS_SUM: 1500.0,
+            LogicalMetric.ITERATION_TOKENS_COUNT: 10.0,
+        }
+    )
+    after = _snapshot(
+        {
+            LogicalMetric.SPEC_DRAFTS: 150.0,  # +50
+            LogicalMetric.SPEC_DRAFT_TOKENS: 150.0,  # +50
+            LogicalMetric.SPEC_ACCEPTED_TOKENS: 100.0,  # +40
+            LogicalMetric.GENERATION_TOKENS: 590.0,  # +90
+            LogicalMetric.ITERATION_TOKENS_SUM: 2590.0,  # +1090 (入力 1000 + 生成 90)
+            LogicalMetric.ITERATION_TOKENS_COUNT: 60.0,  # +50
+        }
+    )
+
+    result = derive(before, after, kv_peak=None)
+
+    assert result.mean_acceptance_length == pytest.approx(1.8)  # 1 + 40 / 50
+    assert result.tokens_per_step == pytest.approx(1.8)  # 90 / 50
+    assert result.tokens_per_step == pytest.approx(result.mean_acceptance_length)
+
+
+def test_mean_acceptance_length_keeps_its_own_formula_when_tokens_per_step_differs() -> None:
+    before = _snapshot(
+        {
+            LogicalMetric.SPEC_DRAFTS: 100.0,
+            LogicalMetric.SPEC_DRAFT_TOKENS: 100.0,
+            LogicalMetric.SPEC_ACCEPTED_TOKENS: 60.0,
+            LogicalMetric.GENERATION_TOKENS: 500.0,
+            LogicalMetric.ITERATION_TOKENS_COUNT: 10.0,
+        }
+    )
+    after = _snapshot(
+        {
+            LogicalMetric.SPEC_DRAFTS: 150.0,  # +50
+            LogicalMetric.SPEC_DRAFT_TOKENS: 150.0,  # +50
+            LogicalMetric.SPEC_ACCEPTED_TOKENS: 100.0,  # +40
+            LogicalMetric.GENERATION_TOKENS: 600.0,  # +100
+            LogicalMetric.ITERATION_TOKENS_COUNT: 60.0,  # +50
+        }
+    )
+
+    result = derive(before, after, kv_peak=None)
+
+    # 受理長は 1 + 当たり ÷ 下書きの回数、tokens_per_step は生成 ÷ ステップ数。
+    # 片方から他方を作ると、この食い違いが消える。
+    assert result.mean_acceptance_length == pytest.approx(1 + 40 / 50)
+    assert result.tokens_per_step == pytest.approx(100 / 50)
+    assert result.mean_acceptance_length != pytest.approx(result.tokens_per_step)
+
+
+@pytest.mark.parametrize(
+    "metric",
+    [LogicalMetric.GENERATION_TOKENS, LogicalMetric.ITERATION_TOKENS_COUNT],
+)
+def test_tokens_per_step_is_none_and_lists_the_counter_marked_missing(
+    metric: LogicalMetric,
+) -> None:
+    before = _snapshot({}, missing=[metric])
+    after = _snapshot({}, missing=[metric])
+
+    result = derive(before, after, kv_peak=None)
+
+    assert result.tokens_per_step is None
+    assert metric in result.missing
+
+
+@pytest.mark.parametrize(
+    "metric",
+    [LogicalMetric.GENERATION_TOKENS, LogicalMetric.ITERATION_TOKENS_COUNT],
+)
+def test_tokens_per_step_is_not_defaulted_when_the_counter_is_absent(
+    metric: LogicalMetric,
+) -> None:
+    values = {
+        LogicalMetric.GENERATION_TOKENS: 500.0,
+        LogicalMetric.ITERATION_TOKENS_COUNT: 10.0,
+    }
+    del values[metric]
+    before = _snapshot(values)
+    after = _snapshot(values)
+
+    result = derive(before, after, kv_peak=None)
+
+    # values にも missing にも無い値を 0.0 で埋めると、None にならず値が出てしまう
+    assert result.tokens_per_step is None
+    assert metric in result.missing
 
 
 # --- 解析 (Prometheus のテキスト) --------------------------------------------

@@ -547,7 +547,14 @@ class MetricsUnavailable(_Frozen):
 
 
 class DerivedMetrics(_Frozen):
-    """2 つの時点の増分から出す値。分母が 0 のときは値なしにする (7.3)。"""
+    """2 つの時点の増分から出す値。分母が 0 のときは値なしにする (7.3)。
+
+    `tokens_per_step` は 1 ステップあたりの生成トークン数 (`generation_tokens` の
+    増分 ÷ `iteration_tokens_count` の増分)。1 本ずつ流す条件 (`decode/*`) では、
+    投機なしで 1.0、投機ありで受理長 (`mean_acceptance_length`) に近づく。
+    同時に流す条件 (`concurrency/c{n}`) では、同じステップの生成がまとめて数えられる
+    ので、値は本数に応じて大きくなり、1.0 や受理長とは一致しない。
+    """
 
     spec_acceptance_rate: float | None = None
     mean_acceptance_length: float | None = None
