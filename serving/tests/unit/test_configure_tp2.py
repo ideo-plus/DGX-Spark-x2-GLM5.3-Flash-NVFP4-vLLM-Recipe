@@ -97,6 +97,42 @@ THREAD_NAME_BASE_KINDS: tuple[str, ...] = ("smoke", "full", "mtp1", "mtp2")
 MTP1_RENDER_SHA256 = "645a4f9596ab1d53b7fea821807b641d9508525b6a9a4c0bea24430ff88bf64c"
 MTP2_RENDER_SHA256 = "6ab08944640e3997398204da40d47f0f2ae608035ec987eda52b43eeff6a27a3"
 
+PROFILER_SUFFIX = "-prof"
+"""`--torch-profiler` で付ける、構成の名前の接尾辞 (C1、C3)。"""
+
+PROFILER_ARG_KEY = "profiler-config"
+"""`--profiler-config` の args テーブルの鍵 (C1)。"""
+
+PROFILER_ARG_FLAG = "--profiler-config"
+"""足す args のフラグ (C1)。"""
+
+PROFILER_DIR = "/logs/torch-profile"
+"""torch プロファイラーの出力先 (コンテナの `/logs/` の下。C1)。"""
+
+PROFILER_VALUE = '{"profiler":"torch","torch_profiler_dir":"/logs/torch-profile"}'
+"""足す args の値 (C1)。"""
+
+PROFILER_ARG_PAIR: tuple[str, str] = (PROFILER_ARG_FLAG, PROFILER_VALUE)
+"""足す `--profiler-config` の 2 語 (C1、C3)。"""
+
+PROFILER_SOURCE = (
+    "https://github.com/vllm-project/vllm/blob/"
+    "0961bbae2894d574be790d219651824eb199318e/vllm/config/profiler.py"
+)
+"""根拠の出典 (vLLM のソースの docstring。C2)。"""
+
+PROFILER_QUOTE_FRAGMENTS: tuple[str, ...] = ("torch profiler traces", "absolute path")
+"""根拠の原文に含まれる語 (C2)。"""
+
+# `--variant full --nccl-thread-names` の `render` の出力の SHA-256。計算のしかたは SMOKE と
+# 同じで、生成器に `--torch-profiler` を足す前の `render(本文, image, with_thread_names(FULL))`
+# のバイト列 (UTF-8) に hashlib.sha256 を掛けたもの。付けないときの出力がバイト単位で変わって
+# いないことの固定に使う (C4)。
+FULL_TN_RENDER_SHA256 = "fcec31120db71411ec0525377658e42efa62268e74112aa895dc102c1df6b0d3"
+
+PROFILER_BASE_KINDS: tuple[str, ...] = THREAD_NAME_BASE_KINDS
+"""`--torch-profiler` を付けられる基の変種 (C1、C3)。"""
+
 
 def mtp_target_name(n: int) -> str:
     """MTP の構成の名前 (C5、C7 で同じ名前を使う)。"""
@@ -1205,3 +1241,239 @@ def test_render_without_thread_names_has_no_thread_name_env(
     rendered = generator.render(text, image, _base_variant(generator, kind))
 
     assert "NCCL_SET_THREAD_NAME" not in rendered
+
+
+# --- torch プロファイラー付きの構成の生成 (C1、C2、C3、C4) -----------------
+
+
+def _plans_for_profiler_config(
+    generator: Any, tmp_path: Path, kind: str, *, thread_names: bool
+) -> tuple[ContainerPlan, ...]:
+    """`kind` に `--torch-profiler` (必要なら `--nccl-thread-names` も) を付けた計画。"""
+    variant = _base_variant(generator, kind)
+    if thread_names:
+        variant = generator.with_thread_names(variant)
+    variant = generator.with_torch_profiler(variant)
+    stem = f"plan-prof-{kind}-tn{int(thread_names)}"
+    output = _generate_variant(generator, tmp_path, variant, stem)
+    configs = load_configs(output, REPO_ROOT)
+    nodes = load_nodes(NODES_PATH, REPO_ROOT)
+    return build_plans(select_config(configs, variant.name, nodes), nodes, STARTED_AT)
+
+
+@pytest.mark.parametrize("kind", PROFILER_BASE_KINDS)
+def test_profiler_config_adds_only_the_arg_and_the_name(
+    generator: Any, tmp_path: Path, kind: str
+) -> None:
+    """`--torch-profiler` は、名前 (`-prof`) と `--profiler-config` の args 1 つだけを足す (C1)。
+
+    値は `profiler=torch` と `/logs/` の下の出力先の JSON で、`load_configs` で読める。
+    名前と説明以外 (image、weights、docker、env、ほかの args、kind、nodes など) は基のままだ。
+    """
+    base = _base_variant(generator, kind)
+    profiled = generator.with_torch_profiler(base)
+    baseline = load_configs(
+        _generate_variant(generator, tmp_path, base, f"base-{kind}"), REPO_ROOT
+    )[base.name]
+    generated = load_configs(
+        _generate_variant(generator, tmp_path, profiled, f"prof-{kind}"), REPO_ROOT
+    )
+
+    assert profiled.name == f"{base.name}{PROFILER_SUFFIX}"
+    assert set(generated) == {profiled.name}
+    prof = generated[profiled.name]
+
+    added = prof.args[PROFILER_ARG_KEY]
+    assert added.flag == PROFILER_ARG_FLAG
+    assert added.value == PROFILER_VALUE
+    rest = {key: setting for key, setting in prof.args.items() if key != PROFILER_ARG_KEY}
+    assert rest == baseline.args
+
+    assert prof.description != baseline.description
+    for field in (
+        "image",
+        "weights",
+        "docker",
+        "env",
+        "allow_speculative",
+        "kind",
+        "nodes",
+        "ready_timeout_s",
+        "served_model_name",
+    ):
+        assert getattr(prof, field) == getattr(baseline, field), field
+
+
+@pytest.mark.parametrize("kind", PROFILER_BASE_KINDS)
+def test_profiler_arg_provenance_and_value(generator: Any, tmp_path: Path, kind: str) -> None:
+    """足す args の根拠が vLLM のソースで、値が torch と `/logs/` の下の出力先 (C2)。"""
+    base = _base_variant(generator, kind)
+    profiled = generator.with_torch_profiler(base)
+    generated = load_configs(
+        _generate_variant(generator, tmp_path, profiled, f"prof-prov-{kind}"), REPO_ROOT
+    )
+
+    added = generated[profiled.name].args[PROFILER_ARG_KEY]
+    assert str(added.source) == PROFILER_SOURCE
+    assert added.quote is not None
+    for fragment in PROFILER_QUOTE_FRAGMENTS:
+        assert fragment in added.quote
+
+    assert added.value is not None
+    value = json.loads(added.value)
+    assert value["profiler"] == "torch"
+    assert value["torch_profiler_dir"] == PROFILER_DIR
+    assert value["torch_profiler_dir"].startswith("/logs/")
+
+
+@pytest.mark.parametrize("kind", PROFILER_BASE_KINDS)
+def test_profiler_argv_matches_base_argv_plus_the_arg_pair(
+    generator: Any, tmp_path: Path, kind: str
+) -> None:
+    """`--torch-profiler` の列は、基の列の末尾に `--profiler-config` の 2 語を足したもの (C1)。
+
+    コンテナ名と `config` のラベルだけ置き換える。`config-sha256` は中身が変わるので、
+    両者で違うのが正しいため比較から除く。
+    """
+    base = _base_variant(generator, kind)
+    profiled = generator.with_torch_profiler(base)
+    base_plans = _plans_for_thread_name_config(generator, tmp_path, kind, thread_names=False)
+    prof_plans = _plans_for_profiler_config(generator, tmp_path, kind, thread_names=False)
+
+    for base_plan, prof_plan in zip(base_plans, prof_plans, strict=True):
+        expected = list(base_plan.argv)
+        expected[expected.index(f"vb-{base.name}-{base_plan.node}")] = prof_plan.container_name
+        expected[expected.index(f"vllm-baseline.config={base.name}")] = (
+            f"vllm-baseline.config={profiled.name}"
+        )
+        expected.extend(PROFILER_ARG_PAIR)
+
+        kept = [arg for arg in expected if not arg.startswith(f"{LABEL_CONFIG_SHA256}=")]
+        actual = [arg for arg in prof_plan.argv if not arg.startswith(f"{LABEL_CONFIG_SHA256}=")]
+        assert kept == actual
+        assert base_plan.labels[LABEL_CONFIG_SHA256] != prof_plan.labels[LABEL_CONFIG_SHA256]
+
+
+def test_profiler_with_thread_names_names_and_arg_order(generator: Any, tmp_path: Path) -> None:
+    """2 つの旗を重ねると `-tn-prof` になり、args の末尾は投機のあとに続く (C3)。"""
+    variant = generator.with_torch_profiler(generator.with_thread_names(generator.mtp_variant(2)))
+
+    assert variant.name == "p2-nope-tp2-mtp2-tn-prof"
+
+    generated = load_configs(
+        _generate_variant(generator, tmp_path, variant, "prof-tn-mtp2"), REPO_ROOT
+    )
+    keys = list(generated[variant.name].args)
+    assert keys[-2:] == ["speculative-config", PROFILER_ARG_KEY]
+
+
+@pytest.mark.parametrize("kind", PROFILER_BASE_KINDS)
+def test_profiler_with_thread_names_argv_matches_base_plus_both_additions(
+    generator: Any, tmp_path: Path, kind: str
+) -> None:
+    """`-tn` と `-prof` の列が、基の列に 2 つの追加だけを足したものになる (C3)。"""
+    base = _base_variant(generator, kind)
+    both = generator.with_torch_profiler(generator.with_thread_names(base))
+    base_plans = _plans_for_thread_name_config(generator, tmp_path, kind, thread_names=False)
+    both_plans = _plans_for_profiler_config(generator, tmp_path, kind, thread_names=True)
+
+    for base_plan, both_plan in zip(base_plans, both_plans, strict=True):
+        expected = list(base_plan.argv)
+        expected[expected.index(f"vb-{base.name}-{base_plan.node}")] = both_plan.container_name
+        expected[expected.index(f"vllm-baseline.config={base.name}")] = (
+            f"vllm-baseline.config={both.name}"
+        )
+        at = expected.index("NCCL_DEBUG_FILE=/logs/nccl.%h.%p.log") + 1
+        expected[at:at] = list(THREAD_NAME_ENV)
+        expected.extend(PROFILER_ARG_PAIR)
+
+        kept = [arg for arg in expected if not arg.startswith(f"{LABEL_CONFIG_SHA256}=")]
+        actual = [arg for arg in both_plan.argv if not arg.startswith(f"{LABEL_CONFIG_SHA256}=")]
+        assert kept == actual
+        assert base_plan.labels[LABEL_CONFIG_SHA256] != both_plan.labels[LABEL_CONFIG_SHA256]
+
+
+@pytest.mark.parametrize(
+    ("extra", "expected_name"),
+    [
+        pytest.param((), f"{TARGET_NAME}{PROFILER_SUFFIX}", id="smoke"),
+        pytest.param(("--variant", "full"), f"{FULL_TARGET_NAME}{PROFILER_SUFFIX}", id="full"),
+        pytest.param(
+            ("--variant", "full-mtp", "--spec-tokens", "2"),
+            f"{mtp_target_name(2)}{PROFILER_SUFFIX}",
+            id="full-mtp",
+        ),
+    ],
+)
+def test_main_accepts_torch_profiler_with_each_variant(
+    generator: Any, tmp_path: Path, extra: tuple[str, ...], expected_name: str
+) -> None:
+    """`--torch-profiler` は、どの `--variant` にも付けられ、`-prof` の構成を生成する (C3)。"""
+    source = _write_inspect_json(tmp_path, _inspect_item())
+    output = tmp_path / f"{expected_name}.toml"
+
+    generator.main([*extra, "--torch-profiler", str(source), str(output)])
+
+    loaded = load_configs(output, REPO_ROOT)
+    assert set(loaded) == {expected_name}
+    assert loaded[expected_name].args[PROFILER_ARG_KEY].flag == PROFILER_ARG_FLAG
+
+
+def test_main_makes_the_same_profiler_name_in_either_flag_order(
+    generator: Any, tmp_path: Path
+) -> None:
+    """`main` は、旗の並び順に依らず `-tn-prof` の同じ出力を作る (C3)。"""
+    source = _write_inspect_json(tmp_path, _inspect_item())
+    first = tmp_path / "prof-tn-first.toml"
+    second = tmp_path / "prof-tn-second.toml"
+
+    generator.main(
+        ["--variant", "full", "--torch-profiler", "--nccl-thread-names", str(source), str(first)]
+    )
+    generator.main(
+        ["--variant", "full", "--nccl-thread-names", "--torch-profiler", str(source), str(second)]
+    )
+
+    assert first.read_bytes() == second.read_bytes()
+    assert set(load_configs(first, REPO_ROOT)) == {f"{FULL_TARGET_NAME}-tn-prof"}
+
+
+def test_profiler_output_without_the_flag_is_unchanged(generator: Any, tmp_path: Path) -> None:
+    """付けない 5 形の出力が不変で、`--profiler-config` と `-prof` が現れない (C4)。"""
+    text, image = _render_default_input(generator, tmp_path)
+    variants = (
+        ("smoke", generator.SMOKE),
+        ("full", generator.FULL),
+        ("full-tn", generator.with_thread_names(generator.FULL)),
+        ("mtp1", generator.mtp_variant(1)),
+        ("mtp2", generator.mtp_variant(2)),
+    )
+
+    for label, variant in variants:
+        rendered = generator.render(text, image, variant)
+        assert PROFILER_ARG_FLAG not in rendered, label
+        assert f"[configs.{variant.name}{PROFILER_SUFFIX}]" not in rendered, label
+
+    full_tn = generator.render(text, image, generator.with_thread_names(generator.FULL))
+    assert hashlib.sha256(full_tn.encode("utf-8")).hexdigest() == FULL_TN_RENDER_SHA256
+    existing = load_configs(CONFIGS_PATH, REPO_ROOT)
+    assert f"{FULL_TARGET_NAME}{PROFILER_SUFFIX}" not in existing
+    assert f"{FULL_TARGET_NAME}-tn{PROFILER_SUFFIX}" not in existing
+
+
+def test_profiler_render_leaves_a_decoy_alone(generator: Any, tmp_path: Path) -> None:
+    """同じ字面の value の囮テーブルがあっても、足す args は 1 つだけで、囮は触らない (C4)。"""
+    text_with_decoy = _insert_decoy_table(CONFIGS_PATH.read_text(encoding="utf-8"))
+    image = generator.load_image(_write_inspect_json(tmp_path, _inspect_item()))
+    profiled = generator.with_torch_profiler(generator.FULL)
+
+    rendered = generator.render(text_with_decoy, image, profiled)
+
+    generated = tomllib.loads(rendered)["configs"][profiled.name]
+    assert generated["args"]["decoy"]["value"] == "16"
+    assert generated["args"]["max-model-len"]["value"] == "163840"
+    assert generated["args"][PROFILER_ARG_KEY]["flag"] == PROFILER_ARG_FLAG
+    assert rendered.count(f'flag = "{PROFILER_ARG_FLAG}"') == 1
+    assert f"{FULL_TARGET_NAME}{PROFILER_SUFFIX}" not in load_configs(CONFIGS_PATH, REPO_ROOT)
+    assert "[configs.p1-nvfp4-tp2" not in rendered
+    assert "p1-fetch-nvfp4" not in rendered
