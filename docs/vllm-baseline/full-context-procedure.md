@@ -113,10 +113,11 @@ uv run --directory bench bench run --target p2-nope-tp2-full --suite agent \
 
 #17 で推定した「`Worker_TP` の中のメイン以外の 100% 近いスレッドは NCCL の proxy」を確かめるため、推論中にスレッドの名前を読みます。
 
-bench の対象は足しません。`-tn` の構成は宛先・モデル名・文脈長が `p2-nope-tp2-full` と同じなので、既存の対象名で負荷を掛けます。
+bench の対象は足しません。`-tn` の構成は宛先・モデル名・文脈長が `p2-nope-tp2-full` と同じなので、既存の対象名で負荷を掛けます。スレッドの名前を読むための負荷なので、数分で終わる短い decode にします（`quick` の既定のままだと 35 分以上かかります）。
 
 ```bash
-uv run --directory bench bench run --target p2-nope-tp2-full --suite decode --profile quick
+uv run --directory bench bench run --target p2-nope-tp2-full --suite decode --profile quick \
+  --set decode.trials=2 --set decode.warmup_trials=1 --set decode.max_tokens=256
 ```
 
 要約には対象名 `p2-nope-tp2-full` が残るので、記録には構成名 `p2-nope-tp2-full-tn` で測ったことを書きます。
