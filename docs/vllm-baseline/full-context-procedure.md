@@ -18,6 +18,18 @@ uv run --directory serving serve check p2-nope-tp2-full \
 
 生成はネットワークや `subprocess` を使わず、既存出力があれば上書きしません。`--max-model-len` と `--max-num-seqs` の値と根拠は `p1-nvfp4-tp2` のままです。`serve check` は `patched-tp2-procedure.md` §6 と同じ 8 関門です。**前の試行で通ったことを根拠に省かず、全関門をもう一度検査します。**
 
+#17 の確認（張り付くスレッドが NCCL の proxy か）のために、`--nccl-thread-names` を付けた構成も生成できます。これはどの `--variant` にも付けられ、付けたときだけ env に `NCCL_SET_THREAD_NAME=1`（NCCL の公式文書を `source` と `quote` に持つ）が入り、構成の名前が `-tn` 付きになります。付けないときの出力は変わりません。
+
+```bash
+uv run --directory serving python ../experiments/nope-mla/configure_tp2.py --variant full --nccl-thread-names \
+  ../serving/var/nope-build-0961bbae/image-inspect.json \
+  ../serving/var/nope-build-0961bbae/tp2-full-tn.toml
+uv run --directory serving serve check p2-nope-tp2-full-tn \
+  --configs var/nope-build-0961bbae/tp2-full-tn.toml
+```
+
+`p2-nope-tp2-full` との違いは、env の `NCCL_SET_THREAD_NAME=1`（根拠つき）と、構成の名前だけです。`--variant full-mtp --spec-tokens 1 --nccl-thread-names` なら `p2-nope-tp2-mtp1-tn` になります。以降の §3・§7 のコマンドは、構成名を `p2-nope-tp2-full-tn`、`--configs` を `tp2-full-tn.toml` に読み替えます（`serve check` の 8 関門は同じです）。
+
 ## 2. GPU と X925 の上限の確認
 
 GPU クロックの上限（`nvidia-smi -lgc 300,1800`）と X925 の周波数の上限（`cpupower -c 5-9,15-19 frequency-set -u 3000MHz`）は、どちらも再起動で既定に戻ります。issue #10 で、両台の起動のたびに入れ直す systemd の oneshot サービス（`spark-power-caps.service`）を用意しました。計測の前に、このサービスが両台で有効・実行中であることを、読み取りだけで確かめます。
@@ -97,6 +109,27 @@ uv run --directory bench bench run --target p2-nope-tp2-full --suite agent \
   --profile quick --set agent.end_tokens=20000
 ```
 
+### 5.1 スレッドの名前の読み方（`p2-nope-tp2-full-tn` のとき、#17）
+
+#17 で推定した「`Worker_TP` の中のメイン以外の 100% 近いスレッドは NCCL の proxy」を確かめるため、推論中にスレッドの名前を読みます。
+
+bench の対象は足しません。`-tn` の構成は宛先・モデル名・文脈長が `p2-nope-tp2-full` と同じなので、既存の対象名で負荷を掛けます。
+
+```bash
+uv run --directory bench bench run --target p2-nope-tp2-full --suite decode --profile quick
+```
+
+要約には対象名 `p2-nope-tp2-full` が残るので、記録には構成名 `p2-nope-tp2-full-tn` で測ったことを書きます。
+
+推論中に、両台で `top -H` を**読み取りだけで**実行します。
+
+```bash
+ssh -o BatchMode=yes -o ConnectTimeout=5 spark-153d 'top -H -b -n 1 | head -40'
+ssh -o BatchMode=yes -o ConnectTimeout=5 spark-5083 'top -H -b -n 1 | head -40'
+```
+
+`COMMAND` 欄のスレッドの名前と `%CPU` を記録します。期待は、`Worker_TP` の中のメイン以外の 100% 近いスレッドが、`NCCL Progress` に続く番号の名前（NCCL の `src/proxy.cc` の `"NCCL Progress%2d"`）で見えることです。別の名前なら、その名前を記録し、proxy と結論しません。名前が付かないときは、NCCL の版（2.12 以上が要る）を記録します。
+
 ## 6. 合否の見方
 
 終了の値 0 は「計測ランが完了した」という意味で、**性能や品質の合否ではありません。** 次のいずれかがあれば、その条件を成功として扱いません。
@@ -129,3 +162,4 @@ uv run --directory serving serve status --configs var/nope-build-0961bbae/tp2-fu
 - `--max-num-seqs 16` での起動可否
 - クロック上限 1800 での prefill・並列の性能
 - この対象でのプレフィックスキャッシュの効き方
+- `NCCL_SET_THREAD_NAME=1` で実際にスレッドに名前が付くか（`NCCL Progress`。NCCL の版 2.12 以上が要る）

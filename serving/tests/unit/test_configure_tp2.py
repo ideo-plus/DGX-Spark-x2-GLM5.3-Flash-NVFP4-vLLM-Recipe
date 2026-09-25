@@ -35,7 +35,7 @@ from typing import Any
 import pytest
 
 from serving_kit.config import load_configs, load_nodes, select_config
-from serving_kit.plan import LABEL_CONFIG_SHA256, build_plans
+from serving_kit.plan import LABEL_CONFIG, LABEL_CONFIG_SHA256, build_plans
 from serving_kit.types import ContainerPlan
 
 SERVING_DIR = Path(__file__).resolve().parents[2]
@@ -75,6 +75,28 @@ FULL_RENDER_SHA256 = "194cdd43aa1c5e5d2c92b66cb9cc0466d5aeef870e7eb0e3a1e74a2faf
 MTP_SPEC_TOKENS: tuple[int, ...] = (1, 2, 3, 5)
 """MTP の下書きトークン数 (Issue「すること 4」、C7)。"""
 
+THREAD_NAME_ENV_KEY = "nccl-set-thread-name"
+"""`--nccl-thread-names` で足す env テーブルの鍵 (C1)。"""
+
+THREAD_NAME_ENV: tuple[str, str] = ("-e", "NCCL_SET_THREAD_NAME=1")
+"""`--nccl-thread-names` で足す `-e` の組 (C1)。"""
+
+NCCL_ENV_DOC = "https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html"
+"""NCCL の公式文書の環境変数の説明。`NCCL_SET_THREAD_NAME` の根拠に使う (C2)。"""
+
+NCCL_QUOTE_FRAGMENT = "NCCL CPU threads"
+"""公式文書の原文 (`NCCL_SET_THREAD_NAME` の説明) の一部 (C2)。"""
+
+THREAD_NAME_BASE_KINDS: tuple[str, ...] = ("smoke", "full", "mtp1", "mtp2")
+"""`--nccl-thread-names` を付けられる基の変種 (C1、C3)。"""
+
+# `--variant full-mtp --spec-tokens N` の `render` の出力の SHA-256。計算のしかたは SMOKE と
+# 同じで、生成器に thread-name を足す前の `render(本文, image, mtp_variant(N))` のバイト列
+# (UTF-8) に hashlib.sha256 を掛けたもの。MTP の出力もバイト単位で変わっていないことの固定に
+# 使う (C3)。
+MTP1_RENDER_SHA256 = "645a4f9596ab1d53b7fea821807b641d9508525b6a9a4c0bea24430ff88bf64c"
+MTP2_RENDER_SHA256 = "6ab08944640e3997398204da40d47f0f2ae608035ec987eda52b43eeff6a27a3"
+
 
 def mtp_target_name(n: int) -> str:
     """MTP の構成の名前 (C5、C7 で同じ名前を使う)。"""
@@ -84,6 +106,15 @@ def mtp_target_name(n: int) -> str:
 def mtp_spec_value(n: int) -> str:
     """`--speculative-config` の JSON の値 (C5)。"""
     return f'{{"method":"mtp","num_speculative_tokens":{n}}}'
+
+
+def _base_variant(generator: Any, kind: str) -> Any:
+    """thread-name を付ける前の、基の変種 (`smoke` / `full` / `mtp1` / `mtp2`)。"""
+    if kind == "smoke":
+        return generator.SMOKE
+    if kind == "full":
+        return generator.FULL
+    return generator.mtp_variant(int(kind.removeprefix("mtp")))
 
 
 def _load_generator() -> Any:
@@ -958,3 +989,219 @@ def test_main_refuses_spec_tokens_with_another_variant(generator: Any, tmp_path:
         generator.main(["--variant", "full", "--spec-tokens", "2", str(source), str(output)])
 
     assert not output.exists()
+
+
+# --- thread-name 付きの構成の生成 (C1、C2、C3) ----------------------------
+
+
+def _generate_variant(generator: Any, tmp_path: Path, variant: Any, stem: str) -> Path:
+    """`variant` で生成し、出力の道筋を返す。"""
+    source = _write_inspect_json(tmp_path, _inspect_item())
+    output = tmp_path / f"{stem}.toml"
+    generator.generate(source, output, variant)
+    return output
+
+
+def _plans_for_thread_name_config(
+    generator: Any, tmp_path: Path, kind: str, *, thread_names: bool
+) -> tuple[ContainerPlan, ...]:
+    """`kind` の変種 (thread-name の有無を選べる) の 2 台ぶんの計画を組み立てる。"""
+    base = _base_variant(generator, kind)
+    variant = generator.with_thread_names(base) if thread_names else base
+    stem = f"plan-{'tn' if thread_names else 'base'}-{kind}"
+    output = _generate_variant(generator, tmp_path, variant, stem)
+    configs = load_configs(output, REPO_ROOT)
+    nodes = load_nodes(NODES_PATH, REPO_ROOT)
+    return build_plans(select_config(configs, variant.name, nodes), nodes, STARTED_AT)
+
+
+@pytest.mark.parametrize("kind", THREAD_NAME_BASE_KINDS)
+def test_thread_names_config_adds_only_the_env_and_the_name(
+    generator: Any, tmp_path: Path, kind: str
+) -> None:
+    """`--nccl-thread-names` は、名前 (`-tn`) と env 1 つだけを足し、他は基のままにする。
+
+    C1 (名前と env) と C2 (根拠と、名前・説明以外の一致) を固定する。
+    """
+    base = _base_variant(generator, kind)
+    named = generator.with_thread_names(base)
+    baseline = load_configs(
+        _generate_variant(generator, tmp_path, base, f"base-{kind}"), REPO_ROOT
+    )[base.name]
+    named_configs = load_configs(
+        _generate_variant(generator, tmp_path, named, f"tn-{kind}"), REPO_ROOT
+    )
+
+    assert named.name == f"{base.name}-tn"
+    assert set(named_configs) == {named.name}
+    tn = named_configs[named.name]
+
+    added = tn.env[THREAD_NAME_ENV_KEY]
+    assert added.flag == "NCCL_SET_THREAD_NAME"
+    assert added.value == "1"
+    assert {
+        key: setting for key, setting in tn.env.items() if key != THREAD_NAME_ENV_KEY
+    } == baseline.env
+
+    # 名前と説明以外は、基の変種と同じである
+    assert tn.description != baseline.description
+    for field in (
+        "args",
+        "image",
+        "weights",
+        "docker",
+        "allow_speculative",
+        "kind",
+        "nodes",
+        "ready_timeout_s",
+        "served_model_name",
+    ):
+        assert getattr(tn, field) == getattr(baseline, field), field
+
+
+@pytest.mark.parametrize("kind", THREAD_NAME_BASE_KINDS)
+def test_thread_names_env_provenance_is_the_nccl_doc(
+    generator: Any, tmp_path: Path, kind: str
+) -> None:
+    """足す env の根拠が、NCCL の公式文書の環境変数の説明と原文で、`load_configs` で読める。
+
+    C2 を固定する。
+    """
+    base = _base_variant(generator, kind)
+    named = generator.with_thread_names(base)
+    named_configs = load_configs(
+        _generate_variant(generator, tmp_path, named, f"tn-prov-{kind}"), REPO_ROOT
+    )
+
+    added = named_configs[named.name].env[THREAD_NAME_ENV_KEY]
+    assert added.flag == "NCCL_SET_THREAD_NAME"
+    assert str(added.source) == NCCL_ENV_DOC
+    assert added.quote is not None
+    assert NCCL_QUOTE_FRAGMENT in added.quote
+
+
+@pytest.mark.parametrize("kind", THREAD_NAME_BASE_KINDS)
+def test_thread_names_argv_matches_base_argv_plus_one_env_pair(
+    generator: Any, tmp_path: Path, kind: str
+) -> None:
+    """thread-name 付きの 2 台の列は、基の列に `-e NCCL_SET_THREAD_NAME=1` を 1 組だけ足したもの。
+
+    `NCCL_DEBUG_FILE` の直後に足し、コンテナ名と `config` のラベルだけ置き換える (C1)。
+    `config-sha256` は中身が変わるので両者で違うのが正しいため、比較から除く。
+    """
+    base = _base_variant(generator, kind)
+    named = generator.with_thread_names(base)
+    base_plans = _plans_for_thread_name_config(generator, tmp_path, kind, thread_names=False)
+    named_plans = _plans_for_thread_name_config(generator, tmp_path, kind, thread_names=True)
+
+    for base_plan, named_plan in zip(base_plans, named_plans, strict=True):
+        expected = list(base_plan.argv)
+        expected[expected.index(f"vb-{base.name}-{base_plan.node}")] = named_plan.container_name
+        expected[expected.index(f"vllm-baseline.config={base.name}")] = (
+            f"vllm-baseline.config={named.name}"
+        )
+        at = expected.index("NCCL_DEBUG_FILE=/logs/nccl.%h.%p.log") + 1
+        expected[at:at] = list(THREAD_NAME_ENV)
+
+        kept = [arg for arg in expected if not arg.startswith(f"{LABEL_CONFIG_SHA256}=")]
+        actual = [arg for arg in named_plan.argv if not arg.startswith(f"{LABEL_CONFIG_SHA256}=")]
+        assert kept == actual
+        assert base_plan.labels[LABEL_CONFIG_SHA256] != named_plan.labels[LABEL_CONFIG_SHA256]
+
+
+@pytest.mark.parametrize(
+    ("extra", "expected_name"),
+    [
+        pytest.param((), f"{TARGET_NAME}-tn", id="smoke"),
+        pytest.param(("--variant", "full"), f"{FULL_TARGET_NAME}-tn", id="full"),
+        pytest.param(
+            ("--variant", "full-mtp", "--spec-tokens", "2"),
+            f"{mtp_target_name(2)}-tn",
+            id="full-mtp",
+        ),
+    ],
+)
+def test_main_accepts_nccl_thread_names_with_each_variant(
+    generator: Any, tmp_path: Path, extra: tuple[str, ...], expected_name: str
+) -> None:
+    """`--nccl-thread-names` は、どの `--variant` にも付けられ、`-tn` の構成を生成する (C1)。"""
+    source = _write_inspect_json(tmp_path, _inspect_item())
+    output = tmp_path / f"{expected_name}.toml"
+
+    generator.main([*extra, "--nccl-thread-names", str(source), str(output)])
+
+    loaded = load_configs(output, REPO_ROOT)
+    assert set(loaded) == {expected_name}
+    assert loaded[expected_name].env[THREAD_NAME_ENV_KEY].flag == "NCCL_SET_THREAD_NAME"
+
+
+def test_thread_names_full_plan_names_follow_the_pattern(generator: Any, tmp_path: Path) -> None:
+    """full に付けたときの構成名とコンテナ名が、`-tn` の付いた名前になる (C1)。"""
+    head, worker = _plans_for_thread_name_config(generator, tmp_path, "full", thread_names=True)
+
+    assert [plan.node for plan in (head, worker)] == ["head", "worker"]
+    assert head.container_name == "vb-p2-nope-tp2-full-tn-head"
+    assert worker.container_name == "vb-p2-nope-tp2-full-tn-worker"
+    assert head.labels[LABEL_CONFIG] == "p2-nope-tp2-full-tn"
+
+
+def test_thread_names_output_without_the_flag_is_unchanged(generator: Any, tmp_path: Path) -> None:
+    """付けない full の出力は、変更前のバイト列と一致し、`-tn` の名前は空いている (C1、C3)。"""
+    text, image = _render_default_input(generator, tmp_path)
+
+    rendered = generator.render(text, image, generator.FULL)
+
+    assert hashlib.sha256(rendered.encode("utf-8")).hexdigest() == FULL_RENDER_SHA256
+    assert "NCCL_SET_THREAD_NAME" not in rendered
+    assert f"[configs.{FULL_TARGET_NAME}-tn]" not in rendered
+    assert f"{FULL_TARGET_NAME}-tn" not in load_configs(CONFIGS_PATH, REPO_ROOT)
+
+
+def test_thread_names_render_leaves_a_decoy_alone(generator: Any, tmp_path: Path) -> None:
+    """同じ字面の `value = "16"` の囮テーブルがあっても、足す env は 1 つだけで、囮は触らない。
+
+    C1 を固定する。
+    """
+    text_with_decoy = _insert_decoy_table(CONFIGS_PATH.read_text(encoding="utf-8"))
+    image = generator.load_image(_write_inspect_json(tmp_path, _inspect_item()))
+    named = generator.with_thread_names(generator.FULL)
+
+    rendered = generator.render(text_with_decoy, image, named)
+
+    generated = tomllib.loads(rendered)["configs"][named.name]
+    assert generated["args"]["decoy"]["value"] == "16"
+    assert generated["args"]["max-model-len"]["value"] == "163840"
+    assert generated["env"][THREAD_NAME_ENV_KEY]["flag"] == "NCCL_SET_THREAD_NAME"
+    assert rendered.count('flag = "NCCL_SET_THREAD_NAME"') == 1
+    assert "[configs.p1-nvfp4-tp2" not in rendered
+    assert "p1-fetch-nvfp4" not in rendered
+
+
+@pytest.mark.parametrize(
+    ("spec_tokens", "expected"),
+    [
+        pytest.param(1, MTP1_RENDER_SHA256, id="mtp1"),
+        pytest.param(2, MTP2_RENDER_SHA256, id="mtp2"),
+    ],
+)
+def test_mtp_variant_output_is_unchanged(
+    generator: Any, tmp_path: Path, spec_tokens: int, expected: str
+) -> None:
+    """`--variant full-mtp` の `render` の SHA-256 が、変更前の生成器の値と一致する (C3)。"""
+    text, image = _render_default_input(generator, tmp_path)
+
+    rendered = generator.render(text, image, generator.mtp_variant(spec_tokens))
+
+    assert hashlib.sha256(rendered.encode("utf-8")).hexdigest() == expected
+
+
+@pytest.mark.parametrize("kind", THREAD_NAME_BASE_KINDS)
+def test_render_without_thread_names_has_no_thread_name_env(
+    generator: Any, tmp_path: Path, kind: str
+) -> None:
+    """付けない 4 つの変種の出力に、`NCCL_SET_THREAD_NAME` は現れない (C3)。"""
+    text, image = _render_default_input(generator, tmp_path)
+
+    rendered = generator.render(text, image, _base_variant(generator, kind))
+
+    assert "NCCL_SET_THREAD_NAME" not in rendered
