@@ -50,6 +50,35 @@ model = "glm-5-3-flash"
 max_context_tokens = 163840
 notes = "自前イメージの TP=2 の prefill・並列・長文脈の計測 (文脈長 163840、同時実行 16。起動側の構成名も p2-nope-tp2-full)。実機では未確認"
 
+# 自前イメージ (vllm-nope:0961bbae-fi070) を、full と同じ文脈長 163840・同時実行 16 で 2 台
+# TP=2 で起動し、モデル付属の MTP (投機的デコード) を下書き N トークンで有効にしたときの
+# 計測用。起動側の構成は `configure_tp2.py --variant full-mtp --spec-tokens N` が生成する。
+# `--max-model-len 163840`、`--max-num-seqs 16` は full と同じ。実機では未確認。
+# max_context_tokens は、/v1/models が max_model_len を答えないときに使われる予備の値である。
+[targets.p2-nope-tp2-mtp1]
+base_url = "http://10.0.1.60:8000"
+model = "glm-5-3-flash"
+max_context_tokens = 163840
+notes = "MTP を下書き 1 トークンで有効にした full と同じ構成の計測 (起動側の構成名も p2-nope-tp2-mtp1)。実機では未確認"
+
+[targets.p2-nope-tp2-mtp2]
+base_url = "http://10.0.1.60:8000"
+model = "glm-5-3-flash"
+max_context_tokens = 163840
+notes = "MTP を下書き 2 トークンで有効にした full と同じ構成の計測 (起動側の構成名も p2-nope-tp2-mtp2)。実機では未確認"
+
+[targets.p2-nope-tp2-mtp3]
+base_url = "http://10.0.1.60:8000"
+model = "glm-5-3-flash"
+max_context_tokens = 163840
+notes = "MTP を下書き 3 トークンで有効にした full と同じ構成の計測 (起動側の構成名も p2-nope-tp2-mtp3)。実機では未確認"
+
+[targets.p2-nope-tp2-mtp5]
+base_url = "http://10.0.1.60:8000"
+model = "glm-5-3-flash"
+max_context_tokens = 163840
+notes = "MTP を下書き 5 トークンで有効にした full と同じ構成の計測 (起動側の構成名も p2-nope-tp2-mtp5)。実機では未確認"
+
 # 自前で立てた対象サーバーの例。認証の情報 (api_key_env) と、対象サーバー固有の
 # 内部指標の名前への上書き (metric_map) の書き方を示す (コメントアウトしてある
 # ので、そのままでは読み込まれない)。

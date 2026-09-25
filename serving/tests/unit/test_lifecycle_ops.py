@@ -704,6 +704,35 @@ def test_status_reports_both_nodes_and_the_service(tmp_path: Path, fake_vllm: Fa
     assert service.waiting_requests == 3
 
 
+def test_status_reads_the_service_when_speculation_is_allowed(
+    tmp_path: Path, fake_vllm: FakeVllm
+) -> None:
+    """投機を許す構成では、投機の指標が出ている状態の要求数を読む (C3)。"""
+    fake_vllm.set_metrics(MetricsSample(running_requests=2, waiting_requests=3, spec_decode=True))
+    config = serve_config(port_of(fake_vllm)).model_copy(update={"allow_speculative": True})
+    runner = runner_of(tmp_path, OpsScript(listings=running_listings()))
+
+    service = lc.status(runner, configs_of(config), NODES, report=io.StringIO())
+
+    assert service.health_ok is True
+    assert service.running_requests == 2
+    assert service.waiting_requests == 3
+
+
+def test_status_treats_speculative_metrics_as_fatal_when_not_allowed(
+    tmp_path: Path, fake_vllm: FakeVllm
+) -> None:
+    """投機を許さない構成では、投機の指標が出ていたら要求数を読まない (C3)。"""
+    fake_vllm.set_metrics(MetricsSample(running_requests=2, waiting_requests=3, spec_decode=True))
+    config = serve_config(port_of(fake_vllm))
+    runner = runner_of(tmp_path, OpsScript(listings=running_listings()))
+
+    service = lc.status(runner, configs_of(config), NODES, report=io.StringIO())
+
+    assert service.running_requests is None
+    assert service.waiting_requests is None
+
+
 def test_status_makes_no_mutating_calls(tmp_path: Path, fake_vllm: FakeVllm) -> None:
     """状態の確認は、状態を変える呼び出しを 1 つも出さない (design の cli の表)。"""
     config = serve_config(port_of(fake_vllm))

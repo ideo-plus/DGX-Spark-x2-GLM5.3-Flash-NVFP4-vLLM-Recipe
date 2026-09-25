@@ -644,6 +644,115 @@ def test_a_config_without_speculative_decoding_passes(repo: Path) -> None:
     assert "batched-tokens" in configs[SERVE].args
 
 
+# --- C2: 構成ごとの、投機的デコードの許可 -------------------------------
+
+
+@pytest.mark.parametrize(
+    "flag", ["--speculative-config", "--spec-method", "--spec-model", "--spec-tokens"]
+)
+def test_allow_speculative_true_passes_each_speculative_flag(repo: Path, flag: str) -> None:
+    """`allow_speculative = true` の構成では、4 つの投機のフラグがすべて通る (C2)。"""
+    extra = _setting(f"configs.{SERVE}.args.spec", flag=flag, value="3", why="投機を許す構成")
+    configs = _load(
+        repo,
+        _toml(_config(head_extra=("allow_speculative = true",), args_extra=extra)),
+    )
+
+    assert configs[SERVE].allow_speculative is True
+    assert configs[SERVE].args["spec"].flag == flag
+
+
+@pytest.mark.parametrize(
+    "positional",
+    ["--spec-tokens=3", '--speculative-config={"method":"mtp","num_speculative_tokens":2}'],
+)
+def test_allow_speculative_true_passes_a_positional_speculative_flag(
+    repo: Path, positional: str
+) -> None:
+    """位置引数の形 (`=` 形) の抜け道も、許す構成では通る (C2、SCN-C2-P2)。"""
+    extra = _setting(f"configs.{SERVE}.args.spec", value=positional, why="位置引数の形")
+    configs = _load(
+        repo,
+        _toml(_config(head_extra=("allow_speculative = true",), args_extra=extra)),
+    )
+
+    assert configs[SERVE].args["spec"].value == positional
+
+
+def test_allow_speculative_true_passes_a_speculative_config_json_value(repo: Path) -> None:
+    """`--speculative-config` の JSON の値は、置き換えの印としてではなく値として通る (C2)。"""
+    extra = _setting(
+        f"configs.{SERVE}.args.spec",
+        flag="--speculative-config",
+        value='{"method":"mtp","num_speculative_tokens":2}',
+        why="モデル付属の MTP を有効にする",
+    )
+    configs = _load(
+        repo,
+        _toml(_config(head_extra=("allow_speculative = true",), args_extra=extra)),
+    )
+
+    assert configs[SERVE].args["spec"].value == '{"method":"mtp","num_speculative_tokens":2}'
+
+
+def test_allow_speculative_false_still_refuses_speculative_flags(repo: Path) -> None:
+    """`allow_speculative = false` の構成では、これまでどおり項目名とフラグ名を添えて断る。"""
+    extra = _setting(
+        f"configs.{SERVE}.args.spec", flag="--spec-tokens", value="3", why="試しに足す"
+    )
+    message = _refuse(
+        repo,
+        _toml(_config(head_extra=("allow_speculative = false",), args_extra=extra)),
+    )
+
+    assert f"configs.{SERVE}.args.spec" in message
+    assert "--spec-tokens" in message
+
+
+def test_allow_speculative_must_be_a_real_boolean(repo: Path) -> None:
+    """`allow_speculative` に真偽値以外を書くと、日本語の文で断る (C2)。"""
+    message = _refuse(repo, _toml(_config(head_extra=('allow_speculative = "true"',))))
+
+    assert f"configs.{SERVE}.allow_speculative" in message
+    assert "true か false で書く" in message
+
+
+@pytest.mark.parametrize(("kind", "name"), [("serve", SERVE), ("probe", PROBE)])
+def test_allow_speculative_true_without_a_speculative_setting_is_refused(
+    repo: Path, kind: str, name: str
+) -> None:
+    """許す構成が、投機の指定を持たないと断る (6.7)。
+
+    許す構成は、起動後に `/metrics` へ投機の指標が出ないと失敗になる。指定を持たない構成は
+    必ずそうなるので、読み込みの段で、`allow_speculative` の項目名を添えて断る。
+    """
+    message = _refuse(
+        repo,
+        _toml(_config(name, kind=kind, head_extra=("allow_speculative = true",))),
+    )
+
+    assert f"configs.{name}.allow_speculative" in message
+
+
+@pytest.mark.parametrize(("kind", "name"), [("serve", SERVE), ("probe", PROBE)])
+def test_allow_speculative_true_with_a_speculative_setting_loads_for_serve_and_probe(
+    repo: Path, kind: str, name: str
+) -> None:
+    """許す構成が、投機の指定を持つと読める (`serve` と `probe`)。"""
+    extra = _setting(
+        f"configs.{name}.args.spec",
+        flag="--speculative-config",
+        value='{"method":"mtp","num_speculative_tokens":2}',
+        why="モデル付属の MTP を有効にする",
+    )
+    configs = _load(
+        repo,
+        _toml(_config(name, kind=kind, head_extra=("allow_speculative = true",), args_extra=extra)),
+    )
+
+    assert configs[name].allow_speculative is True
+
+
 # --- 検査 6: 置き換えの印 -----------------------------------------------
 
 

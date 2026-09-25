@@ -1074,6 +1074,51 @@ def test_speculative_decoding_metrics_fail_without_waiting(
     assert "vllm:spec_decode_" in outcome.detail
 
 
+def test_allowed_speculative_metrics_reach_ready(tmp_path: Path, fake_vllm: FakeVllm) -> None:
+    """投機を許す構成では、投機の指標が出ているのを正常として受け付ける (C3)。"""
+    fake_vllm.set_metrics(MetricsSample(spec_decode=True))
+    config = serve_config(port_of(fake_vllm)).model_copy(update={"allow_speculative": True})
+    runner = runner_of(tmp_path, StartScript(plans=plans_of(config)))
+    clock = FakeClock()
+
+    outcome = run_start(runner, config, tmp_path, clock=clock, timeout_s=1800.0)
+
+    assert outcome.status == "ready"
+    assert outcome.service is not None
+    assert outcome.service.health_ok is True
+
+
+def test_allowed_config_without_speculative_metrics_fails_without_waiting(
+    tmp_path: Path, fake_vllm: FakeVllm
+) -> None:
+    """投機を許す構成で投機の指標が出ていなければ、待たずに失敗にする (C3)。"""
+    config = serve_config(port_of(fake_vllm)).model_copy(update={"allow_speculative": True})
+    runner = runner_of(tmp_path, StartScript(plans=plans_of(config)))
+    clock = FakeClock()
+
+    outcome = run_start(runner, config, tmp_path, clock=clock, timeout_s=1800.0)
+
+    assert outcome.status == "failed"
+    assert clock.slept == []
+    assert "allow_speculative" in outcome.detail
+
+
+def test_allowed_config_with_unreadable_metrics_waits_until_the_timeout(
+    tmp_path: Path, fake_vllm: FakeVllm
+) -> None:
+    """投機を許す構成でも、指標が読めないだけなら上限まで待つ (C3)。"""
+    fake_vllm.set_metrics_fault(Fault(body="これは Prometheus の形ではない\n"))
+    config = serve_config(port_of(fake_vllm)).model_copy(update={"allow_speculative": True})
+    runner = runner_of(tmp_path, StartScript(plans=plans_of(config)))
+    clock = FakeClock()
+
+    outcome = run_start(runner, config, tmp_path, clock=clock, timeout_s=20.0)
+
+    assert outcome.status == "failed"
+    assert clock.slept == [10.0, 10.0]
+    assert fake_vllm.call_count("/metrics") == 3
+
+
 def test_a_models_payload_that_is_not_a_list_says_so(tmp_path: Path, fake_vllm: FakeVllm) -> None:
     """`/v1/models` の `data` が配列でないときは、「空」ではなく「配列でない」と言う。"""
     fake_vllm.set_models_fault(Fault(body=json.dumps({"data": {"id": SERVED_MODEL}})))
@@ -1631,6 +1676,7 @@ def test_the_public_helpers_compose_a_one_node_run(tmp_path: Path, fake_vllm: Fa
             controls,
             base_url=f"http://{HEAD.lan_addr}:{port_of(fake_vllm)}",
             served_model_name=SERVED_MODEL,
+            speculative_allowed=False,
         )
         assert waited.failure is None
         assert waited.readiness.ready is True

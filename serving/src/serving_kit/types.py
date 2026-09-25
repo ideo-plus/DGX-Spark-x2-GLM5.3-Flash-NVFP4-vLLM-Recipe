@@ -40,6 +40,7 @@ from pydantic import (
     NonNegativeFloat,
     NonNegativeInt,
     PositiveInt,
+    StrictBool,
     model_validator,
 )
 
@@ -261,6 +262,13 @@ class ConfigDef(_Frozen):
     env: dict[str, Setting] = Field(default_factory=dict)
     ready_timeout_s: PositiveInt
     served_model_name: str | None = None
+    allow_speculative: StrictBool = False
+    """投機的デコードの指定 (検査 5 の 4 つのフラグ) を許す構成だけ `true` にする。
+
+    起動後は、許す構成では `/metrics` に投機の指標が出ることを正常とし、出ないことを異常と
+    する (design.md 6.7、ADR 0006 K1)。`StrictBool` にするのは、TOML の文字列 `"true"` を
+    真偽値として読み替えないためである。
+    """
 
     @model_validator(mode="after")
     def _check_nodes_and_model_name(self) -> Self:

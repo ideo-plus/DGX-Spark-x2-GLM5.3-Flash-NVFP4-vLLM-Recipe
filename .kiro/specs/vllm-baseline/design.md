@@ -355,7 +355,7 @@ stateDiagram-v2
 | 6.4 | KV の大きさと見積もりの比較 | procedure | ADR 0002 に、実測と brief.md の見積もりと理由 | — |
 | 6.5 | 英語と日本語の短い要求 | lifecycle | `serve smoke`。応答を画面に出すが、保存しない | — |
 | 6.6 | 失敗の記録と次の構成 | procedure | `not-working.md`、`attempts.md` | 代替の順序 |
-| 6.7 | 最初は投機的デコードなし | config、lifecycle | 投機の指定を持つ構成を断る。`/metrics` に `vllm:spec_decode_` が出ないことを確かめる | — |
+| 6.7 | 投機的デコードは構成ごとに許す | config、lifecycle | `allow_speculative = true` の構成だけ投機の指定を通す。起動後は、許す構成では `/metrics` に `vllm:spec_decode_` が出ることを、許さない構成では出ないことを確かめる | — |
 | 7.1 | `bench` の対象サーバーの定義に足す | procedure | `targets.toml` の `vllm-nvfp4-tp2` | — |
 | 7.2 | 計測の前の確認 | procedure | `scripts/spark-precheck.sh http://10.0.1.60:8000 '<実測した名前>'` | — |
 | 7.3 | 1 トークンあたりの文字数の測り直し | procedure | `bench calibrate` | — |
@@ -468,6 +468,7 @@ class ConfigDef(_Frozen):
     env: dict[str, Setting]
     ready_timeout_s: PositiveInt
     served_model_name: str | None      # serve と probe で必須。ほかは None
+    allow_speculative: bool = False    # 投機の指定を許す構成だけ True (6.7、検査 5)
 
 class NodeDef(_Frozen):
     role: NodeRole                     # "head" | "worker"
@@ -493,7 +494,7 @@ def select_config(configs: dict[str, ConfigDef], name: str,
   2. イメージ: `ref` が `<名前>@sha256:<64 桁の 16 進>` の形。タグだけの参照は誤り
   3. 重み: `revision` が 40 桁の 16 進。マニフェストのファイルがある
   4. モデルの名前: `served_model_name` は、`kind` が `serve` と `probe` の構成で必須、ほかでは `None`。1 つだけで、`/` を含まない (6.2)
-  5. 投機的デコード: `--speculative-config`、`--spec-method`、`--spec-model`、`--spec-tokens` のどれかを持つ構成は誤り (6.7。P3 で、この検査を構成ごとの許可に変える)
+  5. 投機的デコード: `allow_speculative` が `true` でない構成が、`--speculative-config`、`--spec-method`、`--spec-model`、`--spec-tokens` のどれかを持つと誤り。逆に、`kind` が `serve` か `probe` で `allow_speculative` が `true` の構成が、`docker`、`args`、`env` のどこにもこの 4 つのフラグを持たないときも誤り (許す構成は、起動後に `/metrics` へ投機の指標が出ないと失敗になるため。6.7。ADR 0006 K1 で構成ごとの許可に変えた)
   6. 置き換えの印: 値に書けるのは、`{node.fabric_addr}`、`{node.fabric_ifname}`、`{node.rank}`、`{head.fabric_addr}`、`{head.lan_addr}`、`{weights.mount_at}`、`{remote_root}` だけ。ほかの `{…}` は誤り
   7. 直結の値: `kind` が `serve` か `job` で、ノードが 2 つの構成は、2 台の `fabric_addr`、`fabric_ifname`、`fabric_measured` が揃っていなければ誤り (4.7)。`fetch`、`inspect`、`probe` には掛からない (取得とライセンスの読み取りと縮小の確認は、直結の値を実測する前に流すため)。**この検査だけは、読み込みのときではなく、構成を選んだとき (`select_config`) に、選んだ構成について行う**
   8. docker のフラグは、許可の一覧にあるものだけ (長い形で書く): `--gpus`、`--network` (値は `host` だけ)、`--ipc` (値は `host` だけ)、`--shm-size`、`--ulimit`、`--mount` (検査 9)、`--entrypoint`、`--device` と `--cap-add` (検査 10)。research.md §c と、この設計の job / fetch / inspect (`--entrypoint`) が使うものに限り、どれも値が要る。それ以外 (`--privileged`、`--pid`、`--userns`、`--security-opt`、`--volume` / `-v`、`--volumes-from`、`--cidfile`、`--rm`、`container:<名前>` を値に取る名前空間の共有、道具が必ず付けるフラグ) は、根拠があっても誤り。禁止の一覧では、別の構成を巻き込む経路 (`--volumes-from <よそのコンテナ>` など) を塞ぎ切れないため。一覧を広げるのは、設計の変更として扱う
@@ -734,7 +735,7 @@ def smoke(config: ConfigDef, ...) -> SmokeOutcome: ...     # 英語と日本語�
 - 状態の出どころは、Docker のラベルつきのコンテナだけ。Mac の側に、状態のファイルを持たない (2 つの出どころが食い違うことをなくす)。`state/` の 2 つのファイル (起動の記録、照合の結果) は、状態ではなく、記録である (起動の記録は回収のためだけに書き、判定には使わない。照合の結果は、関門が、マニフェストの版と、一覧と大きさと一緒に確かめる)
 - **`already_running` と判定するのは、動いている自分のコンテナのラベルの、構成の名前、イメージのダイジェスト、`config-sha256` が、いま選んだ構成と、2 台とも一致するときだけ**。名前が同じで中身が違う (構成を編集したあとに、止めずに `start` した) ときは、0 で返さず、違う項目を示して断る (終了コード 1。`serve stop` を促す)。古い設定のサーバーに `bench` を流して、記録が実体とずれることを防ぐ (1.8、3.10、8.2)
 - `LaunchRecord` (構成の名前、イメージのダイジェスト、重みの `repo@revision`、開始の時刻、組み立てた引数の列、ラベルと同じ `config_sha256`、リポジトリの commit と、未コミットの変更の有無) を、起動の直前に `state/<構成>.launch.json` に書く。`serve logs` が、記録と一緒に回収する (3.10)
-- 受け付けの開始の判定: (1) head の `/health` が 200、(2) `/v1/models` の `data[0].id` が `served_model_name` と一致、(3) `/metrics` が読めて、`vllm:spec_decode_` で始まる行がない (6.7)。10 秒ごとに見る。上限は構成の `ready_timeout_s` (最初の値は 1800。実測で直す)
+- 受け付けの開始の判定: (1) head の `/health` が 200、(2) `/v1/models` の `data[0].id` が `served_model_name` と一致、(3) `/metrics` が読めて、`vllm:spec_decode_` で始まる行の有無が構成の `allow_speculative` と一致する (6.7)。10 秒ごとに見る。上限は構成の `ready_timeout_s` (最初の値は 1800。実測で直す)
 - 停止: head に `docker stop -t 90` → worker に同じ → 2 台で `docker rm` → GPU のプロセスが 0 件になるまで、最大 60 秒待つ。空かなければ `gpu_not_released` で、残っているプロセスの名前を示す (止めには行かない)
 - `smoke` は、応答の本文を画面に出すが、ファイルには書かない。記録するのは、HTTP の状態、終わりの理由、トークンの数、置き換え文字 (U+FFFD) の有無だけ (10.5)
 

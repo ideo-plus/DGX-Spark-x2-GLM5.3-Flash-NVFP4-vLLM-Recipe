@@ -1,4 +1,8 @@
-"""確認済みの自前イメージから TP=2 の構成を生成する (初回確認用の smoke と計測用の full)。"""
+"""確認済みの自前イメージから TP=2 の構成を生成する。
+
+変種は 3 つ: 初回確認用の `smoke`、計測用の `full`、`full` にモデル付属の MTP を足した
+`full-mtp` (`--spec-tokens N`)。`full-mtp` の構成の名前は `p2-nope-tp2-mtp<N>` になる。
+"""
 
 from __future__ import annotations
 
@@ -19,6 +23,16 @@ SOURCE_NAME = "p1-nvfp4-tp2"
 TARGET_NAME = "p2-nope-tp2-smoke"
 FULL_TARGET_NAME = "p2-nope-tp2-full"
 NCCL_SOURCE_NAME = "netcheck-bandwidth"
+FULL_MTP_VARIANT_NAME = "full-mtp"
+MTP_TARGET_NAME_FORMAT = "p2-nope-tp2-mtp{n}"
+MTP_SOURCE = (
+    "https://github.com/vllm-project/vllm/blob/"
+    "0961bbae2894d574be790d219651824eb199318e/vllm/config/speculative.py"
+)
+MTP_QUOTE = (
+    "The name of the speculative method to use. … The number of speculative tokens, if provided. "
+    "It will default to the number in the draft model config if present, otherwise, it is required."
+)
 
 
 class Variant(NamedTuple):
@@ -27,6 +41,9 @@ class Variant(NamedTuple):
     `arg_overrides` は `(args の鍵, 旧値, 新値, why)` の並びで、`render` が
     `[configs.{SOURCE_NAME}.args.{鍵}]` の `value` と `why` をこの順に置き換える。
     空なら置き換えず、p1 の値と根拠をそのまま残す。
+
+    `spec_tokens` は、モデル付属の MTP (投機的デコード) を有効にする下書きのトークン数である。
+    `None` なら投機の指定を足さない (smoke と full は `None`)。
     """
 
     name: str
@@ -34,6 +51,7 @@ class Variant(NamedTuple):
     env_comment: str
     nccl_debug_why: str
     arg_overrides: tuple[tuple[str, str, str, str], ...]
+    spec_tokens: int | None = None
 
 
 SMOKE = Variant(
@@ -95,6 +113,43 @@ FULL = Variant(
 )
 
 VARIANTS: Mapping[str, Variant] = {"smoke": SMOKE, "full": FULL}
+
+
+def mtp_variant(spec_tokens: int) -> Variant:
+    """`--variant full-mtp --spec-tokens N` の構成を作る。
+
+    `full` と同じ構成 (文脈長 163840、同時実行 16) に、モデル付属の MTP を下書き
+    `spec_tokens` トークンで有効にする。`spec_tokens` は 1 以上。
+    """
+    if spec_tokens < 1:
+        raise ValueError("--spec-tokens は 1 以上にする")
+    return Variant(
+        name=MTP_TARGET_NAME_FORMAT.format(n=spec_tokens),
+        description=(
+            "NoPE 修正イメージ (vllm-nope:0961bbae-fi070) で、"
+            "2 台 TP=2 の full と同じ構成に、モデル付属の MTP を"
+            f"下書き {spec_tokens} トークンで有効にする。実機では未確認"
+        ),
+        env_comment=FULL.env_comment,
+        nccl_debug_why=FULL.nccl_debug_why,
+        arg_overrides=(),
+        spec_tokens=spec_tokens,
+    )
+
+
+def _spec_value(spec_tokens: int) -> str:
+    """`--speculative-config` に渡す JSON の値 (vLLM の公式の文書とソースの形)。"""
+    return f'{{"method":"mtp","num_speculative_tokens":{spec_tokens}}}'
+
+
+def _mtp_why(spec_tokens: int) -> str:
+    """MTP の設定の理由 (未修正の #58454 の条件を含む)。"""
+    return (
+        "ADR 0006 の K1。モデル付属の MTP (num_nextn_predict_layers = 1) を"
+        f"下書き {spec_tokens} トークンで使う。n_predict = 1 なので、どの N も vLLM の"
+        "割り切れる検査を通る。N >= 2 で文脈が 2048 を超えると kpool が壊れる報告"
+        " (vLLM #58454、未修正) があるので、手順書の確認を必ず行う"
+    )
 
 
 def load_image(inspect_json: Path) -> dict[str, Any]:
@@ -166,6 +221,25 @@ def render(configs_text: str, image: Mapping[str, Any], variant: Variant = SMOKE
         "# --- 環境変数 (最初の 3 つだけ。A/B で足すものは docs/results/ の実測を根拠にする) -----",
         variant.env_comment,
     )
+    if variant.spec_tokens is not None:
+        # (a) 投機を許す項目は、最上位テーブルの `served_model_name` の直後にだけ足す
+        block = re.sub(
+            r"^served_model_name = .*$",
+            lambda match: match.group(0) + "\nallow_speculative = true",
+            block,
+            count=1,
+            flags=re.MULTILINE,
+        )
+        # (b) 投機の指定は、`args` の末尾 (env のコメントの直前) に足す
+        spec_table = (
+            f"[configs.{variant.name}.args.speculative-config]\n"
+            f'flag = "--speculative-config"\n'
+            f"value = '{_spec_value(variant.spec_tokens)}'\n"
+            f"why = {json.dumps(_mtp_why(variant.spec_tokens), ensure_ascii=False)}\n"
+            f"source = {json.dumps(MTP_SOURCE)}\n"
+            f"quote = {json.dumps(MTP_QUOTE, ensure_ascii=False)}\n"
+        )
+        block = block.replace(variant.env_comment, spec_table + "\n" + variant.env_comment, 1)
     data = tomllib.loads(configs_text)
     source_env = data["configs"][NCCL_SOURCE_NAME]["env"]
     additions = (
@@ -220,14 +294,35 @@ def main(argv: Sequence[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--variant",
-        choices=tuple(VARIANTS),
+        choices=(*VARIANTS, FULL_MTP_VARIANT_NAME),
         default="smoke",
-        help="生成する構成 (smoke: 初回確認用 4096/1、full: 計測用 163840/16)",
+        help=(
+            "生成する構成 (smoke: 初回確認用 4096/1、full: 計測用 163840/16、"
+            "full-mtp: full と同じ構成 + MTP (`--spec-tokens N`))"
+        ),
+    )
+    parser.add_argument(
+        "--spec-tokens",
+        type=int,
+        default=None,
+        help="full-mtp の、モデル付属の MTP の下書きのトークン数 (1 以上)",
     )
     parser.add_argument("inspect_json", type=Path)
     parser.add_argument("output", type=Path)
     args = parser.parse_args(argv)
-    generate(args.inspect_json, args.output, VARIANTS[args.variant])
+
+    if args.variant == FULL_MTP_VARIANT_NAME:
+        if args.spec_tokens is None:
+            parser.error("--variant full-mtp には --spec-tokens が要る")
+        try:
+            variant = mtp_variant(args.spec_tokens)
+        except ValueError as exc:
+            parser.error(str(exc))
+    else:
+        if args.spec_tokens is not None:
+            parser.error("--spec-tokens は --variant full-mtp のときだけ使える")
+        variant = VARIANTS[args.variant]
+    generate(args.inspect_json, args.output, variant)
 
 
 if __name__ == "__main__":
