@@ -30,6 +30,20 @@ uv run --directory serving serve check p2-nope-tp2-full-tn \
 
 `p2-nope-tp2-full` との違いは、env の `NCCL_SET_THREAD_NAME=1`（根拠つき）と、構成の名前だけです。`--variant full-mtp --spec-tokens 1 --nccl-thread-names` なら `p2-nope-tp2-mtp1-tn` になります。以降の §3・§7 のコマンドは、構成名を `p2-nope-tp2-full-tn`、`--configs` を `tp2-full-tn.toml` に読み替えます（`serve check` の 8 関門は同じです）。
 
+#37 の調査で、起動の約 7 分を占める重みの読み込みは、ディスクではなく vLLM の既定の読み方（mmap で必要なところを少しずつ読む）が律速と分かりました。読み込み方を替えた構成も生成できます。`--load-format`（`instanttensor` / `fastsafetensors` / `runai_streamer`）と `--safetensors-load-strategy`（`eager` / `prefetch`）は、どちらもどの `--variant` にも付けられ、`--nccl-thread-names`・`--torch-profiler` と併用できます。付けたときだけ args に根拠（`source` と `quote`）つきで入り、構成の名前が `-lf-<値>`・`-sls-<値>` 付きになります（`runai_streamer` は `-lf-runai-streamer`）。付けないときの出力は変わりません。
+
+```bash
+uv run --directory serving python ../experiments/nope-mla/configure_tp2.py --variant full --load-format instanttensor \
+  ../serving/var/nope-build-0961bbae/image-inspect.json \
+  ../serving/var/nope-build-0961bbae/tp2-full-lf-instanttensor.toml
+uv run --directory serving serve check p2-nope-tp2-full-lf-instanttensor \
+  --configs var/nope-build-0961bbae/tp2-full-lf-instanttensor.toml
+```
+
+読み込み方を比べるときは、1 構成ずつ §3 の `serve start` → `serve logs`、§7 の停止を行い、回収した起動の記録の `Loading weights took` と `Model loading took` の行を、基の `p2-nope-tp2-full` と比べます。ただし、固定した vLLM では `Loading weights took` の行を出すのは `default_loader.py` と `sharded_state_loader.py` だけで、`--load-format runai_streamer` の構成（`RunaiModelStreamerLoader`）はこの行を出しません。その構成は `Model loading took` の行で比べます。
+
+2 回目以降の起動は、重みがページキャッシュに乗っているぶん速く読めるので、比べる前に両台のページキャッシュの状態をそろえます。ページキャッシュを捨てる操作（両台で `sync && echo 3 | sudo tee /proc/sys/vm/drop_caches`）は実機の状態を変えるので、⚠ **了承を得てから**行います。この操作には root 権限が要り、Spark で `sudo` がパスワードなしで使えるかは未確認です。`--safetensors-load-strategy` が効くのは、`--load-format` を付けない既定の読み方だけです（固定した vLLM で strategy を使うのは `default_loader.py` の `safetensors_weights_iterator` だけで、`instanttensor`・`fastsafetensors`・`runai_streamer` の読み方は strategy を受け取りません）。そのため `-sls` の構成は `-lf` と重ねず、単独で基の構成と比べます。
+
 ## 2. GPU と X925 の上限の確認
 
 GPU クロックの上限（`nvidia-smi -lgc 300,1800`）と X925 の周波数の上限（`cpupower -c 5-9,15-19 frequency-set -u 3000MHz`）は、どちらも再起動で既定に戻ります。issue #10 で、両台の起動のたびに入れ直す systemd の oneshot サービス（`spark-power-caps.service`）を用意しました。計測の前に、このサービスが両台で有効・実行中であることを、読み取りだけで確かめます。
