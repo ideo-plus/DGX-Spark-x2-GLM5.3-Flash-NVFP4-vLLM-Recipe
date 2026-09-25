@@ -67,6 +67,24 @@ WEIGHTS_LABEL = "RedHatAI/GLM-5.3-Flash-NVFP4@18d55bfd5a2194887738da73753975c9d3
 # のバイト列 (UTF-8) に hashlib.sha256 を掛けたもの。既定の出力が替わっていないことの固定に使う
 SMOKE_RENDER_SHA256 = "d9d5313864d9b8ae5d90f441cc100f2a9af18a9924f93178ac1c8dde3a80539d"
 
+# `--variant full` の `render` の出力の SHA-256。計算のしかたは SMOKE と同じで、変更前の
+# 生成器 (MTP の追加の前) で `render(本文, image, FULL)` のバイト列 (UTF-8) に掛けたもの。
+# full の出力もバイト単位で変わっていないことの固定に使う (C6)。
+FULL_RENDER_SHA256 = "194cdd43aa1c5e5d2c92b66cb9cc0466d5aeef870e7eb0e3a1e74a2faf6c4f8a"
+
+MTP_SPEC_TOKENS: tuple[int, ...] = (1, 2, 3, 5)
+"""MTP の下書きトークン数 (Issue「すること 4」、C7)。"""
+
+
+def mtp_target_name(n: int) -> str:
+    """MTP の構成の名前 (C5、C7 で同じ名前を使う)。"""
+    return f"p2-nope-tp2-mtp{n}"
+
+
+def mtp_spec_value(n: int) -> str:
+    """`--speculative-config` の JSON の値 (C5)。"""
+    return f'{{"method":"mtp","num_speculative_tokens":{n}}}'
+
 
 def _load_generator() -> Any:
     """生成器の module を、パッケージでない道筋から読む (`experiments/nope-mla/`)。"""
@@ -743,3 +761,200 @@ def test_main_accepts_variant_full(generator: Any, tmp_path: Path) -> None:
     assert output.is_file()
     loaded = load_configs(output, REPO_ROOT)
     assert set(loaded) == {FULL_TARGET_NAME}
+
+
+# --- full の出力の不変 (C6) -----------------------------------------------
+
+
+def test_full_variant_output_is_unchanged(generator: Any, tmp_path: Path) -> None:
+    """`--variant full` の `render` の SHA-256 が、変更前の生成器で計算した値と一致する (C6)。"""
+    text, image = _render_default_input(generator, tmp_path)
+
+    full = generator.render(text, image, generator.FULL)
+
+    assert hashlib.sha256(full.encode("utf-8")).hexdigest() == FULL_RENDER_SHA256
+
+
+# --- MTP の生成 (C5) ------------------------------------------------------
+
+
+def _generate_mtp(generator: Any, tmp_path: Path, spec_tokens: int) -> Path:
+    """`--variant full-mtp --spec-tokens N` に当たる呼び出しで生成し、出力の道筋を返す。"""
+    source = _write_inspect_json(tmp_path, _inspect_item())
+    output = tmp_path / f"tp2-mtp{spec_tokens}.toml"
+    generator.generate(source, output, generator.mtp_variant(spec_tokens))
+    return output
+
+
+def _plans_for_mtp_config(
+    generator: Any, tmp_path: Path, spec_tokens: int
+) -> tuple[ContainerPlan, ...]:
+    """MTP の生成 TOML を、実物の `nodes.toml` で選び、2 台ぶんの計画を組み立てる。"""
+    output = _generate_mtp(generator, tmp_path, spec_tokens)
+    configs = load_configs(output, REPO_ROOT)
+    nodes = load_nodes(NODES_PATH, REPO_ROOT)
+    config = select_config(configs, mtp_target_name(spec_tokens), nodes)
+    return build_plans(config, nodes, STARTED_AT)
+
+
+@pytest.mark.parametrize("n", MTP_SPEC_TOKENS)
+def test_mtp_config_loads_and_keeps_full_but_adds_speculation(
+    generator: Any, tmp_path: Path, n: int
+) -> None:
+    """MTP の生成 TOML は読め、名前・説明・投機の指定以外は full と同じである (C5)。"""
+    output = _generate_mtp(generator, tmp_path, n)
+    name = mtp_target_name(n)
+    generated = load_configs(output, REPO_ROOT)
+
+    assert set(generated) == {name}
+    mtp = generated[name]
+    full = load_configs(_generate_full(generator, tmp_path), REPO_ROOT)[FULL_TARGET_NAME]
+
+    assert mtp.allow_speculative is True
+    spec = mtp.args["speculative-config"]
+    assert spec.flag == "--speculative-config"
+    assert spec.value == mtp_spec_value(n)
+    assert spec.source is not None
+    assert spec.quote is not None
+
+    # 名前・説明・投機の指定以外は、full と同じである (不要な差を作らない)
+    assert mtp.image == full.image
+    assert mtp.weights == full.weights
+    assert mtp.docker == full.docker
+    assert mtp.env == full.env
+    assert mtp.kind == full.kind
+    assert mtp.nodes == full.nodes
+    assert mtp.ready_timeout_s == full.ready_timeout_s
+    assert mtp.served_model_name == full.served_model_name
+    other_args = {key: setting for key, setting in mtp.args.items() if key != "speculative-config"}
+    assert other_args == full.args
+    assert mtp.description != full.description
+    assert "MTP" in mtp.description
+
+    # 基の節が残らず、次の構成の見出しのコメントも混ざらない
+    text = output.read_text(encoding="utf-8")
+    assert "[configs.p1-nvfp4-tp2" not in text
+    assert "p1-fetch-nvfp4" not in text
+
+
+@pytest.mark.parametrize("n", MTP_SPEC_TOKENS)
+def test_mtp_argv_matches_full_argv_plus_the_speculative_config(
+    generator: Any, tmp_path: Path, n: int
+) -> None:
+    """MTP の 2 台の列は、full の列の `--shutdown-timeout` の直後に 2 語を足したもの (C5)。"""
+    full_plans = _plans_for_full_config(generator, tmp_path)
+    mtp_plans = _plans_for_mtp_config(generator, tmp_path, n)
+    name = mtp_target_name(n)
+
+    for full_plan, mtp_plan in zip(full_plans, mtp_plans, strict=True):
+        expected = list(full_plan.argv)
+        expected[expected.index(f"vb-{FULL_TARGET_NAME}-{full_plan.node}")] = (
+            mtp_plan.container_name
+        )
+        expected[expected.index(f"vllm-baseline.config={FULL_TARGET_NAME}")] = (
+            f"vllm-baseline.config={name}"
+        )
+        at = expected.index("--shutdown-timeout") + 2
+        expected[at:at] = ["--speculative-config", mtp_spec_value(n)]
+
+        kept = [arg for arg in expected if not arg.startswith(f"{LABEL_CONFIG_SHA256}=")]
+        actual = [arg for arg in mtp_plan.argv if not arg.startswith(f"{LABEL_CONFIG_SHA256}=")]
+        assert kept == actual
+
+        # 中身が変わったので、`config-sha256` は変わる (同じでは断る)
+        assert full_plan.labels[LABEL_CONFIG_SHA256] != mtp_plan.labels[LABEL_CONFIG_SHA256]
+
+
+@pytest.mark.parametrize("n", MTP_SPEC_TOKENS)
+def test_mtp_container_names_follow_the_pattern(generator: Any, tmp_path: Path, n: int) -> None:
+    """MTP のコンテナ名は `vb-p2-nope-tp2-mtp<N>-<役割>` になる (C5、C7)。"""
+    head, worker = _plans_for_mtp_config(generator, tmp_path, n)
+
+    assert [plan.node for plan in (head, worker)] == ["head", "worker"]
+    assert head.container_name == f"vb-{mtp_target_name(n)}-head"
+    assert worker.container_name == f"vb-{mtp_target_name(n)}-worker"
+
+
+def test_mtp_render_puts_allow_speculative_only_in_the_config_header(
+    generator: Any, tmp_path: Path
+) -> None:
+    """投機を許す項目は構成の見出しにだけ入り、囮のテーブルもほかの設定も変えない (C5)。
+
+    SCN-C5-P1 (最上位テーブルにだけ、`served_model_name` の直後) と、SCN-C5-N1 (同じ字面を
+    持つ別テーブルには足さない) を固定する。
+    """
+    text_with_decoy = _insert_decoy_table(CONFIGS_PATH.read_text(encoding="utf-8"))
+    image = generator.load_image(_write_inspect_json(tmp_path, _inspect_item()))
+
+    rendered = generator.render(text_with_decoy, image, generator.mtp_variant(2))
+
+    data = tomllib.loads(rendered)
+    generated = data["configs"][mtp_target_name(2)]
+    assert generated["allow_speculative"] is True
+    # 許可は、最上位テーブルの `served_model_name` の直後に 1 回だけ入る
+    assert rendered.count("allow_speculative") == 1
+    assert 'served_model_name = "glm-5-3-flash"\nallow_speculative = true\n' in rendered
+    # 投機の指定は、`args` の末尾 (= `env.nccl-debug` より前) にある
+    assert rendered.index(
+        f"[configs.{mtp_target_name(2)}.args.speculative-config]"
+    ) < rendered.index(f"[configs.{mtp_target_name(2)}.env.nccl-debug]")
+    # 囮のテーブルと、同じ字面の value を持つ設定は書き換わらない
+    assert generated["args"]["decoy"]["value"] == "16"
+    assert generated["args"]["served-model-name"]["value"] == "glm-5-3-flash"
+    assert generated["args"]["max-num-seqs"]["value"] == "16"
+    assert generated["args"]["max-model-len"]["value"] == "163840"
+    for section in ("args", "env", "docker"):
+        for key, setting in generated.get(section, {}).items():
+            assert "allow_speculative" not in setting, (section, key)
+    # 区切り行 (`# ====`) より後の、次の構成の見出しのコメントは混ざらない
+    assert "[configs.p1-nvfp4-tp2" not in rendered
+    assert "p1-fetch-nvfp4" not in rendered
+
+
+# --- MTP の CLI の入口 (C5) -----------------------------------------------
+
+
+def test_main_accepts_variant_full_mtp(generator: Any, tmp_path: Path) -> None:
+    """`--variant full-mtp --spec-tokens N` で、MTP の構成が生成される (C5)。"""
+    source = _write_inspect_json(tmp_path, _inspect_item())
+    output = tmp_path / "tp2-mtp2.toml"
+
+    generator.main(["--variant", "full-mtp", "--spec-tokens", "2", str(source), str(output)])
+
+    loaded = load_configs(output, REPO_ROOT)
+    assert set(loaded) == {mtp_target_name(2)}
+    assert loaded[mtp_target_name(2)].allow_speculative is True
+
+
+@pytest.mark.parametrize("bad", ["0", "-1", "abc"])
+def test_main_refuses_a_bad_spec_tokens(generator: Any, tmp_path: Path, bad: str) -> None:
+    """`--spec-tokens` は正の整数だけを受け、それ以外では出力を作らない (C5)。"""
+    source = _write_inspect_json(tmp_path, _inspect_item())
+    output = tmp_path / f"tp2-mtp-{bad}.toml"
+
+    with pytest.raises((SystemExit, ValueError)):
+        generator.main(["--variant", "full-mtp", "--spec-tokens", bad, str(source), str(output)])
+
+    assert not output.exists()
+
+
+def test_main_requires_spec_tokens_for_full_mtp(generator: Any, tmp_path: Path) -> None:
+    """`--variant full-mtp` に `--spec-tokens` がなければ断る (C5)。"""
+    source = _write_inspect_json(tmp_path, _inspect_item())
+    output = tmp_path / "tp2-mtp-none.toml"
+
+    with pytest.raises(SystemExit):
+        generator.main(["--variant", "full-mtp", str(source), str(output)])
+
+    assert not output.exists()
+
+
+def test_main_refuses_spec_tokens_with_another_variant(generator: Any, tmp_path: Path) -> None:
+    """`full-mtp` 以外の variant と `--spec-tokens` の組み合わせは断る (C5)。"""
+    source = _write_inspect_json(tmp_path, _inspect_item())
+    output = tmp_path / "tp2-full-with-spec.toml"
+
+    with pytest.raises(SystemExit):
+        generator.main(["--variant", "full", "--spec-tokens", "2", str(source), str(output)])
+
+    assert not output.exists()

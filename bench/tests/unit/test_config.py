@@ -382,6 +382,19 @@ def test_real_targets_file_loads_and_has_the_comparison_baseline() -> None:
     assert candidate.max_context_tokens == 1_000_000
 
 
+@pytest.mark.parametrize("n", [1, 2, 3, 5])
+def test_real_targets_include_every_mtp_variant(n: int) -> None:
+    """MTP の対象が、起動側と同じ名前で、full と同じ宛先・モデル・文脈長で実在する (C7)。"""
+    targets = c.load_targets()
+
+    name = f"p2-nope-tp2-mtp{n}"
+    assert name in targets
+    target = targets[name]
+    assert str(target.base_url) == "http://10.0.1.60:8000/"
+    assert target.model == "glm-5-3-flash"
+    assert target.max_context_tokens == 163840
+
+
 def test_real_profiles_file_loads_quick_and_full() -> None:
     profiles = c.load_profiles()
 

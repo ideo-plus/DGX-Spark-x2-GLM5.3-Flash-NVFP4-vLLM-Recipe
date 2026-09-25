@@ -45,7 +45,7 @@ import pytest
 from pydantic import HttpUrl
 
 from fake_runner import FakeRunner, RecordedCall, Reply, Rule
-from fake_vllm import FakeVllm, Fault, MessagesReply
+from fake_vllm import FakeVllm, Fault, MessagesReply, MetricsSample
 from serving_kit import lifecycle as lc
 from serving_kit import probe as pr
 from serving_kit.config import ConfigError
@@ -648,6 +648,30 @@ def test_a_ready_probe_reads_the_observation(tmp_path: Path, fake_vllm: FakeVllm
     assert outcome.observation is not None
     assert outcome.observation.attention_backend == "FLASH_ATTN_MLA"
     assert outcome.observation.known_failure is None
+
+
+def test_a_probe_that_allows_speculation_reaches_ready(tmp_path: Path, fake_vllm: FakeVllm) -> None:
+    """投機を許す probe の構成では、投機の指標が出ているのを正常として受け付ける (C3)。"""
+    fake_vllm.set_metrics(MetricsSample(spec_decode=True))
+    config = probe_config(port_of(fake_vllm)).model_copy(update={"allow_speculative": True})
+    runner = runner_of(tmp_path, ProbeScript(plans=plans_of(config)))
+
+    outcome = run_probe(runner, config, tmp_path)
+
+    assert outcome.status == "ready", outcome.detail
+
+
+def test_a_probe_that_does_not_allow_speculation_is_inconclusive(
+    tmp_path: Path, fake_vllm: FakeVllm
+) -> None:
+    """投機を許さない probe の構成では、投機の指標が出ていたら受け付けない (C3)。"""
+    fake_vllm.set_metrics(MetricsSample(spec_decode=True))
+    config = probe_config(port_of(fake_vllm))
+    runner = runner_of(tmp_path, ProbeScript(plans=plans_of(config)))
+
+    outcome = run_probe(runner, config, tmp_path)
+
+    assert outcome.status == "inconclusive", outcome.detail
 
 
 def test_a_failing_short_request_still_counts_as_ready(tmp_path: Path, fake_vllm: FakeVllm) -> None:

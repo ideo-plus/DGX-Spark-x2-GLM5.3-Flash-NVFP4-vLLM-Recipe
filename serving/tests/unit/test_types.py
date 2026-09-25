@@ -598,6 +598,30 @@ def test_config_args_keep_the_order_they_were_written_in() -> None:
     assert list(t.ConfigDef.model_validate_json(CONFIG.model_dump_json()).args) == order
 
 
+def test_config_def_defaults_allow_speculative_to_false() -> None:
+    """投機的デコードの許可は、書かなければ偽である (C2、design 6.7)。"""
+    assert CONFIG.allow_speculative is False
+    assert CONFIG.model_dump()["allow_speculative"] is False
+
+
+def test_config_def_accepts_allow_speculative_true() -> None:
+    """`allow_speculative = true` の構成は、型として読める (C2)。"""
+    payload = CONFIG.model_dump()
+    payload["allow_speculative"] = True
+
+    assert t.ConfigDef.model_validate(payload).allow_speculative is True
+
+
+@pytest.mark.parametrize("bad", ["true", 1, "yes"])
+def test_config_def_refuses_a_non_boolean_allow_speculative(bad: object) -> None:
+    """真偽値以外は、型として断る (C2。文字列の "true" を真と読み替えない)。"""
+    payload = CONFIG.model_dump()
+    payload["allow_speculative"] = bad
+
+    with pytest.raises(ValidationError, match="allow_speculative"):
+        t.ConfigDef.model_validate(payload)
+
+
 @pytest.mark.parametrize("kind", ["serve", "probe"])
 def test_serve_and_probe_require_a_served_model_name(kind: str) -> None:
     """名乗るモデルの名前は、`serve` と `probe` で必須 (検査 4、requirements 6.2)。"""

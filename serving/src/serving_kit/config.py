@@ -80,7 +80,13 @@ _SETTING_SECTIONS: Final[tuple[str, ...]] = ("docker", "args", "env")
 _SPECULATIVE_FLAGS: Final[frozenset[str]] = frozenset(
     {"--speculative-config", "--spec-method", "--spec-model", "--spec-tokens"}
 )
-"""検査 5: 投機的デコードの指定。最初の起動では使わない (requirements 6.7)。"""
+"""検査 5: 投機的デコードの指定。`allow_speculative = true` の構成でだけ通す (6.7)。"""
+
+_METRICS_CHECKED_KINDS: Final[frozenset[str]] = frozenset({"serve", "probe"})
+"""起動後に `/metrics` の投機の指標を確かめる `kind` (`lifecycle.check_ready` の入口)。
+
+検査 5 の逆向き (`allow_speculative = true` の構成は投機の指定を持つ) は、この `kind` に掛ける。
+"""
 
 _ALLOWED_PLACEHOLDERS: Final[frozenset[str]] = frozenset(
     {
@@ -408,6 +414,16 @@ def _flag_and_value(setting: Setting) -> tuple[str, str | None]:
     return name, setting.value if setting.flag is not None else None
 
 
+def _speculative_flag(setting: Setting) -> str | None:
+    """設定が投機的デコードの指定 (検査 5 の 4 つのフラグ) なら、そのフラグ。そうでなければ空。
+
+    検査 5 (許可のない構成を断る) と、その逆向き (許可のある構成に指定がない) の両方が、
+    この 1 か所で「指定かどうか」を決める。
+    """
+    flag, _ = _flag_and_value(setting)
+    return flag if flag in _SPECULATIVE_FLAGS else None
+
+
 def _is_json_braces(braces: str) -> bool:
     """波かっこの組が、置き換えの印ではなく JSON の値かどうか。
 
@@ -537,19 +553,30 @@ def _check_docker_setting(item: str, setting: Setting, errors: list[str]) -> Non
 
 
 def _check_setting(
-    item: str, section: str, setting: Setting, repo_root: Path, errors: list[str]
+    item: str,
+    section: str,
+    setting: Setting,
+    repo_root: Path,
+    errors: list[str],
+    *,
+    speculative_allowed: bool,
 ) -> None:
     """設定 1 つを確かめる (検査 1 の実在、5、6、と docker の 8〜10)。
 
     docker の検査 (8、9、10) は `docker` の節にだけ掛ける (`args` と `env` は、イメージの
     参照のあとに続く引数と環境変数で、docker が読まない)。投機的デコードの検査 (5) だけは、
     どの節に書いても構成が投機的デコードを持つことに変わりがないので、3 つの節すべてに掛ける。
+    検査 5 を掛けるのは、`speculative_allowed` (構成の `allow_speculative`) が真でないときだけ
+    である (6.7。ADR 0006 K1 で構成ごとの許可に変えた)。
     """
     _check_measured(item, setting, repo_root, errors)
     _check_placeholders(item, setting, errors)
-    flag, _ = _flag_and_value(setting)
-    if flag in _SPECULATIVE_FLAGS:
-        errors.append(f"{item}: 投機的デコードの指定は、最初の起動では使わない: {flag}")
+    speculative_flag = _speculative_flag(setting)
+    if speculative_flag is not None and not speculative_allowed:
+        errors.append(
+            f"{item}: 投機的デコードの指定は、allow_speculative = true の構成でだけ使える:"
+            f" {speculative_flag}"
+        )
     if section == "docker":
         _check_docker_setting(item, setting, errors)
 
@@ -581,6 +608,9 @@ def _build_config(
     prefix = f"configs.{name}"
     errors: list[str] = []
     candidate: dict[str, Any] = dict(fields)
+    # 投機的デコードの許可は、TOML の生の値から見る (真偽値の `true` のときだけ真)。
+    # 真偽値以外は `ConfigDef` の検証 (StrictBool) が断る。
+    speculative_allowed = candidate.get("allow_speculative") is True
 
     written_name = candidate.get("name")
     if written_name is not None and written_name != name:
@@ -605,6 +635,8 @@ def _build_config(
             candidate["weights"] = weights
             _check_weights(f"{prefix}.weights", weights, repo_root, errors)
 
+    has_speculative_setting = False
+    every_setting_built = True
     for section in _SETTING_SECTIONS:
         raw_section = candidate.get(section)
         if not isinstance(raw_section, dict):
@@ -615,12 +647,31 @@ def _build_config(
             setting = _build(Setting, raw_setting, item, errors)
             if setting is None:
                 built[key] = _SUBSTITUTE_SETTING
+                every_setting_built = False
                 continue
             built[key] = setting
-            _check_setting(item, section, setting, repo_root, errors)
+            has_speculative_setting |= _speculative_flag(setting) is not None
+            _check_setting(
+                item, section, setting, repo_root, errors, speculative_allowed=speculative_allowed
+            )
         candidate[section] = built
 
-    _check_node_count(prefix, candidate.get("kind"), candidate.get("nodes"), errors)
+    kind = candidate.get("kind")
+    if (
+        speculative_allowed
+        and every_setting_built
+        and not has_speculative_setting
+        and isinstance(kind, str)
+        and kind in _METRICS_CHECKED_KINDS
+    ):
+        # 組み立てに失敗した設定があるときは見ない (その設定が投機の指定だったかもしれない)。
+        errors.append(
+            f"{prefix}.allow_speculative: true の構成は、docker、args、env のどれかに"
+            f"投機的デコードの指定 ({', '.join(sorted(_SPECULATIVE_FLAGS))}) を書く。"
+            "書かないと、起動後に `/metrics` へ投機の指標が出ず、起動が失敗になる (6.7)"
+        )
+
+    _check_node_count(prefix, kind, candidate.get("nodes"), errors)
     return _build(ConfigDef, candidate, prefix, errors), errors
 
 

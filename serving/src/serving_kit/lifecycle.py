@@ -20,8 +20,9 @@
    定めていない。止めるときだけ head → worker にする)
 6. 受け付けの開始を待つ。10 秒ごとに (1) head の `/health` が 200、(2) `/v1/models` の
    `data[0].id` が `served_model_name` と一致、(3) `/metrics` が読めて `vllm:spec_decode_` で
-   始まる行がない、を見る。上限は構成の `ready_timeout_s` で、`timeout_s` でその回だけ
-   上書きできる。待っている間、毎回、2 台のコンテナの状態も見る
+   始まる行の有無が、構成の `allow_speculative` と一致する、を見る。上限は構成の
+   `ready_timeout_s` で、`timeout_s` でその回だけ上書きできる。待っている間、毎回、2 台の
+   コンテナの状態も見る
 
 **`start` の、結果と例外の、終了コードへの写し方** (5.1 が、この表のとおりに写す。design.md
 「Error Handling」):
@@ -180,9 +181,10 @@ design が明示しない細部を、ここで決めて残す。
 3. **待ちの 1 周は、HTTP → コンテナの状態の順**に見る (design.md の System Flows の loop の
    並び)。受け付けが始まっていれば、その周ではコンテナの状態を見に行かない
 4. **待っても直らない食い違いは、時間切れを待たずに失敗にする**: (a) `/v1/models` が読めて、
-   名乗る名前が構成と違う (requirements 6.2)、(b) `/metrics` が読めて、投機的デコードの指標が
-   出ている (requirements 6.7)。どちらも、構成を直さなければ変わらない。**読めないこと**
-   (つながらない、200 でない、Prometheus の形でない) は、起動の途中でありうるので、上限まで待つ
+   名乗る名前が構成と違う (requirements 6.2)、(b) `/metrics` が読めて、投機的デコードの指標の
+   有無が構成の `allow_speculative` と合わない (6.7。ADR 0006 K1)。どちらも、構成を直さなければ
+   変わらない。**読めないこと** (つながらない、200 でない、Prometheus の形でない) は、起動の
+   途中でありうるので、上限まで待つ
 5. **見せる末尾と、分類に使う末尾を分ける** (親の判断、2026-09-22)。計測者に見せるのは 80 行
    (`logs.DEFAULT_TAIL_LINES`。requirements 1.5) のままだが、失敗の種類の読み取り
    (`observe.observe_launch`) には、**2 台ぶんの長い末尾** (`OBSERVE_TAIL_LINES`) を読み直して
@@ -220,9 +222,10 @@ design が明示しない細部を、ここで決めて残す。
    (`/health`、`/v1/models`、`/metrics`) と、その読み方を 2 か所に持たないためである。その
    ため、`health_ok` は「200 だった」ときだけ真で、それ以外 (200 でない、つながらない) は
    `None` になり (requirements 1.6 の「読めないことは空で示す」)、**名乗る名前が構成と違う
-   ときと、投機的デコードの指標が出ているときは、処理中と待ちの要求の数を読まない**
-   (`check_ready` が、そこで判定を打ち切る)。どちらも、構成を直さなければ直らない食い違いで、
-   `served_model` には読めた名前が入るので、計測者は食い違いに気づける
+   ときと、投機的デコードの指標の有無が構成の `allow_speculative` と合わないときは、処理中と
+   待ちの要求の数を読まない** (`check_ready` が、そこで判定を打ち切る)。どちらも、構成を
+   直さなければ直らない食い違いで、`served_model` には読めた名前が入るので、計測者は
+   食い違いに気づける
 13. **`status` は、`kind = "serve"` の動いているコンテナがあるときだけ HTTP に行く**。取得
    (`fetch`) や読み取り (`inspect`) のコンテナには、待ち受ける口がない。構成の名前が手元の
    定義にない、`--port` を 1 つに決められない、のときも、警告を出して HTTP を飛ばす
@@ -430,7 +433,10 @@ _FAILURE_PRIORITY: Final[Mapping[KnownFailure, int]] = {
 """
 
 SPEC_DECODE_METRIC_PREFIX: Final[str] = "vllm:spec_decode_"
-"""投機的デコードが入っていることを表す指標の接頭辞 (requirements 6.7)。"""
+"""投機的デコードが入っていることを表す指標の接頭辞 (requirements 6.7)。
+
+構成の `allow_speculative` が真なら、この行があることを正常とする。偽なら、ないことを正常と
+する (6.7。ADR 0006 K1)。"""
 
 HTTP_PORT_FLAG: Final[str] = "--port"
 """HTTP のポートを表す、vLLM の口 (決めごとの 2)。"""
@@ -829,11 +835,17 @@ def _speculative_lines(text: str) -> tuple[str, ...]:
     return tuple(line for line in text.splitlines() if line.startswith(SPEC_DECODE_METRIC_PREFIX))
 
 
-def check_ready(client: httpx.Client, base_url: str, served_model_name: str) -> Readiness:
+def check_ready(
+    client: httpx.Client, base_url: str, served_model_name: str, *, speculative_allowed: bool
+) -> Readiness:
     """受け付けの開始を、1 回ぶん判定する (design.md 「lifecycle」の (1)〜(3))。
 
     **読めないこと**は、起動の途中でありうるので、待ち続ける理由にする。**読めて、内容が
     構成と食い違うこと**は、待っても直らないので `fatal` にする (決めごとの 4)。
+
+    `speculative_allowed` は、その構成が投機的デコードを許しているかどうかである (6.7。
+    ADR 0006 K1)。許す構成では投機の指標が出ているのを正常とし、出ていないのを異常とする。
+    許さない構成では、出ているのを異常とする。
     """
     _, reason = _fetch(client, f"{base_url}/health")
     if reason:
@@ -873,16 +885,28 @@ def check_ready(client: httpx.Client, base_url: str, served_model_name: str) -> 
             detail=f"指標の本文に、{_METRIC_PREFIX} で始まる行がまだない",
         )
     speculative = _speculative_lines(text)
-    if speculative:
+    if speculative and not speculative_allowed:
         return Readiness(
             health_ok=True,
             served_model=served,
             max_model_len=length,
             detail="投機的デコードの指標が出ている",
             fatal=(
-                f"投機的デコードの指標が出ている ({', '.join(speculative[:3])})。最初の起動は、"
-                "投機的デコードを使わない構成にする (requirements 6.7)。待っても変わらないので、"
-                "時間切れを待たずに失敗にする"
+                f"投機的デコードの指標が出ている ({', '.join(speculative[:3])})。この構成"
+                " (allow_speculative = false) は投機的デコードを使わない。待っても変わらない"
+                "ので、時間切れを待たずに失敗にする (requirements 6.7)"
+            ),
+        )
+    if not speculative and speculative_allowed:
+        return Readiness(
+            health_ok=True,
+            served_model=served,
+            max_model_len=length,
+            detail="投機的デコードの指標が出ていない",
+            fatal=(
+                "構成は投機的デコードを許している (allow_speculative = true) のに、`/metrics` に"
+                f" {SPEC_DECODE_METRIC_PREFIX} の行がない。投機の設定なしで起きているので、"
+                "待っても変わらない"
             ),
         )
     return Readiness(
@@ -1160,16 +1184,22 @@ def wait_ready(
     *,
     base_url: str,
     served_model_name: str,
+    speculative_allowed: bool,
 ) -> Waited:
     """受け付けの開始を待つ (design.md 「lifecycle」の受け付けの開始の判定)。
 
     1 周ごとに、HTTP の 3 つを見てから、2 台のコンテナの状態を見る (決めごとの 3)。どちらかの
     コンテナが終了していたら、時間切れを待たずに失敗にする。時計と眠りは引数から来るので、
-    試験は実際に眠らない。
+    試験は実際に眠らない。`speculative_allowed` は `check_ready` にそのまま渡す (6.7)。
     """
     deadline = controls.clock() + controls.timeout_s
     while True:
-        readiness = check_ready(controls.client, base_url, served_model_name)
+        readiness = check_ready(
+            controls.client,
+            base_url,
+            served_model_name,
+            speculative_allowed=speculative_allowed,
+        )
         if readiness.fatal is not None:
             return Waited(readiness=readiness, failure=readiness.fatal)
         if readiness.ready:
@@ -1716,6 +1746,7 @@ def _launch(
             controls,
             base_url=base_url,
             served_model_name=served_model_name,
+            speculative_allowed=config.allow_speculative,
         )
     except (RemoteError, RunFailed) as exc:
         # 分類の結果を使わない経路なので、長い末尾は読まない (レビューの指摘 4)
@@ -2019,12 +2050,14 @@ def _status_target(
     nodes: Mapping[NodeRole, NodeDef],
     container: OwnContainer | None,
     stream: TextIO,
-) -> tuple[str, str] | None:
-    """HTTP の宛先と、名乗るはずのモデルの名前を、head のコンテナのラベルから決める。
+) -> tuple[str, str, bool] | None:
+    """HTTP の宛先と、名乗るはずのモデルの名前と、投機の許可を、head のコンテナのラベルから
+    決める。
 
     決めごとの 13: 動いている `kind = "serve"` のコンテナがあるときだけ、問い合わせに行く。
     構成の名前が手元の定義にない、`--port` を 1 つに決められない、のときは、警告を出して
-    飛ばす (`serve status` は、断らない)。
+    飛ばす (`serve status` は、断らない)。投機の許可 (`allow_speculative`) は、`check_ready`
+    に渡して、構成ごとの判定 (6.7) を同じ意味にする。
     """
     head = nodes.get(_HEAD)
     if head is None or container is None or container.state != _STATE_RUNNING:
@@ -2052,7 +2085,7 @@ def _status_target(
     except ConfigError as exc:
         _report(stream, f"警告: 推論サーバーの口には問い合わせない: {exc}")
         return None
-    return f"http://{head.lan_addr}:{port}", config.served_model_name
+    return f"http://{head.lan_addr}:{port}", config.served_model_name, config.allow_speculative
 
 
 def status(
@@ -2124,11 +2157,13 @@ def status(
     target = _status_target(configs, nodes, seen.get(_HEAD), stream)
     if target is None:
         return ServiceStatus(nodes=tuple(found))
-    base_url, served_model_name = target
+    base_url, served_model_name, allow_speculative = target
     owns_client = client is None
     used = new_client(http_timeout_s) if client is None else client
     try:
-        readiness = check_ready(used, base_url, served_model_name)
+        readiness = check_ready(
+            used, base_url, served_model_name, speculative_allowed=allow_speculative
+        )
     finally:
         if owns_client:
             used.close()

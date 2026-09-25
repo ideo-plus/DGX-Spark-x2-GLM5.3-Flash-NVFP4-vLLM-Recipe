@@ -105,7 +105,7 @@ class MetricsSample:
     generation_tokens_total: int = 0
     spec_decode: bool = False
     """`True` のとき、`vllm:spec_decode_` で始まる行を `/metrics` に足す。受け付けの開始の
-    判定 (design.md 6.7) は、これが常に `False` であることを確かめる。"""
+    判定 (design.md 6.7) は、この行の有無が構成の `allow_speculative` と一致することを確かめる。"""
 
 
 @dataclass(frozen=True)
