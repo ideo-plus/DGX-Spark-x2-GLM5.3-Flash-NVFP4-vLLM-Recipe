@@ -5,8 +5,9 @@
 # 全ての項目を、既定値と同じであっても省略せずに書く。このファイルが、すべて
 # のつまみを見渡せる場所になるようにするため
 #
-# `quick` は開発中の素早い確認向け、`full` は公開する結果を作るための本番の
-# 設定。差は主に試行の回数で、それ以外はそろえてある
+# `probe` は探り (候補の比較、1 回 数分)、`fast` は確認 (有望な候補だけ、
+# 15〜20 分)、`quick` は記録の最小、`full` は公開する結果を作る本番 (issue #39)。
+# 差は主に試行の回数と出力の上限で、それ以外はそろえてある
 #
 # TOML には null (未設定) を書く記法がないので、既定が `None` の項目
 # (`sampling.top_p`、`sampling.top_k`、`sandbox.image_digest`、
@@ -166,6 +167,171 @@ start_tokens = 20000
 end_tokens = 120000
 step_tokens = 20000
 trials_per_stage = 300
+conversations_per_stage = 5
+threshold = 0.01
+max_tokens = 256
+
+# 探り (probe)。候補を比べるときに 1 回 数分で回す。quick を元に decode と quality だけを
+# 縮めた。decode は 4 条件 × (10 + 慣らし 1) = 44 要求、出力の上限は 44 × 128 = 5,632
+# トークン。quality は ツール 5 + コード 1 + 探す課題 1 = 7 要求、出力の上限は
+# 5×512 + 1×1024 + 1×512 = 4,096 トークン。decode と quality を合わせて約 5 分
+# (2026-09-25 に N=2 で実測、issue #39)。prefill・concurrency・agent は quick のまま
+# (issue の指定範囲)。decode.trials は ge=10 の下限なので、慣らしと max_tokens で縮める
+[profiles.probe]
+seed = 0
+min_successes = 5
+max_consecutive_failures = 5
+length_tolerance = 0.05
+compare_tolerance = 0.02
+metrics_interval_s = 1.0
+
+[profiles.probe.sampling]
+temperature = 0.0
+thinking = "server_default"
+
+[profiles.probe.chars_per_token]
+# quick と同じ (2026-09-20 に実機の GLM-5.3-Flash で測った値)
+prose_en = 4.831
+prose_ja = 1.794
+code = 3.505
+log = 2.316
+
+[profiles.probe.timeout]
+connect_s = 10.0
+first_event_s = 120.0
+idle_s = 60.0
+total_s = 900.0
+
+[profiles.probe.output_sanity]
+repeat_min_chars = 12
+repeat_min_count = 8
+
+[profiles.probe.sandbox]
+# quick と同じ
+runtime = "auto"
+image = "bench-sandbox:py3.13-numpy2.5.3"
+image_digest = "sha256:f75a1d43009306248ecbe68c0cc992b700a472037ba6ea336e519404ec1d1de6"
+timeout_s = 20.0
+memory_mb = 512
+cpus = 1.0
+pids_limit = 64
+
+[profiles.probe.decode]
+# quick の 10 回は ge=10 の下限なので、慣らし (2 → 1) と max_tokens (1024 → 128) で縮める
+trials = 10
+warmup_trials = 1
+max_tokens = 128
+
+[profiles.probe.prefill]
+trials = 5
+warmup_trials = 1
+max_tokens = 16
+target_input_tokens = [8000, 32000, 128000]
+
+[profiles.probe.concurrency]
+levels = [1, 2, 4, 8]
+rounds = 5
+max_tokens = 256
+input_tokens = 2000
+
+[profiles.probe.quality]
+# 探す課題は 1 点 (8,000 トークン、深さ 50%) だけ
+toolcall_tasks = 5
+needle_lengths = [8000]
+needle_depths = [50]
+trials_per_cell = 1
+code_max_tokens = 1024
+code_problem_limit = 1
+
+[profiles.probe.agent]
+start_tokens = 20000
+end_tokens = 120000
+step_tokens = 20000
+trials_per_stage = 50
+conversations_per_stage = 5
+threshold = 0.01
+max_tokens = 256
+
+# 確認 (fast)。有望な候補だけを 15〜20 分で確かめる。quick を元に decode、concurrency、
+# quality を縮めた。decode は 44 要求、出力の上限は 44 × 256 = 11,264 トークン。
+# concurrency は (2 回 + 慣らし 1 回) × (1+2+4) = 21 本、上限 21 × 128 = 2,688
+# トークン (ほかに包みと文書の count_tokens)。quality は ツール 10 + コード 10 +
+# 探す課題 2 = 22 要求、上限は 10×512 + 10×2048 + 2×512 = 26,624 トークン。時間は
+# この機械 (1 本 14〜30 tok/s) で 15〜20 分の見込み (issue #39 の目安。実測は未確認。
+# 上限どおり生成すると 23〜48 分だが、コードの回答は上限の前に終わる)。
+# prefill・agent は quick のまま (issue の指定範囲)
+[profiles.fast]
+seed = 0
+min_successes = 5
+max_consecutive_failures = 5
+length_tolerance = 0.05
+compare_tolerance = 0.02
+metrics_interval_s = 1.0
+
+[profiles.fast.sampling]
+temperature = 0.0
+thinking = "server_default"
+
+[profiles.fast.chars_per_token]
+# quick と同じ (2026-09-20 に実機の GLM-5.3-Flash で測った値)
+prose_en = 4.831
+prose_ja = 1.794
+code = 3.505
+log = 2.316
+
+[profiles.fast.timeout]
+connect_s = 10.0
+first_event_s = 120.0
+idle_s = 60.0
+total_s = 900.0
+
+[profiles.fast.output_sanity]
+repeat_min_chars = 12
+repeat_min_count = 8
+
+[profiles.fast.sandbox]
+# quick と同じ
+runtime = "auto"
+image = "bench-sandbox:py3.13-numpy2.5.3"
+image_digest = "sha256:f75a1d43009306248ecbe68c0cc992b700a472037ba6ea336e519404ec1d1de6"
+timeout_s = 20.0
+memory_mb = 512
+cpus = 1.0
+pids_limit = 64
+
+[profiles.fast.decode]
+# quick の 10 回は ge=10 の下限なので、慣らし (2 → 1) と max_tokens (1024 → 256) で縮める
+trials = 10
+warmup_trials = 1
+max_tokens = 256
+
+[profiles.fast.prefill]
+trials = 5
+warmup_trials = 1
+max_tokens = 16
+target_input_tokens = [8000, 32000, 128000]
+
+[profiles.fast.concurrency]
+# 同時度は 1、2、4 だけ。8 は確認には要らないので落とす
+levels = [1, 2, 4]
+rounds = 2
+max_tokens = 128
+input_tokens = 2000
+
+[profiles.fast.quality]
+# 探す課題は 2 点 (8,000 と 32,000 トークン、深さ 50%)
+toolcall_tasks = 10
+needle_lengths = [8000, 32000]
+needle_depths = [50]
+trials_per_cell = 1
+code_max_tokens = 2048
+code_problem_limit = 10
+
+[profiles.fast.agent]
+start_tokens = 20000
+end_tokens = 120000
+step_tokens = 20000
+trials_per_stage = 50
 conversations_per_stage = 5
 threshold = 0.01
 max_tokens = 256

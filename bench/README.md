@@ -82,7 +82,7 @@ docker build -t bench-sandbox:py3.13-numpy2.5.3 sandbox/
 docker image inspect bench-sandbox:py3.13-numpy2.5.3 --format '{{.Id}}'
 ```
 
-**出てきた識別子 (`sha256:…`) を、`config/profiles.toml` の `sandbox.image_digest` に書き写すこと。**
+**出てきた識別子 (`sha256:…`) を、`config/profiles.toml` の全 4 設定の `sandbox.image_digest` に書き写すこと。**
 採点の側は、手元のイメージの識別子がこの値と合わなければ、使えないものとして扱う (合わないイメージでは
 動かさない)。**作り直すと識別子が変わる**ので、そのたびに書き換える。
 
@@ -94,7 +94,7 @@ Podman を使うなら、`docker` を `podman` に読み替える。`profiles.to
 | ファイル | 中身 |
 |---|---|
 | `config/targets.toml` | 対象サーバーの定義 (接続先、モデルの名前、メモ、認証の情報の環境変数の名前、内部の指標の名前の上書き) |
-| `config/profiles.toml` | 計測の設定。`quick` (開発中の素早い確認) と `full` (公開する結果を作る本番) の 2 つ |
+| `config/profiles.toml` | 計測の設定。`probe` (探り)、`fast` (確認)、`quick` (開発中の素早い確認・記録の最小)、`full` (公開する結果を作る本番) の 4 つ |
 
 **認証の情報は、値ではなく、値を入れた環境変数の名前を `api_key_env` に書く。** 値は実行時に読み、
 生データにも要約にも標準エラーにも出さない。`targets.toml` に実在する秘密の値を書いてはならない。
@@ -158,8 +158,9 @@ prose_en = 4.012  # 8024 文字 / 2000 トークン (count_tokens)
 uv run bench calibrate --target p2-nope-tp2-full --profile quick
 ```
 
-出てきた比を、`[profiles.quick.chars_per_token]` と `[profiles.full.chars_per_token]` の**両方**に
-書き写す (`profiles.toml` の `full` は「quick と同じ」と決めてある)。コメントの日付と対象も直す。
+出てきた比を、`[profiles.quick.chars_per_token]`、`[profiles.full.chars_per_token]`、
+`[profiles.probe.chars_per_token]`、`[profiles.fast.chars_per_token]` の**4 つとも**に書き写す
+(`full`・`probe`・`fast` は「quick と同じ」と決めてある)。コメントの日付と対象も直す。
 
 ```bash
 uv run pytest tests/unit/test_corpus_conversation.py
@@ -167,7 +168,8 @@ uv run pytest tests/unit/test_corpus_conversation.py
 
 `_GOLDEN_QUICK_CONVERSATION_HASH` は quick の比に依存する。比を書き換えると、意図どおりの変更でも
 ハッシュが変わる。会話の型紙・語彙・乱数の並びは変えていないので、`GENERATOR_VERSION` は据え置き、
-ハッシュだけを新しい値に更新する。
+ハッシュだけを新しい値に更新する。`tests/unit/test_config.py` の `_EXPECTED_QUICK` /
+`_EXPECTED_FULL` も比と `sandbox.image_digest` の固定値をそのまま持っているので、同じときに直す。
 
 **測り直すかどうかの判断材料:**
 
@@ -416,6 +418,17 @@ docs/results/<計測ランの識別子>/  # bench publish で写した要約だ�
 uv run bench run --target candidate-d --suite agent --set agent.end_tokens=20000
 ```
 
+### 計測は 3 段に分ける
+
+計測は 3 段に分ける。**探り** (`probe`、1 回 数分、候補の比較) → **確認** (`fast`、15〜20 分、
+有望な候補だけ) → **記録** (`quick` 以上、最後に 1 回)。候補を比べるたびに `quick` を流さず、
+`probe` で絞ってから `fast` にかけ、最後に `quick` 以上で記録する。
+
+```bash
+uv run bench run --target <名前> --suite decode --profile probe
+uv run bench run --target <名前> --suite decode --suite quality --profile fast
+```
+
 ## うまくいかないとき
 
 ### 公開のコードの課題のファイルが壊れている
@@ -478,7 +491,8 @@ uv run bench summarize <識別子>
 要約の「飛ばした条件」に、理由つきで出る。よくある原因は 2 つ。
 
 - **イメージがない、または識別子が合わない** — 上の「隔離のイメージを作る」のとおりに作り直し、
-  `sandbox.image_digest` を書き換える。採点の途中でイメージを取りに行かせない (`--pull never`) ので、
+  各設定の `sandbox.image_digest` (4 か所) を書き換える。採点の途中でイメージを取りに行かせない
+  (`--pull never`) ので、
   手元になければ、そこで使えないと判定される
 - **Docker / Podman が動いていない** — 実行環境を起動してから、やり直す
 

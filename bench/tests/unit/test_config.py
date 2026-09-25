@@ -12,7 +12,8 @@
   管理の対象の場所を黙って許可しない (レビュー指摘 1)
 - git の実行ファイルが見つからないときも `ConfigError` になる (レビュー指摘 2)
 - 上書き (`apply_overrides`) は検証をやり直す。下限を割る上書きは弾かれる
-- 実物の `targets.toml`、`profiles.toml` が読み込め、`candidate-d`、`quick`、`full` を含む
+- 実物の `targets.toml`、`profiles.toml` が読み込め、`candidate-d`、`quick`、`full`、
+  `probe`、`fast` を含む (issue #39)
 """
 
 from __future__ import annotations
@@ -22,6 +23,7 @@ import shutil
 import stat
 import subprocess
 from pathlib import Path
+from typing import Any
 
 import pytest
 from pydantic import HttpUrl
@@ -430,3 +432,165 @@ def test_thinking_can_only_be_the_server_default(tmp_path: Path, value: str) -> 
 def test_the_shipped_profiles_use_the_server_default_thinking() -> None:
     profiles = c.load_profiles()
     assert {profile.sampling.thinking for profile in profiles.values()} == {"server_default"}
+
+
+# --- 計測の 3 段 (issue #39) -------------------------------------------------
+
+
+def test_real_profiles_include_probe_derived_from_quick() -> None:
+    """probe は quick を元に decode と quality だけを縮めた探りの設定 (issue #39)。"""
+    profiles = c.load_profiles()
+    probe, quick = profiles["probe"], profiles["quick"]
+
+    assert c.select_profile("probe").name == "probe"
+    assert probe.decode.model_dump() == {"trials": 10, "warmup_trials": 1, "max_tokens": 128}
+    assert probe.quality.model_dump() == {
+        "toolcall_tasks": 5,
+        "needle_lengths": [8000],
+        "needle_depths": [50],
+        "trials_per_cell": 1,
+        "code_max_tokens": 1024,
+        "code_problem_limit": 1,
+    }
+    excluded = {"name", "decode", "quality"}
+    assert probe.model_dump(exclude=excluded) == quick.model_dump(exclude=excluded)
+
+
+def test_real_profiles_include_fast_derived_from_quick() -> None:
+    """fast は quick を元に decode、concurrency、quality だけを縮めた確認の設定 (issue #39)。"""
+    profiles = c.load_profiles()
+    fast, quick = profiles["fast"], profiles["quick"]
+
+    assert c.select_profile("fast").name == "fast"
+    assert fast.decode.model_dump() == {"trials": 10, "warmup_trials": 1, "max_tokens": 256}
+    assert fast.concurrency.model_dump() == {
+        "levels": [1, 2, 4],
+        "rounds": 2,
+        "max_tokens": 128,
+        "input_tokens": 2000,
+    }
+    assert fast.quality.model_dump() == {
+        "toolcall_tasks": 10,
+        "needle_lengths": [8000, 32000],
+        "needle_depths": [50],
+        "trials_per_cell": 1,
+        "code_max_tokens": 2048,
+        "code_problem_limit": 10,
+    }
+    excluded = {"name", "decode", "concurrency", "quality"}
+    assert fast.model_dump(exclude=excluded) == quick.model_dump(exclude=excluded)
+
+
+_EXPECTED_QUICK: dict[str, Any] = {
+    "name": "quick",
+    "seed": 0,
+    "sampling": {
+        "temperature": 0.0,
+        "top_p": None,
+        "top_k": None,
+        "thinking": "server_default",
+    },
+    "chars_per_token": {"prose_en": 4.831, "prose_ja": 1.794, "code": 3.505, "log": 2.316},
+    "timeout": {"connect_s": 10.0, "first_event_s": 120.0, "idle_s": 60.0, "total_s": 900.0},
+    "min_successes": 5,
+    "max_consecutive_failures": 5,
+    "length_tolerance": 0.05,
+    "compare_tolerance": 0.02,
+    "metrics_interval_s": 1.0,
+    "output_sanity": {"repeat_min_chars": 12, "repeat_min_count": 8},
+    "sandbox": {
+        "runtime": "auto",
+        "image": "bench-sandbox:py3.13-numpy2.5.3",
+        "image_digest": "sha256:f75a1d43009306248ecbe68c0cc992b700a472037ba6ea336e519404ec1d1de6",
+        "timeout_s": 20.0,
+        "memory_mb": 512,
+        "cpus": 1.0,
+        "pids_limit": 64,
+    },
+    "decode": {"trials": 10, "warmup_trials": 2, "max_tokens": 1024},
+    "prefill": {
+        "trials": 5,
+        "warmup_trials": 1,
+        "max_tokens": 16,
+        "target_input_tokens": [8000, 32000, 128000],
+    },
+    "concurrency": {"levels": [1, 2, 4, 8], "rounds": 5, "max_tokens": 256, "input_tokens": 2000},
+    "quality": {
+        "toolcall_tasks": 50,
+        "needle_lengths": [8000, 32000, 128000],
+        "needle_depths": [0, 25, 50, 75, 100],
+        "trials_per_cell": 2,
+        "code_max_tokens": 1024,
+        "code_problem_limit": 40,
+    },
+    "agent": {
+        "start_tokens": 20000,
+        "end_tokens": 120000,
+        "step_tokens": 20000,
+        "trials_per_stage": 50,
+        "conversations_per_stage": 5,
+        "threshold": 0.01,
+        "max_tokens": 256,
+    },
+}
+
+_EXPECTED_FULL: dict[str, Any] = {
+    "name": "full",
+    "seed": 0,
+    "sampling": {
+        "temperature": 0.0,
+        "top_p": None,
+        "top_k": None,
+        "thinking": "server_default",
+    },
+    "chars_per_token": {"prose_en": 4.831, "prose_ja": 1.794, "code": 3.505, "log": 2.316},
+    "timeout": {"connect_s": 10.0, "first_event_s": 120.0, "idle_s": 60.0, "total_s": 900.0},
+    "min_successes": 10,
+    "max_consecutive_failures": 5,
+    "length_tolerance": 0.05,
+    "compare_tolerance": 0.02,
+    "metrics_interval_s": 1.0,
+    "output_sanity": {"repeat_min_chars": 12, "repeat_min_count": 8},
+    "sandbox": {
+        "runtime": "auto",
+        "image": "bench-sandbox:py3.13-numpy2.5.3",
+        "image_digest": "sha256:f75a1d43009306248ecbe68c0cc992b700a472037ba6ea336e519404ec1d1de6",
+        "timeout_s": 20.0,
+        "memory_mb": 512,
+        "cpus": 1.0,
+        "pids_limit": 64,
+    },
+    "decode": {"trials": 20, "warmup_trials": 2, "max_tokens": 1024},
+    "prefill": {
+        "trials": 10,
+        "warmup_trials": 1,
+        "max_tokens": 16,
+        "target_input_tokens": [8000, 32000, 128000],
+    },
+    "concurrency": {"levels": [1, 2, 4, 8], "rounds": 20, "max_tokens": 256, "input_tokens": 2000},
+    "quality": {
+        "toolcall_tasks": 200,
+        "needle_lengths": [8000, 32000, 128000],
+        "needle_depths": [0, 25, 50, 75, 100],
+        "trials_per_cell": 4,
+        "code_max_tokens": 1024,
+        "code_problem_limit": None,
+    },
+    "agent": {
+        "start_tokens": 20000,
+        "end_tokens": 120000,
+        "step_tokens": 20000,
+        "trials_per_stage": 300,
+        "conversations_per_stage": 5,
+        "threshold": 0.01,
+        "max_tokens": 256,
+    },
+}
+
+
+def test_real_profiles_quick_and_full_values_are_unchanged() -> None:
+    """probe と fast を足しても quick と full は 1 項目も変わらない (issue #39)。"""
+    profiles = c.load_profiles()
+
+    assert profiles["quick"].model_dump(mode="json") == _EXPECTED_QUICK
+    assert profiles["full"].model_dump(mode="json") == _EXPECTED_FULL
