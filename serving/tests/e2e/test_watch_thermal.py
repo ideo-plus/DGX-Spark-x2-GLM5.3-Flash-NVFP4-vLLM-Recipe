@@ -20,6 +20,7 @@ from fake_runner import Reply, Rule
 from fake_vllm import FakeVllm, MetricsSample
 from serving_kit import cli
 from serving_kit import watch as w
+from watch_script import discovery_rule, thermal_candidates
 
 
 @dataclass
@@ -55,8 +56,11 @@ def test_watch_thermal_threshold_from_the_cli_produces_a_thermal_event(
     fake_vllm.set_metrics(MetricsSample(running_requests=0, waiting_requests=0))
     repo = _watch_repo(tmp_path, "thermal-low", k.port_of(fake_vllm))
     clock = WatchClock()
-    zone0 = ("cat", f"{w.THERMAL_ZONE_DIR}thermal_zone0/temp")
-    script = (Rule(prefix=zone0, replies=(Reply(stdout="86000\n"),)),)
+    zone0 = f"{w.THERMAL_ZONE_DIR}thermal_zone0/temp"
+    script = (
+        discovery_rule(thermal_candidates(), {zone0: "86000\n"}),
+        Rule(prefix=("cat", zone0), replies=(Reply(stdout="86000\n"),)),
+    )
 
     result = k.invoke(
         [
@@ -90,8 +94,11 @@ def test_watch_default_thermal_threshold_is_ninety(tmp_path: Path, fake_vllm: Fa
     fake_vllm.set_metrics(MetricsSample(running_requests=0, waiting_requests=0))
     repo = _watch_repo(tmp_path, "thermal-default", k.port_of(fake_vllm))
     clock = WatchClock()
-    zone0 = ("cat", f"{w.THERMAL_ZONE_DIR}thermal_zone0/temp")
-    script = (Rule(prefix=zone0, replies=(Reply(stdout="86000\n"),)),)
+    zone0 = f"{w.THERMAL_ZONE_DIR}thermal_zone0/temp"
+    script = (
+        discovery_rule(thermal_candidates(), {zone0: "86000\n"}),
+        Rule(prefix=("cat", zone0), replies=(Reply(stdout="86000\n"),)),
+    )
 
     result = k.invoke(
         ["watch", k.SERVE_CONFIG, "--duration", "2", "--interval", "1"],

@@ -136,13 +136,19 @@ head の `/health` (時間切れ `health_timeout_s`。既定 10 秒)、`/metrics
    取る前。中断が発見の最中に来ても、そこまでの要約が書かれる)。熱区域・hwmon・cpufreq の
    コア自体の番号は 0 から (上限 32、`_THERMAL_ZONE_LIMIT`、`_HWMON_LIMIT`、
    `_CPU_CORE_LIMIT`)、hwmon の温度センサーの番号は 1 から (上限 32、`_HWMON_TEMP_LIMIT`)
-   順に試す。見つけた一覧は、見張りの
+   順に試す。**発見は、種類ごとに候補の道筋を 1 回の `cat` にまとめて流す** (`_cat_batch`。
+   候補は鍵 → 道筋の対応で渡し、存在した鍵と、鍵ごとの中身を返す)。
+   存在は、`exit_code == 0` なら候補すべて、`exit_code != 0` なら stderr の
+   `cat: <道筋>: ` の行がある候補だけが「存在しない」として決める。`cat:` の行が 1 つもない
+   失敗は「何も見つからない」に倒す (誤検出しない)。見つけた一覧は、見張りの
    あいだ使い、`result.json` に記録する (観察のたびには繰り返さない)。発見の途中で台に届かな
    い (`RemoteError`) と、その台の発見を打ち切り、役割つきの文を `WatchOutcome.detail` に
    残す。`exit_code != 0` (存在しない) は、これまでどおり素通りする (`detail` に書かない)。
    見張りそのものは止めず、打ち切った台の観察も続ける (`_discover_node`)
 9. **熱区域・hwmon・cpufreq のコアの読みは、1 回の `cat` に複数の道筋を並べる**。行数が、
-   発見した数と合わなければ、その項目全体を空にする (対応が取れないため)
+   発見した数と合わなければ、その項目全体を空にする (対応が取れないため)。発見の中で中身を
+   使う種類 (hwmon の `name`、`temp<M>_label`) も同じで、行数が存在した道筋の数と合わなければ、
+   その種類の中身を 1 つも採用しない (この対応づけは `_cat_batch` が 1 か所で持つ)
 10. **CPU の使用率は、直前に読めた観察との差**。初回や、直前の観察が読めなかったときは空に
    する (読めない回を挟んだあとも、直前に読めた回との差として計算を続ける)
 11. **`thermal` の終了コードへの写しは、既存の表のとおり** (`events` に 1 件でもあれば 2)。
@@ -498,82 +504,118 @@ def _read_gpu(
 # --- cat の読み取りと、熱区域・hwmon の発見 -----------------------------------
 
 
-def _cat_if_present(
+def _cat(
     runner: RemoteRunner, node: NodeDef, paths: Sequence[str], *, timeout_s: float
 ) -> str | None:
-    """`cat` で、存在を区別しながら読む。`exit_code != 0` は「存在しない」として `None` を
-    返すが、`RemoteError` (時間切れ、接続の失敗。台そのものに届かなかったこと) は上に伝える。
+    """`cat` で 1 つ以上の道筋を読む (読めなかった、つながらなかったときは空。断らない)。
 
-    発見 (`_discover_thermal_zones`、`_discover_hwmon`) が使う。観察用の `_cat` は、この
-    2 つの違いをまとめて空にするが、発見は「存在しない」と「その台に届かなかった」を区別する
-    必要があるため、ここでは `RemoteError` を吸収しない。
+    `exit_code != 0` は「存在しない」として空にする。観察では、台そのものに届かなかったこと
+    (`RemoteError`) も区別せず空にする。
     """
-    result = runner.run(node, ("cat", *paths), timeout_s=timeout_s, mutating=False)
+    try:
+        result = runner.run(node, ("cat", *paths), timeout_s=timeout_s, mutating=False)
+    except RemoteError:
+        return None
     if result.exit_code != 0:
         return None
     return result.stdout
 
 
-def _cat(
-    runner: RemoteRunner, node: NodeDef, paths: Sequence[str], *, timeout_s: float
-) -> str | None:
-    """`cat` で 1 つ以上の道筋を読む (読めなかった、つながらなかったときは空。断らない)。"""
-    try:
-        return _cat_if_present(runner, node, paths, timeout_s=timeout_s)
-    except RemoteError:
-        return None
+_CAT_ERROR_PREFIX: Final[str] = "cat: "
+"""`cat` が読めなかった道筋を stderr に書くときの行頭 (GNU coreutils の `cat: <道筋>: <理由>`)。"""
+
+
+def _reported_unreadable(stderr: str, path: str) -> bool:
+    """stderr に、この道筋を読めなかったことを示す `cat: <道筋>: ` で始まる行があるか。"""
+    prefix = f"{_CAT_ERROR_PREFIX}{path}: "
+    return any(line.startswith(prefix) for line in stderr.splitlines())
+
+
+def _cat_batch[K: (int, str)](
+    runner: RemoteRunner, node: NodeDef, candidates: Mapping[K, str], *, timeout_s: float
+) -> tuple[tuple[K, ...], dict[K, str] | None]:
+    """候補 (鍵 → 道筋) を 1 回の `cat` に並べ、(存在した鍵, 鍵ごとの中身) を返す。
+
+    `RemoteError` は吸収せず上へ伝える (発見の打ち切りは、呼び出し元の `_discover_node` が
+    扱う)。存在は次で決める (決めごとの 8)。
+
+    - `exit_code == 0` なら、候補すべてが存在する
+    - `exit_code != 0` なら、stderr の `cat: <道筋>: ` の行がある候補だけが存在しない
+    - `exit_code != 0` で道筋ごとの行が 1 つもない (cat そのものが起こせなかった等) なら、
+      何も存在しない (誤検出しない側に倒す。`detail` への注記は足さない)
+
+    1 つ目の返り値は、存在した鍵を候補の順に並べたもの。2 つ目は、stdout の行 (`splitlines()`
+    の各行を `strip()` したもの) を、存在した鍵の順に 1 行ずつ対応づけたもの (決めごとの 9)。
+    行数が存在した鍵の数と合わなければ、対応が取れないので `None` (どの鍵の中身も採用しない)。
+    """
+    result = runner.run(node, ("cat", *candidates.values()), timeout_s=timeout_s, mutating=False)
+    if result.exit_code == 0:
+        present = tuple(candidates)
+    else:
+        absent = {
+            key for key, path in candidates.items() if _reported_unreadable(result.stderr, path)
+        }
+        present = tuple(key for key in candidates if key not in absent) if absent else ()
+    lines = result.stdout.splitlines()
+    if len(lines) != len(present):
+        return present, None
+    return present, {key: line.strip() for key, line in zip(present, lines, strict=True)}
 
 
 def _discover_thermal_zones(
     runner: RemoteRunner, node: NodeDef, *, timeout_s: float
 ) -> tuple[int, ...]:
-    """熱区域の番号を、0 から `_THERMAL_ZONE_LIMIT` の手前まで、1 つずつ試して見つける
-    (決めごとの 8。存在は `cat` の exit 0 で判定する。見張りの開始時に 1 回だけ呼ぶ)。
+    """熱区域の番号を、候補 (0 から `_THERMAL_ZONE_LIMIT` の手前まで) を並べた 1 回の `cat`
+    で見つける (決めごとの 8。見張りの開始時に 1 回だけ呼ぶ)。
 
     台に届かない (`RemoteError`) ときは、それまでに見つけた区域を返さずに上へ伝える
     (呼び出し元の `_discover_node` が、打ち切りとして扱う)。
     """
-    found: list[int] = []
-    for number in range(_THERMAL_ZONE_LIMIT):
-        path = f"{THERMAL_ZONE_DIR}thermal_zone{number}/temp"
-        if _cat_if_present(runner, node, (path,), timeout_s=timeout_s) is not None:
-            found.append(number)
-    return tuple(found)
+    candidates = {
+        number: f"{THERMAL_ZONE_DIR}thermal_zone{number}/temp"
+        for number in range(_THERMAL_ZONE_LIMIT)
+    }
+    present, _ = _cat_batch(runner, node, candidates, timeout_s=timeout_s)
+    return present
 
 
 def _discover_hwmon(
     runner: RemoteRunner, node: NodeDef, *, timeout_s: float
 ) -> tuple[dict[str, str], dict[str, str | None]]:
-    """hwmon の番号を 0 から `_HWMON_LIMIT` の手前まで試し、`name` が `_HWMON_CHIP_NAMES` の
-    ものだけ採用する。採用した chip について、温度センサーの番号を 1 から `_HWMON_TEMP_LIMIT`
-    まで試し、`temp<M>_input` が読めれば発見し、識別子は `"hwmon<N>/temp<M>"`。
-    `temp<M>_label` が読めればラベルを添える (読めなければ空)。見張りの開始時に 1 回だけ呼ぶ。
+    """hwmon の番号を、候補 (0 から `_HWMON_LIMIT` の手前まで) を並べた 1 回の `cat` で試し、
+    `name` が `_HWMON_CHIP_NAMES` のものだけ採用する。採用した chip について、温度センサーの
+    候補 (`temp1.._HWMON_TEMP_LIMIT_input`) を 1 回の `cat` で試し、識別子は
+    `"hwmon<N>/temp<M>"`。`temp<M>_label` を 1 回の `cat` で試し、読めればラベルを添える
+    (読めなければ空)。見張りの開始時に 1 回だけ呼ぶ。
+
+    行と鍵の対応づけは `_cat_batch` が持つ (決めごとの 9)。`name` の中身が対応づけられなければ
+    (`None`)、1 つも採用せず `({}, {})` を返す。ラベルの中身が対応づけられなければ、全部を
+    空 (`None`) にする (センサー自体は残す)。
 
     台に届かない (`RemoteError`) ときは、それまでに見つけたものを返さずに上へ伝える
     (呼び出し元の `_discover_node` が、打ち切りとして扱う)。
     """
-    chip_names: dict[str, str] = {}
-    sensors: dict[str, str | None] = {}
-    for number in range(_HWMON_LIMIT):
-        hwmon = f"hwmon{number}"
-        raw_name = _cat_if_present(runner, node, (f"{HWMON_DIR}{hwmon}/name",), timeout_s=timeout_s)
-        if raw_name is None:
-            continue
-        name = raw_name.strip()
-        if name not in _HWMON_CHIP_NAMES:
-            continue
-        chip_names[hwmon] = name
-        for temp_number in range(1, _HWMON_TEMP_LIMIT + 1):
-            temp = f"temp{temp_number}"
-            input_path = f"{HWMON_DIR}{hwmon}/{temp}_input"
-            if _cat_if_present(runner, node, (input_path,), timeout_s=timeout_s) is None:
-                continue
-            sensor_id = f"{hwmon}/{temp}"
-            label = _cat_if_present(
-                runner, node, (f"{HWMON_DIR}{hwmon}/{temp}_label",), timeout_s=timeout_s
-            )
-            sensors[sensor_id] = None if label is None else label.strip()
-    return chip_names, sensors
+    names = {number: f"{HWMON_DIR}hwmon{number}/name" for number in range(_HWMON_LIMIT)}
+    present_hwmons, name_of = _cat_batch(runner, node, names, timeout_s=timeout_s)
+    if name_of is None:
+        return {}, {}
+    chip_numbers = [number for number in present_hwmons if name_of[number] in _HWMON_CHIP_NAMES]
+    chip_names: dict[str, str] = {f"hwmon{number}": name_of[number] for number in chip_numbers}
+    if not chip_numbers:
+        return chip_names, {}
+    inputs = {
+        f"{hwmon}/temp{temp_number}": f"{HWMON_DIR}{hwmon}/temp{temp_number}_input"
+        for hwmon in (f"hwmon{number}" for number in chip_numbers)
+        for temp_number in range(1, _HWMON_TEMP_LIMIT + 1)
+    }
+    sensor_ids, _ = _cat_batch(runner, node, inputs, timeout_s=timeout_s)
+    if not sensor_ids:
+        return chip_names, {}
+    labels = {sensor_id: f"{HWMON_DIR}{sensor_id}_label" for sensor_id in sensor_ids}
+    _, label_of = _cat_batch(runner, node, labels, timeout_s=timeout_s)
+    if label_of is None:
+        return chip_names, {sensor_id: None for sensor_id in sensor_ids}
+    return chip_names, {sensor_id: label_of.get(sensor_id) for sensor_id in sensor_ids}
 
 
 def _scaling_max_freq_path(core: int) -> str:
@@ -585,18 +627,15 @@ def _scaling_max_freq_path(core: int) -> str:
 def _discover_cpufreq_cores(
     runner: RemoteRunner, node: NodeDef, *, timeout_s: float
 ) -> tuple[int, ...]:
-    """cpufreq のコア番号を、0 から `_CPU_CORE_LIMIT` の手前まで、1 つずつ試して見つける
-    (決めごとの 8 と同じ形。存在は `cat` の exit 0 で判定する。見張りの開始時に 1 回だけ呼ぶ)。
+    """cpufreq のコア番号を、候補 (0 から `_CPU_CORE_LIMIT` の手前まで) を並べた 1 回の `cat`
+    で見つける (決めごとの 8 と同じ形。見張りの開始時に 1 回だけ呼ぶ)。
 
     台に届かない (`RemoteError`) ときは、それまでに見つけたコアを返さずに上へ伝える
     (呼び出し元の `_discover_node` が、打ち切りとして扱う)。
     """
-    found: list[int] = []
-    for core in range(_CPU_CORE_LIMIT):
-        path = _scaling_max_freq_path(core)
-        if _cat_if_present(runner, node, (path,), timeout_s=timeout_s) is not None:
-            found.append(core)
-    return tuple(found)
+    candidates = {core: _scaling_max_freq_path(core) for core in range(_CPU_CORE_LIMIT)}
+    present, _ = _cat_batch(runner, node, candidates, timeout_s=timeout_s)
+    return present
 
 
 def _discover_node(
