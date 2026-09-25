@@ -133,6 +133,65 @@ FULL_TN_RENDER_SHA256 = "fcec31120db71411ec0525377658e42efa62268e74112aa895dc102
 PROFILER_BASE_KINDS: tuple[str, ...] = THREAD_NAME_BASE_KINDS
 """`--torch-profiler` を付けられる基の変種 (C1、C3)。"""
 
+LOAD_FORMAT_SUFFIX = "-lf-"
+"""`--load-format` で付ける、構成の名前の接尾辞 (C1)。"""
+
+LOAD_FORMAT_ARG_KEY = "load-format"
+"""`--load-format` の args テーブルの鍵 (C1)。"""
+
+LOAD_FORMAT_ARG_FLAG = "--load-format"
+"""足す args のフラグ (C1)。"""
+
+LOAD_FORMAT_VALUES: tuple[str, ...] = ("instanttensor", "fastsafetensors", "runai_streamer")
+"""`--load-format` に許す値 (C1、C3)。"""
+
+LOAD_STRATEGY_SUFFIX = "-sls-"
+"""`--safetensors-load-strategy` で付ける、構成の名前の接尾辞 (C2)。"""
+
+LOAD_STRATEGY_ARG_KEY = "safetensors-load-strategy"
+"""`--safetensors-load-strategy` の args テーブルの鍵 (C2)。"""
+
+LOAD_STRATEGY_ARG_FLAG = "--safetensors-load-strategy"
+"""足す args のフラグ (C2)。"""
+
+LOAD_STRATEGY_VALUES: tuple[str, ...] = ("eager", "prefetch")
+"""`--safetensors-load-strategy` に許す値 (C2、C3)。"""
+
+LOAD_CONFIG_SOURCE = (
+    "https://github.com/vllm-project/vllm/blob/"
+    "0961bbae2894d574be790d219651824eb199318e/vllm/config/load.py"
+)
+"""`load_format` と `safetensors_load_strategy` の根拠の出典 (C3)。"""
+
+FASTSAFETENSORS_DOC_SOURCE = (
+    "https://github.com/vllm-project/vllm/blob/"
+    "0961bbae2894d574be790d219651824eb199318e/docs/models/extensions/fastsafetensor.md"
+)
+"""`fastsafetensors` だけの根拠の出典 (docstring に無いため。C3)。"""
+
+LOAD_FORMAT_QUOTE_FRAGMENTS: Mapping[str, str] = {
+    "instanttensor": "InstantTensor",
+    "fastsafetensors": "GPU direct storage",
+    "runai_streamer": "Run:ai Model Streamer",
+}
+"""`--load-format` の根拠の原文に含まれる語 (C3)。"""
+
+LOAD_STRATEGY_QUOTE_FRAGMENTS: Mapping[str, str] = {
+    "eager": "CPU memory upfront",
+    "prefetch": "OS page cache",
+}
+"""`--safetensors-load-strategy` の根拠の原文に含まれる語 (C3)。"""
+
+
+def load_format_suffix(value: str) -> str:
+    """`--load-format <値>` の名前の接尾辞 (`_` はコンテナ名に使えないので `-` に替える。C1)。"""
+    return f"{LOAD_FORMAT_SUFFIX}{value.replace('_', '-')}"
+
+
+def load_strategy_suffix(value: str) -> str:
+    """`--safetensors-load-strategy <値>` の名前の接尾辞 (C2)。"""
+    return f"{LOAD_STRATEGY_SUFFIX}{value}"
+
 
 def mtp_target_name(n: int) -> str:
     """MTP の構成の名前 (C5、C7 で同じ名前を使う)。"""
@@ -1475,5 +1534,438 @@ def test_profiler_render_leaves_a_decoy_alone(generator: Any, tmp_path: Path) ->
     assert generated["args"][PROFILER_ARG_KEY]["flag"] == PROFILER_ARG_FLAG
     assert rendered.count(f'flag = "{PROFILER_ARG_FLAG}"') == 1
     assert f"{FULL_TARGET_NAME}{PROFILER_SUFFIX}" not in load_configs(CONFIGS_PATH, REPO_ROOT)
+    assert "[configs.p1-nvfp4-tp2" not in rendered
+    assert "p1-fetch-nvfp4" not in rendered
+
+
+# --- 重みの読み込み方を選ぶ構成の生成 (C1、C2、C3、C4、C5、C6) -------------
+
+
+def _plans_for_variant(
+    generator: Any, tmp_path: Path, variant: Any, stem: str
+) -> tuple[ContainerPlan, ...]:
+    """`variant` の生成 TOML を、実物の `nodes.toml` で選び、2 台ぶんの計画を組み立てる。"""
+    output = _generate_variant(generator, tmp_path, variant, stem)
+    configs = load_configs(output, REPO_ROOT)
+    nodes = load_nodes(NODES_PATH, REPO_ROOT)
+    return build_plans(select_config(configs, variant.name, nodes), nodes, STARTED_AT)
+
+
+@pytest.mark.parametrize("value", LOAD_FORMAT_VALUES)
+@pytest.mark.parametrize("kind", PROFILER_BASE_KINDS)
+def test_load_format_config_adds_only_the_arg_and_the_name(
+    generator: Any, tmp_path: Path, kind: str, value: str
+) -> None:
+    """`--load-format` は、名前 (`-lf-<値>`) と args 1 つだけを足し、他は基のままにする (C1)。
+
+    名前の接尾辞は `_` を `-` に替え、args の `value` は元の値のままである
+    (`runai_streamer` は `-lf-runai-streamer`)。名前と説明以外は基のままだ。
+    """
+    base = _base_variant(generator, kind)
+    loaded = generator.with_load_format(base, value)
+    baseline = load_configs(
+        _generate_variant(generator, tmp_path, base, f"base-lf-{kind}"), REPO_ROOT
+    )[base.name]
+    generated = load_configs(
+        _generate_variant(generator, tmp_path, loaded, f"load-format-{kind}-{value}"), REPO_ROOT
+    )
+
+    assert loaded.name == f"{base.name}{load_format_suffix(value)}"
+    assert set(generated) == {loaded.name}
+    config = generated[loaded.name]
+
+    added = config.args[LOAD_FORMAT_ARG_KEY]
+    assert added.flag == LOAD_FORMAT_ARG_FLAG
+    assert added.value == value
+    rest = {key: setting for key, setting in config.args.items() if key != LOAD_FORMAT_ARG_KEY}
+    assert rest == baseline.args
+
+    assert config.description != baseline.description
+    for field in (
+        "image",
+        "weights",
+        "docker",
+        "env",
+        "allow_speculative",
+        "kind",
+        "nodes",
+        "ready_timeout_s",
+        "served_model_name",
+    ):
+        assert getattr(config, field) == getattr(baseline, field), field
+
+
+@pytest.mark.parametrize("value", LOAD_STRATEGY_VALUES)
+@pytest.mark.parametrize("kind", PROFILER_BASE_KINDS)
+def test_load_strategy_config_adds_only_the_arg_and_the_name(
+    generator: Any, tmp_path: Path, kind: str, value: str
+) -> None:
+    """`--safetensors-load-strategy` は、名前 (`-sls-<値>`) と args 1 つだけを足す (C2)。"""
+    base = _base_variant(generator, kind)
+    loaded = generator.with_load_strategy(base, value)
+    baseline = load_configs(
+        _generate_variant(generator, tmp_path, base, f"base-sls-{kind}"), REPO_ROOT
+    )[base.name]
+    generated = load_configs(
+        _generate_variant(generator, tmp_path, loaded, f"load-strategy-{kind}-{value}"), REPO_ROOT
+    )
+
+    assert loaded.name == f"{base.name}{load_strategy_suffix(value)}"
+    assert set(generated) == {loaded.name}
+    config = generated[loaded.name]
+
+    added = config.args[LOAD_STRATEGY_ARG_KEY]
+    assert added.flag == LOAD_STRATEGY_ARG_FLAG
+    assert added.value == value
+    rest = {key: setting for key, setting in config.args.items() if key != LOAD_STRATEGY_ARG_KEY}
+    assert rest == baseline.args
+
+    assert config.description != baseline.description
+    for field in (
+        "image",
+        "weights",
+        "docker",
+        "env",
+        "allow_speculative",
+        "kind",
+        "nodes",
+        "ready_timeout_s",
+        "served_model_name",
+    ):
+        assert getattr(config, field) == getattr(baseline, field), field
+
+
+@pytest.mark.parametrize("value", LOAD_FORMAT_VALUES)
+@pytest.mark.parametrize("kind", PROFILER_BASE_KINDS)
+def test_load_format_argv_matches_base_argv_plus_the_arg_pair(
+    generator: Any, tmp_path: Path, kind: str, value: str
+) -> None:
+    """`--load-format` の列は、基の列の末尾に `--load-format <値>` の 2 語を足したもの (C1)。
+
+    コンテナ名と `config` のラベルだけ置き換える。`config-sha256` は中身が変わるので、
+    両者で違うのが正しいため比較から除く。
+    """
+    base = _base_variant(generator, kind)
+    loaded = generator.with_load_format(base, value)
+    base_plans = _plans_for_variant(generator, tmp_path, base, f"argv-base-lf-{kind}")
+    loaded_plans = _plans_for_variant(
+        generator, tmp_path, loaded, f"argv-load-format-{kind}-{value}"
+    )
+
+    for base_plan, loaded_plan in zip(base_plans, loaded_plans, strict=True):
+        assert loaded_plan.container_name == f"vb-{loaded.name}-{loaded_plan.node}"
+        expected = list(base_plan.argv)
+        expected[expected.index(f"vb-{base.name}-{base_plan.node}")] = loaded_plan.container_name
+        expected[expected.index(f"vllm-baseline.config={base.name}")] = (
+            f"vllm-baseline.config={loaded.name}"
+        )
+        expected.extend((LOAD_FORMAT_ARG_FLAG, value))
+
+        kept = [arg for arg in expected if not arg.startswith(f"{LABEL_CONFIG_SHA256}=")]
+        actual = [arg for arg in loaded_plan.argv if not arg.startswith(f"{LABEL_CONFIG_SHA256}=")]
+        assert kept == actual
+        assert base_plan.labels[LABEL_CONFIG_SHA256] != loaded_plan.labels[LABEL_CONFIG_SHA256]
+
+
+@pytest.mark.parametrize("value", LOAD_STRATEGY_VALUES)
+@pytest.mark.parametrize("kind", PROFILER_BASE_KINDS)
+def test_load_strategy_argv_matches_base_argv_plus_the_arg_pair(
+    generator: Any, tmp_path: Path, kind: str, value: str
+) -> None:
+    """`--safetensors-load-strategy` の列は、基の列の末尾にその 2 語を足したもの (C2)。"""
+    base = _base_variant(generator, kind)
+    loaded = generator.with_load_strategy(base, value)
+    base_plans = _plans_for_variant(generator, tmp_path, base, f"argv-base-sls-{kind}")
+    loaded_plans = _plans_for_variant(
+        generator, tmp_path, loaded, f"argv-load-strategy-{kind}-{value}"
+    )
+
+    for base_plan, loaded_plan in zip(base_plans, loaded_plans, strict=True):
+        assert loaded_plan.container_name == f"vb-{loaded.name}-{loaded_plan.node}"
+        expected = list(base_plan.argv)
+        expected[expected.index(f"vb-{base.name}-{base_plan.node}")] = loaded_plan.container_name
+        expected[expected.index(f"vllm-baseline.config={base.name}")] = (
+            f"vllm-baseline.config={loaded.name}"
+        )
+        expected.extend((LOAD_STRATEGY_ARG_FLAG, value))
+
+        kept = [arg for arg in expected if not arg.startswith(f"{LABEL_CONFIG_SHA256}=")]
+        actual = [arg for arg in loaded_plan.argv if not arg.startswith(f"{LABEL_CONFIG_SHA256}=")]
+        assert kept == actual
+        assert base_plan.labels[LABEL_CONFIG_SHA256] != loaded_plan.labels[LABEL_CONFIG_SHA256]
+
+
+@pytest.mark.parametrize(
+    ("option", "value", "source", "fragment"),
+    [
+        pytest.param(
+            "format",
+            "instanttensor",
+            LOAD_CONFIG_SOURCE,
+            LOAD_FORMAT_QUOTE_FRAGMENTS["instanttensor"],
+            id="instanttensor",
+        ),
+        pytest.param(
+            "format",
+            "fastsafetensors",
+            FASTSAFETENSORS_DOC_SOURCE,
+            LOAD_FORMAT_QUOTE_FRAGMENTS["fastsafetensors"],
+            id="fastsafetensors",
+        ),
+        pytest.param(
+            "format",
+            "runai_streamer",
+            LOAD_CONFIG_SOURCE,
+            LOAD_FORMAT_QUOTE_FRAGMENTS["runai_streamer"],
+            id="runai_streamer",
+        ),
+        pytest.param(
+            "strategy",
+            "eager",
+            LOAD_CONFIG_SOURCE,
+            LOAD_STRATEGY_QUOTE_FRAGMENTS["eager"],
+            id="eager",
+        ),
+        pytest.param(
+            "strategy",
+            "prefetch",
+            LOAD_CONFIG_SOURCE,
+            LOAD_STRATEGY_QUOTE_FRAGMENTS["prefetch"],
+            id="prefetch",
+        ),
+    ],
+)
+def test_load_option_provenance_is_the_pinned_vllm_source(
+    generator: Any, tmp_path: Path, option: str, value: str, source: str, fragment: str
+) -> None:
+    """足す args の根拠が、固定 commit の vLLM のソースか公式文書の原文である (C3)。
+
+    `fastsafetensors` だけは docstring に無いので、公式文書を出典にする。
+    """
+    if option == "format":
+        variant = generator.with_load_format(generator.FULL, value)
+        key = LOAD_FORMAT_ARG_KEY
+    else:
+        variant = generator.with_load_strategy(generator.FULL, value)
+        key = LOAD_STRATEGY_ARG_KEY
+    generated = load_configs(
+        _generate_variant(generator, tmp_path, variant, f"provenance-{option}-{value}"), REPO_ROOT
+    )
+
+    added = generated[variant.name].args[key]
+    assert str(added.source) == source
+    assert added.quote is not None
+    assert fragment in added.quote
+
+
+@pytest.mark.parametrize(
+    ("extra", "option_flag", "value", "expected_name"),
+    [
+        pytest.param(
+            (),
+            LOAD_FORMAT_ARG_FLAG,
+            "instanttensor",
+            f"{TARGET_NAME}{load_format_suffix('instanttensor')}",
+            id="smoke-load-format",
+        ),
+        pytest.param(
+            ("--variant", "full"),
+            LOAD_STRATEGY_ARG_FLAG,
+            "prefetch",
+            f"{FULL_TARGET_NAME}{load_strategy_suffix('prefetch')}",
+            id="full-load-strategy",
+        ),
+        pytest.param(
+            ("--variant", "full-mtp", "--spec-tokens", "2"),
+            LOAD_FORMAT_ARG_FLAG,
+            "runai_streamer",
+            f"{mtp_target_name(2)}{load_format_suffix('runai_streamer')}",
+            id="full-mtp-load-format",
+        ),
+        pytest.param(
+            ("--variant", "full-mtp", "--spec-tokens", "2"),
+            LOAD_STRATEGY_ARG_FLAG,
+            "eager",
+            f"{mtp_target_name(2)}{load_strategy_suffix('eager')}",
+            id="full-mtp-load-strategy",
+        ),
+    ],
+)
+def test_main_accepts_load_options_with_each_variant(
+    generator: Any,
+    tmp_path: Path,
+    extra: tuple[str, ...],
+    option_flag: str,
+    value: str,
+    expected_name: str,
+) -> None:
+    """読み込み方の 2 つの選択肢は、どの `--variant` にも付けられる (C4)。"""
+    source = _write_inspect_json(tmp_path, _inspect_item())
+    output = tmp_path / f"{expected_name}.toml"
+
+    generator.main([*extra, option_flag, value, str(source), str(output)])
+
+    loaded = load_configs(output, REPO_ROOT)
+    assert set(loaded) == {expected_name}
+    key = LOAD_FORMAT_ARG_KEY if option_flag == LOAD_FORMAT_ARG_FLAG else LOAD_STRATEGY_ARG_KEY
+    assert loaded[expected_name].args[key].value == value
+
+
+def test_combined_load_options_names_and_arg_order(generator: Any, tmp_path: Path) -> None:
+    """すべての旗を重ねた名前と args の順が固定で、旗の並びに依らない (C4)。"""
+    source = _write_inspect_json(tmp_path, _inspect_item())
+    first = tmp_path / "combined-first.toml"
+    second = tmp_path / "combined-second.toml"
+    name = "p2-nope-tp2-mtp2-tn-prof-lf-runai-streamer-sls-prefetch"
+
+    generator.main(
+        [
+            "--variant",
+            "full-mtp",
+            "--spec-tokens",
+            "2",
+            "--nccl-thread-names",
+            "--torch-profiler",
+            LOAD_FORMAT_ARG_FLAG,
+            "runai_streamer",
+            LOAD_STRATEGY_ARG_FLAG,
+            "prefetch",
+            str(source),
+            str(first),
+        ]
+    )
+    generator.main(
+        [
+            LOAD_STRATEGY_ARG_FLAG,
+            "prefetch",
+            LOAD_FORMAT_ARG_FLAG,
+            "runai_streamer",
+            "--torch-profiler",
+            "--nccl-thread-names",
+            "--spec-tokens",
+            "2",
+            "--variant",
+            "full-mtp",
+            str(source),
+            str(second),
+        ]
+    )
+
+    assert first.read_bytes() == second.read_bytes()
+    loaded = load_configs(first, REPO_ROOT)
+    assert set(loaded) == {name}
+    assert list(loaded[name].args)[-4:] == [
+        "speculative-config",
+        PROFILER_ARG_KEY,
+        LOAD_FORMAT_ARG_KEY,
+        LOAD_STRATEGY_ARG_KEY,
+    ]
+
+    nodes = load_nodes(NODES_PATH, REPO_ROOT)
+    plans = build_plans(select_config(loaded, name, nodes), nodes, STARTED_AT)
+    assert [plan.node for plan in plans] == ["head", "worker"]
+    assert plans[0].container_name == f"vb-{name}-head"
+    assert plans[1].container_name == f"vb-{name}-worker"
+
+
+def test_load_strategy_prefetch_is_appended_after_the_speculative_arg(
+    generator: Any, tmp_path: Path
+) -> None:
+    """mtp2 に `prefetch` を足すと、args の末尾 2 鍵が投機のあとに続く (C2)。"""
+    variant = generator.with_load_strategy(generator.mtp_variant(2), "prefetch")
+    generated = load_configs(
+        _generate_variant(generator, tmp_path, variant, "sls-after-spec"), REPO_ROOT
+    )
+
+    assert variant.name == f"{mtp_target_name(2)}{load_strategy_suffix('prefetch')}"
+    assert list(generated[variant.name].args)[-2:] == ["speculative-config", LOAD_STRATEGY_ARG_KEY]
+
+
+def test_load_options_output_without_the_flags_is_unchanged(generator: Any, tmp_path: Path) -> None:
+    """付けない 5 形の出力が不変で、読み込み方の印が現れない (C5)。"""
+    text, image = _render_default_input(generator, tmp_path)
+    cases = (
+        ("smoke", generator.SMOKE, SMOKE_RENDER_SHA256),
+        ("full", generator.FULL, FULL_RENDER_SHA256),
+        ("full-tn", generator.with_thread_names(generator.FULL), FULL_TN_RENDER_SHA256),
+        ("mtp1", generator.mtp_variant(1), MTP1_RENDER_SHA256),
+        ("mtp2", generator.mtp_variant(2), MTP2_RENDER_SHA256),
+    )
+
+    for label, variant, expected in cases:
+        rendered = generator.render(text, image, variant)
+        assert LOAD_FORMAT_ARG_FLAG not in rendered, label
+        assert LOAD_STRATEGY_ARG_FLAG not in rendered, label
+        assert LOAD_FORMAT_SUFFIX not in rendered, label
+        assert LOAD_STRATEGY_SUFFIX not in rendered, label
+        assert hashlib.sha256(rendered.encode("utf-8")).hexdigest() == expected, label
+
+    existing = load_configs(CONFIGS_PATH, REPO_ROOT)
+    assert f"{FULL_TARGET_NAME}{load_format_suffix('instanttensor')}" not in existing
+    assert f"{FULL_TARGET_NAME}{load_strategy_suffix('prefetch')}" not in existing
+
+
+@pytest.mark.parametrize("bad", ["auto", "safetensors", "dummy", ""])
+def test_main_refuses_a_bad_load_format(generator: Any, tmp_path: Path, bad: str) -> None:
+    """許さない `--load-format` の値は、生成の前に断り、出力ファイルを作らない (C6)。"""
+    source = _write_inspect_json(tmp_path, _inspect_item())
+    output = tmp_path / "bad-load-format.toml"
+
+    with pytest.raises(SystemExit):
+        generator.main([LOAD_FORMAT_ARG_FLAG, bad, str(source), str(output)])
+
+    assert not output.exists()
+
+
+@pytest.mark.parametrize("bad", ["lazy", "torchao", ""])
+def test_main_refuses_a_bad_load_strategy(generator: Any, tmp_path: Path, bad: str) -> None:
+    """許さない `--safetensors-load-strategy` の値は、生成の前に断る (C6)。"""
+    source = _write_inspect_json(tmp_path, _inspect_item())
+    output = tmp_path / "bad-load-strategy.toml"
+
+    with pytest.raises(SystemExit):
+        generator.main([LOAD_STRATEGY_ARG_FLAG, bad, str(source), str(output)])
+
+    assert not output.exists()
+
+
+def test_with_load_format_refuses_a_bad_value(generator: Any) -> None:
+    """`with_load_format` を直接呼んでも、許さない値は `ValueError` で断る (C6)。"""
+    with pytest.raises(ValueError):
+        generator.with_load_format(generator.FULL, "auto")
+
+
+def test_with_load_strategy_refuses_a_bad_value(generator: Any) -> None:
+    """`with_load_strategy` を直接呼んでも、許さない値は `ValueError` で断る (C6)。"""
+    with pytest.raises(ValueError):
+        generator.with_load_strategy(generator.FULL, "lazy")
+
+
+@pytest.mark.parametrize(
+    ("key", "flag", "value"),
+    [
+        pytest.param(LOAD_FORMAT_ARG_KEY, LOAD_FORMAT_ARG_FLAG, "instanttensor", id="load-format"),
+        pytest.param(LOAD_STRATEGY_ARG_KEY, LOAD_STRATEGY_ARG_FLAG, "prefetch", id="load-strategy"),
+    ],
+)
+def test_load_option_render_leaves_a_decoy_alone(
+    generator: Any, tmp_path: Path, key: str, flag: str, value: str
+) -> None:
+    """同じ字面の value の囮テーブルがあっても、足す args は 1 つだけである (C1、C2)。"""
+    text_with_decoy = _insert_decoy_table(CONFIGS_PATH.read_text(encoding="utf-8"))
+    image = generator.load_image(_write_inspect_json(tmp_path, _inspect_item()))
+
+    if key == LOAD_FORMAT_ARG_KEY:
+        variant = generator.with_load_format(generator.FULL, value)
+    else:
+        variant = generator.with_load_strategy(generator.FULL, value)
+    rendered = generator.render(text_with_decoy, image, variant)
+
+    generated = tomllib.loads(rendered)["configs"][variant.name]
+    assert generated["args"]["decoy"]["value"] == "16"
+    assert generated["args"]["max-model-len"]["value"] == "163840"
+    assert generated["args"]["max-num-seqs"]["value"] == "16"
+    assert generated["args"][key]["flag"] == flag
+    assert rendered.count(f'flag = "{flag}"') == 1
     assert "[configs.p1-nvfp4-tp2" not in rendered
     assert "p1-fetch-nvfp4" not in rendered

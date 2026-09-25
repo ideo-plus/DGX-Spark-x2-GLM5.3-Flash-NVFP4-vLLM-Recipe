@@ -9,6 +9,12 @@
 `--torch-profiler` を付けると、`--profiler-config` (torch プロファイラー、出力先
 `/logs/torch-profile`) を根拠つきで args に足し、構成の名前を `-prof` 付きにする
 (どの `--variant` にも付けられる)。
+
+`--load-format` (`instanttensor` / `fastsafetensors` / `runai_streamer`) と
+`--safetensors-load-strategy` (`eager` / `prefetch`) を付けると、重みの読み込み方を根拠つきで
+args に足し、構成の名前を `-lf-<値>` / `-sls-<値>` 付きにする。`runai_streamer` は `_` を `-`
+に替えて `-lf-runai-streamer` になる。どちらもどの `--variant` にも付けられる (付けないときの
+出力は変わらない)。
 """
 
 from __future__ import annotations
@@ -69,6 +75,51 @@ PROFILER_WHY = (
     "記録は /start_profile と /stop_profile の間だけ。trace は mount-logs で結び付けた /logs の"
     "下に書き、serve logs で回収する。この計測のときだけ付ける"
 )
+LOAD_FORMAT_SUFFIX = "-lf-"
+LOAD_FORMAT_ARG_KEY = "load-format"
+LOAD_FORMAT_FLAG = "--load-format"
+LOAD_CONFIG_SOURCE = (
+    "https://github.com/vllm-project/vllm/blob/"
+    "0961bbae2894d574be790d219651824eb199318e/vllm/config/load.py"
+)
+FASTSAFETENSORS_DOC_SOURCE = (
+    "https://github.com/vllm-project/vllm/blob/"
+    "0961bbae2894d574be790d219651824eb199318e/docs/models/extensions/fastsafetensor.md"
+)
+LOAD_FORMAT_PROVENANCE: Mapping[str, tuple[str, str]] = {
+    "instanttensor": (
+        LOAD_CONFIG_SOURCE,
+        '"instanttensor" will load the Safetensors weights on CUDA devices using InstantTensor, '
+        "which enables distributed loading with pipelined prefetching and fast direct I/O.",
+    ),
+    "fastsafetensors": (
+        FASTSAFETENSORS_DOC_SOURCE,
+        "Using fastsafetensors library enables loading model weights to GPU memory by leveraging "
+        "GPU direct storage. … To enable this feature, use the `--load-format fastsafetensors` "
+        "command-line argument",
+    ),
+    "runai_streamer": (
+        LOAD_CONFIG_SOURCE,
+        '"runai_streamer" will load the Safetensors weights using Run:ai Model Streamer.',
+    ),
+}
+LOAD_STRATEGY_SUFFIX = "-sls-"
+LOAD_STRATEGY_ARG_KEY = "safetensors-load-strategy"
+LOAD_STRATEGY_FLAG = "--safetensors-load-strategy"
+LOAD_STRATEGY_PROVENANCE: Mapping[str, tuple[str, str]] = {
+    "eager": (
+        LOAD_CONFIG_SOURCE,
+        '"eager": The entire file is read into CPU memory upfront before loading. This is '
+        "recommended for models on network filesystems (e.g., Lustre, NFS) as it avoids "
+        "inefficient random reads, significantly speeding up model initialization. However, it "
+        "uses more CPU RAM.",
+    ),
+    "prefetch": (
+        LOAD_CONFIG_SOURCE,
+        '"prefetch": Checkpoint files are read into the OS page cache before workers load them, '
+        "speeding up the model loading phase. Useful on network or high-latency storage.",
+    ),
+}
 
 
 class Variant(NamedTuple):
@@ -86,6 +137,9 @@ class Variant(NamedTuple):
 
     `torch_profiler` が真なら、`render` は args に `--profiler-config` を根拠つきで足し、
     名前は `-prof` 付きになる (`with_torch_profiler` が作る)。
+
+    `load_format` / `safetensors_load_strategy` は、重みの読み込み方の値 (`None` なら足さない)。
+    `with_load_format` / `with_load_strategy` が作る。名前は `-lf-<値>` / `-sls-<値>` 付きになる。
     """
 
     name: str
@@ -96,6 +150,8 @@ class Variant(NamedTuple):
     spec_tokens: int | None = None
     nccl_thread_names: bool = False
     torch_profiler: bool = False
+    load_format: str | None = None
+    safetensors_load_strategy: str | None = None
 
 
 SMOKE = Variant(
@@ -202,6 +258,51 @@ def with_torch_profiler(variant: Variant) -> Variant:
             f"/start_profile と /stop_profile の間の GPU の記録を {PROFILER_DIR} に書く (#42)"
         ),
         torch_profiler=True,
+    )
+
+
+def with_load_format(variant: Variant, load_format: str) -> Variant:
+    """`--load-format <値>` の構成 (基の変種 + 重みの読み込み方)。許さない値は ValueError。"""
+    if load_format not in LOAD_FORMAT_PROVENANCE:
+        raise ValueError(f"--load-format に書けるのは {', '.join(LOAD_FORMAT_PROVENANCE)} だけ")
+    return variant._replace(
+        name=f"{variant.name}{LOAD_FORMAT_SUFFIX}{load_format.replace('_', '-')}",
+        description=(
+            f"{variant.description}。重みの読み込みを --load-format {load_format} にし、"
+            "起動の時間を比べる (#46)"
+        ),
+        load_format=load_format,
+    )
+
+
+def with_load_strategy(variant: Variant, strategy: str) -> Variant:
+    """`--safetensors-load-strategy <値>` の構成 (基の変種 + safetensors の読み方)。
+
+    許さない値は `ValueError` で断る。
+    """
+    if strategy not in LOAD_STRATEGY_PROVENANCE:
+        raise ValueError(
+            f"--safetensors-load-strategy に書けるのは {', '.join(LOAD_STRATEGY_PROVENANCE)} だけ"
+        )
+    return variant._replace(
+        name=f"{variant.name}{LOAD_STRATEGY_SUFFIX}{strategy}",
+        description=(
+            f"{variant.description}。safetensors の読み込みを --safetensors-load-strategy "
+            f"{strategy} にし、起動の時間を比べる (#46)"
+        ),
+        safetensors_load_strategy=strategy,
+    )
+
+
+def _load_option_why(flag: str, value: str) -> str:
+    """読み込み方の引数 (`--load-format` / `--safetensors-load-strategy`) を足す理由。
+
+    #37 の調査で分かった読み込みの律速を含む。
+    """
+    return (
+        "#46 (#37 の調査)。起動の約 7 分を占める重みの読み込みは、ディスク (dd で 1.1〜11.8 GB/s) "
+        f"ではなく vLLM の既定の mmap の読み方 (約 220 MB/s) が律速。{flag} {value} に"
+        "替えて起動の時間を比べるときだけ付ける"
     )
 
 
@@ -342,6 +443,30 @@ def render(configs_text: str, image: Mapping[str, Any], variant: Variant = SMOKE
             source=PROFILER_SOURCE,
             quote=PROFILER_QUOTE,
         )
+    if variant.load_format is not None:
+        source, quote = LOAD_FORMAT_PROVENANCE[variant.load_format]
+        block = _insert_arg_table(
+            block,
+            variant,
+            key=LOAD_FORMAT_ARG_KEY,
+            flag=LOAD_FORMAT_FLAG,
+            value=variant.load_format,
+            why=_load_option_why(LOAD_FORMAT_FLAG, variant.load_format),
+            source=source,
+            quote=quote,
+        )
+    if variant.safetensors_load_strategy is not None:
+        source, quote = LOAD_STRATEGY_PROVENANCE[variant.safetensors_load_strategy]
+        block = _insert_arg_table(
+            block,
+            variant,
+            key=LOAD_STRATEGY_ARG_KEY,
+            flag=LOAD_STRATEGY_FLAG,
+            value=variant.safetensors_load_strategy,
+            why=_load_option_why(LOAD_STRATEGY_FLAG, variant.safetensors_load_strategy),
+            source=source,
+            quote=quote,
+        )
     data = tomllib.loads(configs_text)
     source_env = data["configs"][NCCL_SOURCE_NAME]["env"]
     additions = (
@@ -435,6 +560,24 @@ def main(argv: Sequence[str] | None = None) -> None:
             " (どの --variant にも付けられる)"
         ),
     )
+    parser.add_argument(
+        "--load-format",
+        choices=tuple(LOAD_FORMAT_PROVENANCE),
+        default=None,
+        help=(
+            "重みの読み込み方 (--load-format) を足し、構成の名前に -lf-<値> を付ける"
+            " (どの --variant にも付けられる。runai_streamer は -lf-runai-streamer)"
+        ),
+    )
+    parser.add_argument(
+        "--safetensors-load-strategy",
+        choices=tuple(LOAD_STRATEGY_PROVENANCE),
+        default=None,
+        help=(
+            "safetensors の読み方 (--safetensors-load-strategy) を足し、構成の名前に -sls-<値> を"
+            "付ける (どの --variant にも付けられる)"
+        ),
+    )
     parser.add_argument("inspect_json", type=Path)
     parser.add_argument("output", type=Path)
     args = parser.parse_args(argv)
@@ -454,6 +597,10 @@ def main(argv: Sequence[str] | None = None) -> None:
         variant = with_thread_names(variant)
     if args.torch_profiler:
         variant = with_torch_profiler(variant)
+    if args.load_format is not None:
+        variant = with_load_format(variant, args.load_format)
+    if args.safetensors_load_strategy is not None:
+        variant = with_load_strategy(variant, args.safetensors_load_strategy)
     generate(args.inspect_json, args.output, variant)
 
 
