@@ -51,6 +51,17 @@ from serving_kit.types import (
     NodeRole,
     Setting,
 )
+from watch_script import (
+    cpufreq_candidates,
+    discovery_calls,
+    discovery_calls_for_node,
+    discovery_rule,
+    hwmon_input_candidates,
+    hwmon_name_candidates,
+    label_candidates,
+    thermal_candidates,
+    unreadable_lines,
+)
 
 # --- 見本の値 ---------------------------------------------------------------
 
@@ -1591,25 +1602,25 @@ def test_no_stalled_event_when_requests_are_never_readable_within_the_window(
 def test_discovery_runs_once_at_start_and_stops_at_the_limit(
     tmp_path: Path, fake_vllm: FakeVllm
 ) -> None:
-    """熱区域と hwmon のパスは、見張りの開始時に 1 回だけ、番号順に見つける。名前が
-    `mlx5`/`nvme`/`acpitz` でない hwmon は採用しない。発見した一覧は `result.json` に出て、
-    観察を重ねても発見をやり直さない。"""
+    """熱区域と hwmon のパスは、見張りの開始時に 1 回だけ、種類ごとに 1 回の `cat` に
+    まとめて番号順に見つける。名前が `mlx5`/`nvme`/`acpitz` でない hwmon は採用しない。
+    発見した一覧は `result.json` に出て、観察を重ねても発見をやり直さない。"""
     fake_vllm.set_metrics(MetricsSample(running_requests=0, generation_tokens_total=1))
     config = config_for(port_of(fake_vllm))
     clock = WatchClock()
-    zone0 = ("cat", f"{w.THERMAL_ZONE_DIR}thermal_zone0/temp")
-    zone4 = ("cat", f"{w.THERMAL_ZONE_DIR}thermal_zone4/temp")
-    hwmon2_name = ("cat", f"{w.HWMON_DIR}hwmon2/name")
-    hwmon5_name = ("cat", f"{w.HWMON_DIR}hwmon5/name")
-    hwmon2_input = ("cat", f"{w.HWMON_DIR}hwmon2/temp1_input")
-    hwmon2_label = ("cat", f"{w.HWMON_DIR}hwmon2/temp1_label")
+    zone0 = f"{w.THERMAL_ZONE_DIR}thermal_zone0/temp"
+    zone4 = f"{w.THERMAL_ZONE_DIR}thermal_zone4/temp"
+    hwmon2_name = f"{w.HWMON_DIR}hwmon2/name"
+    hwmon5_name = f"{w.HWMON_DIR}hwmon5/name"
+    hwmon2_input = f"{w.HWMON_DIR}hwmon2/temp1_input"
+    hwmon2_label = f"{w.HWMON_DIR}hwmon2/temp1_label"
     script = [
-        Rule(prefix=zone0, replies=(Reply(stdout="82000\n"),)),
-        Rule(prefix=zone4, replies=(Reply(stdout="70000\n"),)),
-        Rule(prefix=hwmon2_name, replies=(Reply(stdout="mlx5\n"),)),
-        Rule(prefix=hwmon5_name, replies=(Reply(stdout="gpu\n"),)),
-        Rule(prefix=hwmon2_input, replies=(Reply(stdout="47000\n"),)),
-        Rule(prefix=hwmon2_label, replies=(Reply(stdout="asic\n"),)),
+        discovery_rule(thermal_candidates(), {zone0: "82000\n", zone4: "70000\n"}, node="head"),
+        discovery_rule(
+            hwmon_name_candidates(), {hwmon2_name: "mlx5\n", hwmon5_name: "gpu\n"}, node="head"
+        ),
+        discovery_rule(hwmon_input_candidates(("hwmon2",)), {hwmon2_input: "47000\n"}, node="head"),
+        discovery_rule(label_candidates(("hwmon2/temp1",)), {hwmon2_label: "asic\n"}, node="head"),
     ]
     runner = FakeRunner(var_root=tmp_path, script=script, default=Reply(exit_code=1))
 
@@ -1640,15 +1651,22 @@ def test_discovery_runs_once_at_start_and_stops_at_the_limit(
     assert not any("temp33_input" in one for one in shown)
     assert not any("hwmon5/temp1_input" in one for one in shown)
 
-    name_calls = [call for call in runner.calls if call.node == "head" and call.argv == hwmon2_name]
-    assert len(name_calls) == 1, "発見は開始時の 1 回だけのはずが、観察のたびに繰り返している"
+    # 観察は 3 回あるので、最初の `nvidia-smi` で打ち切る `discovery_calls_for_node` ではなく、
+    # 全呼び出しから数える (2 回目以降の観察の中で発見をやり直す実装も検出するため)。
+    name_batches = [
+        call
+        for call in runner.calls
+        if call.node == "head" and call.argv == ("cat", *hwmon_name_candidates())
+    ]
+    assert len(name_batches) == 1, "発見は開始時の 1 回だけのはずが、観察のたびに繰り返している"
 
 
 def test_discovery_reads_up_to_thirty_two_numbers_per_kind(
     tmp_path: Path, fake_vllm: FakeVllm
 ) -> None:
-    """発見は、熱区域と hwmon の番号を、それぞれ 0 から 31 まで (上限 32) だけ試す。台本を
-    敷かない (既定の `Reply()` は exit 0 なので、番号があれば必ず「存在する」ことになる)。"""
+    """発見は、熱区域・hwmon の名前・cpufreq のコアの番号を、それぞれ 0 から 31 まで
+    (上限 32) だけ、種類ごとに 1 回の `cat` にまとめて試す。台本を敷かない (既定の `Reply()`
+    は exit 0 なので、番号があれば必ず「存在する」ことになる)。"""
     fake_vllm.set_metrics(MetricsSample(running_requests=0, generation_tokens_total=1))
     config = config_for(port_of(fake_vllm))
     clock = WatchClock()
@@ -1667,27 +1685,27 @@ def test_discovery_reads_up_to_thirty_two_numbers_per_kind(
         report=io.StringIO(),
     )
 
-    head_single_path_calls = {
+    head_cats = [
         call.argv
         for call in runner.calls
-        if call.node == "head" and len(call.argv) == 2 and call.argv[0] == "cat"
-    }
-    expected_zones = {("cat", f"{w.THERMAL_ZONE_DIR}thermal_zone{n}/temp") for n in range(32)}
-    expected_names = {("cat", f"{w.HWMON_DIR}hwmon{n}/name") for n in range(32)}
-    assert expected_zones <= head_single_path_calls
-    assert expected_names <= head_single_path_calls
+        if call.node == "head" and call.argv and call.argv[0] == "cat"
+    ]
+    assert ("cat", *thermal_candidates()) in head_cats
+    assert ("cat", *hwmon_name_candidates()) in head_cats
+    assert ("cat", *cpufreq_candidates()) in head_cats
 
     shown = [" ".join(call.argv) for call in runner.calls]
     assert not any("thermal_zone32" in one for one in shown)
     assert not any("hwmon32" in one for one in shown)
+    assert not any("cpu32" in one for one in shown)
 
 
 def test_discovery_treats_a_nonzero_exit_as_absent_without_recording_a_note(
     tmp_path: Path, fake_vllm: FakeVllm
 ) -> None:
     """発見で exit 1 (存在しない) は、これまでどおり黙って続け、`detail` に書かない。
-    番号を最後まで試すので、台ごとの発見の `cat` は 64 回 (熱区域 32 + hwmon 名 32) 流れる。
-    """
+    採用する chip がないので、台ごとの発見は熱区域・hwmon の名前・cpufreq のコアの 3 回で
+    終わる (input と label は流さない)。"""
     fake_vllm.set_metrics(MetricsSample(running_requests=0, generation_tokens_total=1))
     config = config_for(port_of(fake_vllm))
     clock = WatchClock()
@@ -1708,15 +1726,7 @@ def test_discovery_treats_a_nonzero_exit_as_absent_without_recording_a_note(
 
     assert outcome.thermal_zones_found["worker"] == ()
     assert "発見" not in outcome.detail
-    worker_discovery_calls = [
-        call
-        for call in runner.calls
-        if call.node == "worker"
-        and len(call.argv) == 2
-        and call.argv[0] == "cat"
-        and (call.argv[1].startswith(w.THERMAL_ZONE_DIR) or call.argv[1].startswith(w.HWMON_DIR))
-    ]
-    assert len(worker_discovery_calls) == 64
+    assert len(discovery_calls_for_node(runner, "worker")) == 3
 
 
 def test_discovery_stops_for_a_node_it_cannot_reach_and_records_it(
@@ -1727,10 +1737,15 @@ def test_discovery_stops_for_a_node_it_cannot_reach_and_records_it(
     fake_vllm.set_metrics(MetricsSample(running_requests=0, generation_tokens_total=1))
     config = config_for(port_of(fake_vllm))
     clock = WatchClock()
-    zone0 = ("cat", f"{w.THERMAL_ZONE_DIR}thermal_zone0/temp")
     runner = FakeRunner(
         var_root=tmp_path,
-        script=[Rule(prefix=zone0, node="worker", replies=(Reply(exit_code=255),))],
+        script=[
+            Rule(
+                prefix=("cat", *thermal_candidates()),
+                node="worker",
+                replies=(Reply(exit_code=255),),
+            )
+        ],
         default=Reply(exit_code=1),
     )
 
@@ -1750,16 +1765,427 @@ def test_discovery_stops_for_a_node_it_cannot_reach_and_records_it(
     assert "worker" in outcome.detail
     assert "発見" in outcome.detail
     assert outcome.thermal_zones_found["worker"] == ()
-    worker_discovery_calls = [
-        call
-        for call in runner.calls
-        if call.node == "worker"
-        and len(call.argv) == 2
-        and call.argv[0] == "cat"
-        and (call.argv[1].startswith(w.THERMAL_ZONE_DIR) or call.argv[1].startswith(w.HWMON_DIR))
-    ]
-    assert len(worker_discovery_calls) == 1
+    assert len(discovery_calls_for_node(runner, "worker")) == 1
     assert outcome.sample_count == 3
+
+
+def test_discovery_round_trips_are_fixed_per_node(tmp_path: Path, fake_vllm: FakeVllm) -> None:
+    """開始時の発見の往復 (`runner.run`) の回数を、偽の実行役で数えて固定する。
+
+    head は熱区域が 2 つ・採用 chip が 1 つ・温度センサーが 1 つ・cpufreq のコアが 2 つ
+    なので、熱区域・hwmon の名前・温度センサー・ラベル・cpufreq の 5 回。worker は何も
+    見つからないので、熱区域・hwmon の名前・cpufreq の 3 回。合わせて 8 回で、すべて `cat`
+    である。"""
+    fake_vllm.set_metrics(MetricsSample(running_requests=0, generation_tokens_total=1))
+    config = config_for(port_of(fake_vllm))
+    clock = WatchClock()
+    zone0 = f"{w.THERMAL_ZONE_DIR}thermal_zone0/temp"
+    zone4 = f"{w.THERMAL_ZONE_DIR}thermal_zone4/temp"
+    hwmon2_name = f"{w.HWMON_DIR}hwmon2/name"
+    hwmon5_name = f"{w.HWMON_DIR}hwmon5/name"
+    hwmon2_input = f"{w.HWMON_DIR}hwmon2/temp1_input"
+    hwmon2_label = f"{w.HWMON_DIR}hwmon2/temp1_label"
+    core0 = f"{w.CPU_DIR}cpu0/cpufreq/scaling_max_freq"
+    core5 = f"{w.CPU_DIR}cpu5/cpufreq/scaling_max_freq"
+    script = [
+        discovery_rule(thermal_candidates(), {zone0: "82000\n", zone4: "70000\n"}, node="head"),
+        discovery_rule(
+            hwmon_name_candidates(), {hwmon2_name: "mlx5\n", hwmon5_name: "gpu\n"}, node="head"
+        ),
+        discovery_rule(hwmon_input_candidates(("hwmon2",)), {hwmon2_input: "47000\n"}, node="head"),
+        discovery_rule(label_candidates(("hwmon2/temp1",)), {hwmon2_label: "asic\n"}, node="head"),
+        discovery_rule(cpufreq_candidates(), {core0: "2808000\n", core5: "3000000\n"}, node="head"),
+    ]
+    runner = FakeRunner(var_root=tmp_path, script=script, default=Reply(exit_code=1))
+
+    outcome = w.watch(
+        runner,
+        config,
+        NODES,
+        var_root=tmp_path,
+        duration_s=1.0,
+        interval_s=1.0,
+        sleep=clock.sleep,
+        clock=clock.monotonic,
+        now=clock.now,
+        report=io.StringIO(),
+    )
+
+    calls = discovery_calls(runner)
+    assert len(calls) == 8
+    assert all(call.argv[0] == "cat" for call in calls)
+    assert len(discovery_calls_for_node(runner, "head")) == 5
+    assert len(discovery_calls_for_node(runner, "worker")) == 3
+
+    result = json.loads(
+        (outcome.samples_path.parent / w.RESULT_FILE_NAME).read_text(encoding="utf-8")
+    )
+    assert result["thermal_zones_found"] == {"head": [0, 4], "worker": []}
+    assert result["hwmon_chip_names"] == {"head": {"hwmon2": "mlx5"}, "worker": {}}
+    assert result["hwmon_sensors_found"] == {"head": {"hwmon2/temp1": "asic"}, "worker": {}}
+    assert result["cpufreq_cores_found"] == {"head": [0, 5], "worker": []}
+
+
+def test_interrupt_during_discovery_still_writes_a_partial_summary(
+    tmp_path: Path, fake_vllm: FakeVllm
+) -> None:
+    """発見の最中に `KeyboardInterrupt` が来ても、`result.json` を書いてから中断を伝える。
+    発見が終わっていないので、見つけた一覧は空で、観察は 0 件である。"""
+    fake_vllm.set_metrics(MetricsSample(running_requests=0, generation_tokens_total=1))
+    config = config_for(port_of(fake_vllm))
+    clock = WatchClock()
+    runner = FakeRunner(
+        var_root=tmp_path,
+        script=[
+            Rule(
+                prefix=("cat", *thermal_candidates()),
+                node="head",
+                replies=(Reply(raises=KeyboardInterrupt()),),
+            )
+        ],
+        default=Reply(exit_code=1),
+    )
+
+    with pytest.raises(KeyboardInterrupt):
+        w.watch(
+            runner,
+            config,
+            NODES,
+            var_root=tmp_path,
+            duration_s=100.0,
+            interval_s=1.0,
+            sleep=clock.sleep,
+            clock=clock.monotonic,
+            now=clock.now,
+            report=io.StringIO(),
+        )
+
+    run_dir = var_dir(tmp_path, STARTED_WALL, w.COMMAND_NAME, CONFIG_NAME)
+    result = json.loads((run_dir / w.RESULT_FILE_NAME).read_text(encoding="utf-8"))
+    assert result["sample_count"] == 0
+    assert result["thermal_zones_found"] == {}
+
+
+def test_discovery_ignores_stderr_lines_that_do_not_name_a_candidate(
+    tmp_path: Path, fake_vllm: FakeVllm
+) -> None:
+    """発見の `cat` が exit 1 のとき、stderr の各行のうち、候補の道筋を名指す行だけを
+    「存在しない」の根拠にする。ssh の警告の行と、別の種類 (hwmon) の道筋の行は無視し、
+    区域 1 の行が区域 10・11 を「存在しない」にしない。区域 1 の行だけが効くので、区域 1 を
+    欠く 31 個が見つかる。"""
+    fake_vllm.set_metrics(MetricsSample(running_requests=0, generation_tokens_total=1))
+    config = config_for(port_of(fake_vllm))
+    clock = WatchClock()
+    candidates = thermal_candidates()
+    stderr = (
+        "Warning: Permanently added 'spark-153d' (ED25519) to the list of known hosts.\n"
+        f"cat: {w.THERMAL_ZONE_DIR}thermal_zone1/temp: No such file or directory\n"
+        f"cat: {w.HWMON_DIR}hwmon0/name: No such file or directory\n"
+    )
+    script = [
+        Rule(
+            prefix=("cat", *candidates),
+            node="head",
+            replies=(Reply(exit_code=1, stderr=stderr),),
+        )
+    ]
+    runner = FakeRunner(var_root=tmp_path, script=script, default=Reply(exit_code=1))
+
+    outcome = w.watch(
+        runner,
+        config,
+        NODES,
+        var_root=tmp_path,
+        duration_s=1.0,
+        interval_s=1.0,
+        sleep=clock.sleep,
+        clock=clock.monotonic,
+        now=clock.now,
+        report=io.StringIO(),
+    )
+
+    found = outcome.thermal_zones_found["head"]
+    assert found == tuple(number for number in range(32) if number != 1)
+    assert 0 in found
+    assert 10 in found
+    assert 11 in found
+
+
+def test_discovery_finds_nothing_when_cat_fails_without_per_path_errors(
+    tmp_path: Path, fake_vllm: FakeVllm
+) -> None:
+    """発見の `cat` が exit 1 で、stderr に道筋ごとの誤りの行が 1 つもないときは、その種類を
+    「何も見つからない」にする (誤検出しない側に倒す)。`detail` に注記は足さない。"""
+    fake_vllm.set_metrics(MetricsSample(running_requests=0, generation_tokens_total=1))
+    config = config_for(port_of(fake_vllm))
+    clock = WatchClock()
+    script = [
+        Rule(
+            prefix=("cat", *thermal_candidates()),
+            node="head",
+            replies=(Reply(exit_code=1),),
+        )
+    ]
+    runner = FakeRunner(var_root=tmp_path, script=script, default=Reply(exit_code=1))
+
+    outcome = w.watch(
+        runner,
+        config,
+        NODES,
+        var_root=tmp_path,
+        duration_s=1.0,
+        interval_s=1.0,
+        sleep=clock.sleep,
+        clock=clock.monotonic,
+        now=clock.now,
+        report=io.StringIO(),
+    )
+
+    assert outcome.thermal_zones_found["head"] == ()
+    assert "発見" not in outcome.detail
+
+
+def test_discovery_treats_exit_zero_as_all_present_despite_stderr_noise(
+    tmp_path: Path, fake_vllm: FakeVllm
+) -> None:
+    """発見の `cat` が exit 0 なら、stderr に ssh の警告があっても候補すべてが存在する。
+    cpufreq のコア 0〜31 が全部見つかる。"""
+    fake_vllm.set_metrics(MetricsSample(running_requests=0, generation_tokens_total=1))
+    config = config_for(port_of(fake_vllm))
+    clock = WatchClock()
+    script = [
+        Rule(
+            prefix=("cat", *cpufreq_candidates()),
+            node="head",
+            replies=(
+                Reply(
+                    exit_code=0,
+                    stderr=(
+                        "Warning: Permanently added 'spark-153d' (ED25519) "
+                        "to the list of known hosts.\n"
+                    ),
+                ),
+            ),
+        )
+    ]
+    runner = FakeRunner(var_root=tmp_path, script=script, default=Reply(exit_code=1))
+
+    outcome = w.watch(
+        runner,
+        config,
+        NODES,
+        var_root=tmp_path,
+        duration_s=1.0,
+        interval_s=1.0,
+        sleep=clock.sleep,
+        clock=clock.monotonic,
+        now=clock.now,
+        report=io.StringIO(),
+    )
+
+    assert outcome.cpufreq_cores_found["head"] == tuple(range(32))
+
+
+def test_hwmon_names_that_do_not_align_with_the_present_paths_adopt_no_chip(
+    tmp_path: Path, fake_vllm: FakeVllm
+) -> None:
+    """hwmon の `name` で、存在する道筋の数と stdout の行数が合わなければ、その種類の中身は
+    読めなかったものとして、採用する chip を 1 つも作らない (input と label を流さない)。"""
+    fake_vllm.set_metrics(MetricsSample(running_requests=0, generation_tokens_total=1))
+    config = config_for(port_of(fake_vllm))
+    clock = WatchClock()
+    names = hwmon_name_candidates()
+    present_names = (f"{w.HWMON_DIR}hwmon30/name", f"{w.HWMON_DIR}hwmon31/name")
+    absent = [path for path in names if path not in present_names]
+    script = [
+        Rule(
+            prefix=("cat", *names),
+            node="head",
+            replies=(
+                # 存在する道筋は 2 つだが、stdout は 1 行しかない (対応が取れない)
+                Reply(exit_code=1, stdout="mlx5\n", stderr=unreadable_lines(absent)),
+            ),
+        )
+    ]
+    runner = FakeRunner(var_root=tmp_path, script=script, default=Reply(exit_code=1))
+
+    outcome = w.watch(
+        runner,
+        config,
+        NODES,
+        var_root=tmp_path,
+        duration_s=1.0,
+        interval_s=1.0,
+        sleep=clock.sleep,
+        clock=clock.monotonic,
+        now=clock.now,
+        report=io.StringIO(),
+    )
+
+    result = json.loads(
+        (outcome.samples_path.parent / w.RESULT_FILE_NAME).read_text(encoding="utf-8")
+    )
+    assert result["hwmon_chip_names"]["head"] == {}
+    assert result["hwmon_sensors_found"]["head"] == {}
+    assert not any(
+        "_input" in " ".join(call.argv) for call in discovery_calls_for_node(runner, "head")
+    )
+
+
+def test_hwmon_labels_are_matched_to_the_sensors_that_have_them(
+    tmp_path: Path, fake_vllm: FakeVllm
+) -> None:
+    """採用する chip が複数あり、label のあるセンサーとないセンサーが混じるとき、label は
+    存在した label の道筋の順に対応づけられ、label のないセンサーだけが `None` になる
+    (label の行を、存在した道筋ではなく全センサーの順に対応づけない)。"""
+    fake_vllm.set_metrics(MetricsSample(running_requests=0, generation_tokens_total=1))
+    config = config_for(port_of(fake_vllm))
+    clock = WatchClock()
+    hwmon1_name = f"{w.HWMON_DIR}hwmon1/name"
+    hwmon2_name = f"{w.HWMON_DIR}hwmon2/name"
+    hwmon3_name = f"{w.HWMON_DIR}hwmon3/name"
+    hwmon2_temp1_input = f"{w.HWMON_DIR}hwmon2/temp1_input"
+    hwmon2_temp2_input = f"{w.HWMON_DIR}hwmon2/temp2_input"
+    hwmon3_temp1_input = f"{w.HWMON_DIR}hwmon3/temp1_input"
+    script = [
+        # hwmon1 は不採用 (name が mlx5/nvme/acpitz のどれでもない)。採用は hwmon2 と hwmon3
+        discovery_rule(
+            hwmon_name_candidates(),
+            {hwmon1_name: "gpu\n", hwmon2_name: "mlx5\n", hwmon3_name: "nvme\n"},
+            node="head",
+        ),
+        discovery_rule(
+            hwmon_input_candidates(("hwmon2", "hwmon3")),
+            {
+                hwmon2_temp1_input: "47000\n",
+                hwmon2_temp2_input: "48000\n",
+                hwmon3_temp1_input: "50000\n",
+            },
+            node="head",
+        ),
+        # label は hwmon2/temp1 と hwmon3/temp1 にだけある (hwmon2/temp2 にはない)
+        discovery_rule(
+            label_candidates(("hwmon2/temp1", "hwmon2/temp2", "hwmon3/temp1")),
+            {
+                f"{w.HWMON_DIR}hwmon2/temp1_label": "asic\n",
+                f"{w.HWMON_DIR}hwmon3/temp1_label": "nvme-label\n",
+            },
+            node="head",
+        ),
+    ]
+    runner = FakeRunner(var_root=tmp_path, script=script, default=Reply(exit_code=1))
+
+    outcome = w.watch(
+        runner,
+        config,
+        NODES,
+        var_root=tmp_path,
+        duration_s=1.0,
+        interval_s=1.0,
+        sleep=clock.sleep,
+        clock=clock.monotonic,
+        now=clock.now,
+        report=io.StringIO(),
+    )
+
+    result = json.loads(
+        (outcome.samples_path.parent / w.RESULT_FILE_NAME).read_text(encoding="utf-8")
+    )
+    assert result["hwmon_chip_names"]["head"] == {"hwmon2": "mlx5", "hwmon3": "nvme"}
+    assert result["hwmon_sensors_found"]["head"] == {
+        "hwmon2/temp1": "asic",
+        "hwmon2/temp2": None,
+        "hwmon3/temp1": "nvme-label",
+    }
+
+
+def test_hwmon_labels_that_do_not_align_leave_all_sensors_without_a_label(
+    tmp_path: Path, fake_vllm: FakeVllm
+) -> None:
+    """label の stdout の行数が、存在した label の道筋の数と合わなければ、対応が取れないので
+    全センサーの label を `None` にし、温度センサーの発見自体は残す (決めごとの 9)。"""
+    fake_vllm.set_metrics(MetricsSample(running_requests=0, generation_tokens_total=1))
+    config = config_for(port_of(fake_vllm))
+    clock = WatchClock()
+    hwmon2_name = f"{w.HWMON_DIR}hwmon2/name"
+    hwmon2_temp1_input = f"{w.HWMON_DIR}hwmon2/temp1_input"
+    hwmon2_temp2_input = f"{w.HWMON_DIR}hwmon2/temp2_input"
+    labels = label_candidates(("hwmon2/temp1", "hwmon2/temp2"))
+    script = [
+        discovery_rule(hwmon_name_candidates(), {hwmon2_name: "mlx5\n"}, node="head"),
+        discovery_rule(
+            hwmon_input_candidates(("hwmon2",)),
+            {hwmon2_temp1_input: "47000\n", hwmon2_temp2_input: "48000\n"},
+            node="head",
+        ),
+        # 存在する label の道筋は 2 つだが、stdout は 1 行しかない (対応が取れない)
+        Rule(
+            prefix=("cat", *labels),
+            node="head",
+            replies=(Reply(exit_code=0, stdout="asic\n"),),
+        ),
+    ]
+    runner = FakeRunner(var_root=tmp_path, script=script, default=Reply(exit_code=1))
+
+    outcome = w.watch(
+        runner,
+        config,
+        NODES,
+        var_root=tmp_path,
+        duration_s=1.0,
+        interval_s=1.0,
+        sleep=clock.sleep,
+        clock=clock.monotonic,
+        now=clock.now,
+        report=io.StringIO(),
+    )
+
+    result = json.loads(
+        (outcome.samples_path.parent / w.RESULT_FILE_NAME).read_text(encoding="utf-8")
+    )
+    assert result["hwmon_sensors_found"]["head"] == {
+        "hwmon2/temp1": None,
+        "hwmon2/temp2": None,
+    }
+
+
+def test_an_adopted_chip_without_any_temperature_sensor_keeps_the_chip_and_reads_no_labels(
+    tmp_path: Path, fake_vllm: FakeVllm
+) -> None:
+    """採用した chip に温度センサー (`temp<M>_input`) が 1 つもなければ、chip の一覧は残し、
+    センサーは空にする。ラベルの候補がないので、ラベルの `cat` は流さない (道筋のない
+    `cat` は許されず、流すと見張り全体が落ちる)。"""
+    fake_vllm.set_metrics(MetricsSample(running_requests=0, generation_tokens_total=1))
+    config = config_for(port_of(fake_vllm))
+    clock = WatchClock()
+    hwmon2_name = f"{w.HWMON_DIR}hwmon2/name"
+    script = [
+        discovery_rule(hwmon_name_candidates(), {hwmon2_name: "mlx5\n"}, node="head"),
+        # 温度センサーの `cat` は台本を敷かない (既定の exit 1、`cat:` の行なし = 何も存在しない)
+    ]
+    runner = FakeRunner(var_root=tmp_path, script=script, default=Reply(exit_code=1))
+
+    outcome = w.watch(
+        runner,
+        config,
+        NODES,
+        var_root=tmp_path,
+        duration_s=1.0,
+        interval_s=1.0,
+        sleep=clock.sleep,
+        clock=clock.monotonic,
+        now=clock.now,
+        report=io.StringIO(),
+    )
+
+    result = json.loads(
+        (outcome.samples_path.parent / w.RESULT_FILE_NAME).read_text(encoding="utf-8")
+    )
+    assert result["hwmon_chip_names"]["head"] == {"hwmon2": "mlx5"}
+    assert result["hwmon_sensors_found"]["head"] == {}
+    head_discovery = discovery_calls_for_node(runner, "head")
+    assert ("cat", *hwmon_input_candidates(("hwmon2",))) in [call.argv for call in head_discovery]
+    assert not any("_label" in " ".join(call.argv) for call in head_discovery)
 
 
 # --- 熱区域・hwmon・CPU の 1 回の観察 --------------------------------------------
@@ -1773,20 +2199,18 @@ def test_thermal_zones_and_hwmon_are_recorded_per_sensor(
     fake_vllm.set_metrics(MetricsSample(running_requests=0, generation_tokens_total=1))
     config = config_for(port_of(fake_vllm))
     clock = WatchClock()
-    zone0 = ("cat", f"{w.THERMAL_ZONE_DIR}thermal_zone0/temp")
-    zone4 = ("cat", f"{w.THERMAL_ZONE_DIR}thermal_zone4/temp")
-    hwmon2_name = ("cat", f"{w.HWMON_DIR}hwmon2/name")
-    hwmon2_input = ("cat", f"{w.HWMON_DIR}hwmon2/temp1_input")
-    hwmon2_label = ("cat", f"{w.HWMON_DIR}hwmon2/temp1_label")
+    zone0 = f"{w.THERMAL_ZONE_DIR}thermal_zone0/temp"
+    zone4 = f"{w.THERMAL_ZONE_DIR}thermal_zone4/temp"
+    hwmon2_name = f"{w.HWMON_DIR}hwmon2/name"
+    hwmon2_input = f"{w.HWMON_DIR}hwmon2/temp1_input"
+    hwmon2_label = f"{w.HWMON_DIR}hwmon2/temp1_label"
     script = [
-        Rule(
-            prefix=zone0,
-            replies=(Reply(stdout="82000\n"), Reply(stdout="82000\n70000\n")),
-        ),
-        Rule(prefix=zone4, replies=(Reply(stdout="70000\n"),)),
-        Rule(prefix=hwmon2_name, replies=(Reply(stdout="mlx5\n"),)),
-        Rule(prefix=hwmon2_input, replies=(Reply(stdout="47000\n"),)),
-        Rule(prefix=hwmon2_label, replies=(Reply(stdout="asic\n"),)),
+        discovery_rule(thermal_candidates(), {zone0: "82000\n", zone4: "70000\n"}, node="head"),
+        discovery_rule(hwmon_name_candidates(), {hwmon2_name: "mlx5\n"}, node="head"),
+        discovery_rule(hwmon_input_candidates(("hwmon2",)), {hwmon2_input: "47000\n"}, node="head"),
+        discovery_rule(label_candidates(("hwmon2/temp1",)), {hwmon2_label: "asic\n"}, node="head"),
+        Rule(prefix=("cat", zone0, zone4), node="head", replies=(Reply(stdout="82000\n70000\n"),)),
+        Rule(prefix=("cat", hwmon2_input), node="head", replies=(Reply(stdout="47000\n"),)),
     ]
     runner = FakeRunner(var_root=tmp_path, script=script, default=Reply(exit_code=1))
 
@@ -1816,13 +2240,13 @@ def test_hwmon_sensor_without_a_label_is_recorded_with_an_empty_label(
     fake_vllm.set_metrics(MetricsSample(running_requests=0, generation_tokens_total=1))
     config = config_for(port_of(fake_vllm))
     clock = WatchClock()
-    hwmon2_name = ("cat", f"{w.HWMON_DIR}hwmon2/name")
-    hwmon2_input = ("cat", f"{w.HWMON_DIR}hwmon2/temp1_input")
-    hwmon2_label = ("cat", f"{w.HWMON_DIR}hwmon2/temp1_label")
+    hwmon2_name = f"{w.HWMON_DIR}hwmon2/name"
+    hwmon2_input = f"{w.HWMON_DIR}hwmon2/temp1_input"
     script = [
-        Rule(prefix=hwmon2_name, replies=(Reply(stdout="mlx5\n"),)),
-        Rule(prefix=hwmon2_input, replies=(Reply(stdout="47000\n"),)),
-        Rule(prefix=hwmon2_label, replies=(Reply(exit_code=1),)),
+        discovery_rule(hwmon_name_candidates(), {hwmon2_name: "mlx5\n"}, node="head"),
+        discovery_rule(hwmon_input_candidates(("hwmon2",)), {hwmon2_input: "47000\n"}, node="head"),
+        # ラベルは存在しない (発見の規則に当たらず、既定の exit 1 になる)
+        Rule(prefix=("cat", hwmon2_input), node="head", replies=(Reply(stdout="47000\n"),)),
     ]
     runner = FakeRunner(var_root=tmp_path, script=script, default=Reply(exit_code=1))
 
@@ -1855,15 +2279,22 @@ def test_an_unreadable_item_is_empty_without_stopping_the_watch(
     fake_vllm.set_metrics(MetricsSample(running_requests=0, generation_tokens_total=1))
     config = config_for(port_of(fake_vllm))
     clock = WatchClock()
-    zone0 = ("cat", f"{w.THERMAL_ZONE_DIR}thermal_zone0/temp")
-    zone2 = ("cat", f"{w.THERMAL_ZONE_DIR}thermal_zone2/temp")
-    zone4 = ("cat", f"{w.THERMAL_ZONE_DIR}thermal_zone4/temp")
+    zone0 = f"{w.THERMAL_ZONE_DIR}thermal_zone0/temp"
+    zone2 = f"{w.THERMAL_ZONE_DIR}thermal_zone2/temp"
+    zone4 = f"{w.THERMAL_ZONE_DIR}thermal_zone4/temp"
     proc_stat = ("cat", w.PROC_STAT_PATH)
     script = [
+        discovery_rule(
+            thermal_candidates(),
+            {zone0: "82000\n", zone2: "75000\n", zone4: "70000\n"},
+            node="head",
+        ),
         # 発見した区域は [0, 2, 4] の 3 つだが、観察の返事は 2 行しかない (行数の不一致)
-        Rule(prefix=zone0, replies=(Reply(stdout="82000\n"), Reply(stdout="82000\n70000\n"))),
-        Rule(prefix=zone2, replies=(Reply(stdout="75000\n"),)),
-        Rule(prefix=zone4, replies=(Reply(stdout="70000\n"),)),
+        Rule(
+            prefix=("cat", zone0, zone2, zone4),
+            node="head",
+            replies=(Reply(stdout="82000\n70000\n"),),
+        ),
         Rule(
             prefix=proc_stat,
             replies=(
@@ -1904,12 +2335,12 @@ def test_a_line_that_fails_to_parse_only_empties_that_key(
     fake_vllm.set_metrics(MetricsSample(running_requests=0, generation_tokens_total=1))
     config = config_for(port_of(fake_vllm))
     clock = WatchClock()
-    zone0 = ("cat", f"{w.THERMAL_ZONE_DIR}thermal_zone0/temp")
-    zone4 = ("cat", f"{w.THERMAL_ZONE_DIR}thermal_zone4/temp")
+    zone0 = f"{w.THERMAL_ZONE_DIR}thermal_zone0/temp"
+    zone4 = f"{w.THERMAL_ZONE_DIR}thermal_zone4/temp"
     script = [
-        # 発見は存在確認だけなので中身は使わない。観察は 2 行 (zone0 は数、zone4 は壊れた行)
-        Rule(prefix=zone0, replies=(Reply(stdout="82000\n"), Reply(stdout="82000\nabc\n"))),
-        Rule(prefix=zone4, replies=(Reply(stdout="70000\n"),)),
+        discovery_rule(thermal_candidates(), {zone0: "82000\n", zone4: "70000\n"}, node="head"),
+        # 観察は 2 行 (zone0 は数、zone4 は壊れた行)
+        Rule(prefix=("cat", zone0, zone4), node="head", replies=(Reply(stdout="82000\nabc\n"),)),
     ]
     runner = FakeRunner(var_root=tmp_path, script=script, default=Reply(exit_code=1))
 
@@ -1986,16 +2417,16 @@ def test_thermal_event_fires_once_per_rising_edge_without_collecting_logs(
     fake_vllm.set_metrics(MetricsSample(running_requests=0, generation_tokens_total=1))
     config = config_for(port_of(fake_vllm))
     clock = WatchClock()
-    zone0 = ("cat", f"{w.THERMAL_ZONE_DIR}thermal_zone0/temp")
+    zone0 = f"{w.THERMAL_ZONE_DIR}thermal_zone0/temp"
     # node="head" に絞る: NODES は head と worker の 2 台なので、絞らないと、両台の発見・
     # 観察の読みが同じ規則の replies を奪い合い、意図した順で値が出ない (worker は発見で
     # 区域が見つからないまま default(exit_code=1) になり、zone0 の値を持たない)
     script = [
+        discovery_rule(thermal_candidates(), {zone0: "85000\n"}, node="head"),
         Rule(
-            prefix=zone0,
+            prefix=("cat", zone0),
             node="head",
             replies=(
-                Reply(stdout="85000\n"),
                 Reply(stdout="89000\n"),
                 Reply(stdout="90500\n"),
                 Reply(stdout="91000\n"),
@@ -2036,8 +2467,11 @@ def test_no_thermal_event_below_the_threshold(tmp_path: Path, fake_vllm: FakeVll
     fake_vllm.set_metrics(MetricsSample(running_requests=0, generation_tokens_total=1))
     config = config_for(port_of(fake_vllm))
     clock = WatchClock()
-    zone0 = ("cat", f"{w.THERMAL_ZONE_DIR}thermal_zone0/temp")
-    script = [Rule(prefix=zone0, replies=(Reply(stdout="89999\n"),))]
+    zone0 = f"{w.THERMAL_ZONE_DIR}thermal_zone0/temp"
+    script = [
+        discovery_rule(thermal_candidates(), {zone0: "89999\n"}, node="head"),
+        Rule(prefix=("cat", zone0), node="head", replies=(Reply(stdout="89999\n"),)),
+    ]
     runner = FakeRunner(var_root=tmp_path, script=script, default=Reply(exit_code=1))
 
     outcome = w.watch(
@@ -2069,9 +2503,9 @@ def test_summary_has_per_node_maxima_and_the_sm_clock_range(
     fake_vllm.set_metrics(MetricsSample(running_requests=0, generation_tokens_total=1))
     config = config_for(port_of(fake_vllm))
     clock = WatchClock()
-    zone0 = ("cat", f"{w.THERMAL_ZONE_DIR}thermal_zone0/temp")
-    hwmon2_name = ("cat", f"{w.HWMON_DIR}hwmon2/name")
-    hwmon2_input = ("cat", f"{w.HWMON_DIR}hwmon2/temp1_input")
+    zone0 = f"{w.THERMAL_ZONE_DIR}thermal_zone0/temp"
+    hwmon2_name = f"{w.HWMON_DIR}hwmon2/name"
+    hwmon2_input = f"{w.HWMON_DIR}hwmon2/temp1_input"
     # node="head" に絞る (絞らないと、head と worker が同じ規則の replies を奪い合う)
     script = [
         Rule(
@@ -2088,23 +2522,23 @@ def test_summary_has_per_node_maxima_and_the_sm_clock_range(
             node="worker",
             replies=(Reply(stdout="[N/A], [N/A], [N/A], [N/A]\n"),),
         ),
+        discovery_rule(thermal_candidates(), {zone0: "80000\n"}, node="head"),
+        discovery_rule(hwmon_name_candidates(), {hwmon2_name: "mlx5\n"}, node="head"),
+        discovery_rule(hwmon_input_candidates(("hwmon2",)), {hwmon2_input: "47000\n"}, node="head"),
         Rule(
-            prefix=zone0,
+            prefix=("cat", zone0),
             node="head",
             replies=(
-                Reply(stdout="80000\n"),  # 発見
                 Reply(stdout="80000\n"),  # 観察 1
                 Reply(stdout="88000\n"),  # 観察 2 (途中の回で最大)
                 Reply(exit_code=1),  # 観察 3 (読めない)
                 Reply(stdout="84000\n"),  # 観察 4
             ),
         ),
-        Rule(prefix=hwmon2_name, node="head", replies=(Reply(stdout="mlx5\n"),)),
         Rule(
-            prefix=hwmon2_input,
+            prefix=("cat", hwmon2_input),
             node="head",
             replies=(
-                Reply(stdout="47000\n"),  # 発見
                 Reply(stdout="47000\n"),  # 観察 1
                 Reply(stdout="52000\n"),  # 観察 2 (途中の回で最大)
                 Reply(exit_code=1),  # 観察 3 (読めない)
@@ -2147,15 +2581,15 @@ def test_summary_counts_the_samples_over_the_threshold_and_their_time_span(
     fake_vllm.set_metrics(MetricsSample(running_requests=0, generation_tokens_total=1))
     config = config_for(port_of(fake_vllm))
     clock = WatchClock()
-    zone0 = ("cat", f"{w.THERMAL_ZONE_DIR}thermal_zone0/temp")
+    zone0 = f"{w.THERMAL_ZONE_DIR}thermal_zone0/temp"
     # node="head" に絞る (理由は test_thermal_event_fires_once_per_rising_edge... と同じ:
     # 絞らないと、head と worker が同じ規則の replies を奪い合ってしまう)
     script = [
+        discovery_rule(thermal_candidates(), {zone0: "80000\n"}, node="head"),
         Rule(
-            prefix=zone0,
+            prefix=("cat", zone0),
             node="head",
             replies=(
-                Reply(stdout="80000\n"),
                 Reply(stdout="85000\n"),
                 Reply(stdout="86000\n"),
                 Reply(stdout="91000\n"),
@@ -2207,8 +2641,11 @@ def test_thermal_condition_does_not_change_the_unresponsive_judgement(
     fake_vllm.set_health_fault(Fault(status=None))
     config = config_for(port_of(fake_vllm))
     clock = WatchClock()
-    zone0 = ("cat", f"{w.THERMAL_ZONE_DIR}thermal_zone0/temp")
-    script = [Rule(prefix=zone0, replies=(Reply(stdout="95000\n"),))]
+    zone0 = f"{w.THERMAL_ZONE_DIR}thermal_zone0/temp"
+    script = [
+        discovery_rule(thermal_candidates(), {zone0: "95000\n"}),
+        Rule(prefix=("cat", zone0), replies=(Reply(stdout="95000\n"),)),
+    ]
     runner = FakeRunner(var_root=tmp_path, script=script, default=Reply(exit_code=1))
 
     outcome = w.watch(
@@ -2245,17 +2682,16 @@ def test_cpufreq_cores_are_discovered_once_and_read_per_observation(
     fake_vllm.set_metrics(MetricsSample(running_requests=0, generation_tokens_total=1))
     config = config_for(port_of(fake_vllm))
     clock = WatchClock()
-    core0 = ("cat", f"{w.CPU_DIR}cpu0/cpufreq/scaling_max_freq")
-    core5 = ("cat", f"{w.CPU_DIR}cpu5/cpufreq/scaling_max_freq")
-    # `Rule(prefix=core0)` は、発見 (1 道筋) と観察 (2 道筋) の両方に当たる。返事は、
-    # 発見 → 観察 (2 行) の順に消費する。観察は 2 回で、2 回目は最後の返事が繰り返される
+    core0 = f"{w.CPU_DIR}cpu0/cpufreq/scaling_max_freq"
+    core5 = f"{w.CPU_DIR}cpu5/cpufreq/scaling_max_freq"
     script = [
+        discovery_rule(cpufreq_candidates(), {core0: "2808000\n", core5: "3000000\n"}, node="head"),
+        # 観察は 1 回の `cat` に 2 つの道筋を並べる (2 回とも同じ値)
         Rule(
-            prefix=core0,
+            prefix=("cat", core0, core5),
             node="head",
-            replies=(Reply(stdout="2808000\n"), Reply(stdout="2808000\n3000000\n")),
+            replies=(Reply(stdout="2808000\n3000000\n"),),
         ),
-        Rule(prefix=core5, node="head", replies=(Reply(stdout="3000000\n"),)),
     ]
     runner = FakeRunner(var_root=tmp_path, script=script, default=Reply(exit_code=1))
 
@@ -2288,21 +2724,20 @@ def test_cpufreq_cores_are_discovered_once_and_read_per_observation(
     assert not any("cpu32" in one for one in shown), "コアの上限 (32) を超えて試している"
     # 観察 1 回あたり、台ごとに cpufreq の `cat` は 1 回 (複数の道筋を 1 つに並べる)
     observation_cats = [
-        call
-        for call in runner.calls
-        if call.node == "head"
-        and len(call.argv) > 2
-        and call.argv[0] == "cat"
-        and any(path.endswith("scaling_max_freq") for path in call.argv[1:])
+        call for call in runner.calls if call.node == "head" and call.argv == ("cat", core0, core5)
     ]
     assert len(observation_cats) == 2, (
         "観察 1 回あたり、台ごとの cpufreq の `cat` は 1 回 (コアごとに別々に流していない)"
     )
-    # `observation_cats` (道筋が 2 つ以上の呼び出し) は、コア 5 だけの単独の呼び出しを数えない。
-    # コア 5 の単独の呼び出しが 1 回だけであることを別に確かめ、観察のたびに発見をやり直して
-    # いないことを検出できるようにする (発見をやり直す実装でも、観察の回数ぶん増える)。
-    core5_calls = [call for call in runner.calls if call.node == "head" and call.argv == core5]
-    assert len(core5_calls) == 1, "発見は開始時の 1 回だけのはずが、観察のたびに繰り返している"
+    # 発見のまとめ読みの呼び出しが、全呼び出しの中で 1 回だけであることを確かめる (観察は 2 回
+    # あるので、最初の `nvidia-smi` で打ち切る `discovery_calls_for_node` ではなく、全体から
+    # 数える。観察のたびに発見をやり直す実装は、観察の回数ぶん増えて検出できる)。
+    discovery_batches = [
+        call
+        for call in runner.calls
+        if call.node == "head" and call.argv == ("cat", *cpufreq_candidates())
+    ]
+    assert len(discovery_batches) == 1, "発見は開始時の 1 回だけで、観察のたびには繰り返さない"
 
 
 def test_an_unreadable_cpufreq_round_empties_every_key_and_the_watch_continues(
@@ -2313,20 +2748,16 @@ def test_an_unreadable_cpufreq_round_empties_every_key_and_the_watch_continues(
     fake_vllm.set_metrics(MetricsSample(running_requests=0, generation_tokens_total=1))
     config = config_for(port_of(fake_vllm))
     clock = WatchClock()
-    core0 = ("cat", f"{w.CPU_DIR}cpu0/cpufreq/scaling_max_freq")
-    core5 = ("cat", f"{w.CPU_DIR}cpu5/cpufreq/scaling_max_freq")
-    # 発見 (1 道筋) → 観察 1 (2 行。どちらも数) → 観察 2 (1 行だけ。行数の不一致)
+    core0 = f"{w.CPU_DIR}cpu0/cpufreq/scaling_max_freq"
+    core5 = f"{w.CPU_DIR}cpu5/cpufreq/scaling_max_freq"
+    # 観察 1 (2 行。どちらも数) → 観察 2 (1 行だけ。行数の不一致)
     script = [
+        discovery_rule(cpufreq_candidates(), {core0: "2808000\n", core5: "3000000\n"}, node="head"),
         Rule(
-            prefix=core0,
+            prefix=("cat", core0, core5),
             node="head",
-            replies=(
-                Reply(stdout="2808000\n"),
-                Reply(stdout="2808000\n3000000\n"),
-                Reply(stdout="2808000\n"),
-            ),
+            replies=(Reply(stdout="2808000\n3000000\n"), Reply(stdout="2808000\n")),
         ),
-        Rule(prefix=core5, node="head", replies=(Reply(stdout="3000000\n"),)),
     ]
     runner = FakeRunner(var_root=tmp_path, script=script, default=Reply(exit_code=1))
 
@@ -2359,18 +2790,15 @@ def test_a_single_unparseable_cpufreq_line_empties_only_that_key(
     fake_vllm.set_metrics(MetricsSample(running_requests=0, generation_tokens_total=1))
     config = config_for(port_of(fake_vllm))
     clock = WatchClock()
-    core0 = ("cat", f"{w.CPU_DIR}cpu0/cpufreq/scaling_max_freq")
-    core5 = ("cat", f"{w.CPU_DIR}cpu5/cpufreq/scaling_max_freq")
+    core0 = f"{w.CPU_DIR}cpu0/cpufreq/scaling_max_freq"
+    core5 = f"{w.CPU_DIR}cpu5/cpufreq/scaling_max_freq"
     script = [
+        discovery_rule(cpufreq_candidates(), {core0: "2808000\n", core5: "3000000\n"}, node="head"),
         Rule(
-            prefix=core0,
+            prefix=("cat", core0, core5),
             node="head",
-            replies=(
-                Reply(stdout="2808000\n"),
-                Reply(stdout="2808000\nabc\n"),
-            ),
+            replies=(Reply(stdout="2808000\nabc\n"),),
         ),
-        Rule(prefix=core5, node="head", replies=(Reply(stdout="3000000\n"),)),
     ]
     runner = FakeRunner(var_root=tmp_path, script=script, default=Reply(exit_code=1))
 
@@ -2403,25 +2831,24 @@ def test_summary_records_the_cluster_maxima_across_all_samples(
     fake_vllm.set_metrics(MetricsSample(running_requests=0, generation_tokens_total=1))
     config = config_for(port_of(fake_vllm))
     clock = WatchClock()
-    core0 = ("cat", f"{w.CPU_DIR}cpu0/cpufreq/scaling_max_freq")
-    core5 = ("cat", f"{w.CPU_DIR}cpu5/cpufreq/scaling_max_freq")
+    core0 = f"{w.CPU_DIR}cpu0/cpufreq/scaling_max_freq"
+    core5 = f"{w.CPU_DIR}cpu5/cpufreq/scaling_max_freq"
     # 観察 1: X925 (コア 5) が 3000000、A725 (コア 0) が 2808000
     # 観察 2: X925 が 3900000 (上限が外れた) — これが最大として残る
     # 観察 3: 1 行だけ (行数の不一致 → 全キー空) — 最大値は 3900000 のまま
     # 観察 4: X925 が 3000000 に戻る
     script = [
+        discovery_rule(cpufreq_candidates(), {core0: "2808000\n", core5: "3000000\n"}, node="head"),
         Rule(
-            prefix=core0,
+            prefix=("cat", core0, core5),
             node="head",
             replies=(
-                Reply(stdout="2808000\n"),
                 Reply(stdout="2808000\n3000000\n"),
                 Reply(stdout="2808000\n3900000\n"),
                 Reply(stdout="2808000\n"),
                 Reply(stdout="2808000\n3000000\n"),
             ),
         ),
-        Rule(prefix=core5, node="head", replies=(Reply(stdout="3000000\n"),)),
     ]
     runner = FakeRunner(var_root=tmp_path, script=script, default=Reply(exit_code=1))
 
@@ -2455,16 +2882,10 @@ def test_a_cluster_that_was_never_read_has_no_key_in_the_summary(
     fake_vllm.set_metrics(MetricsSample(running_requests=0, generation_tokens_total=1))
     config = config_for(port_of(fake_vllm))
     clock = WatchClock()
-    core5 = ("cat", f"{w.CPU_DIR}cpu5/cpufreq/scaling_max_freq")
+    core5 = f"{w.CPU_DIR}cpu5/cpufreq/scaling_max_freq"
     script = [
-        Rule(
-            prefix=core5,
-            node="head",
-            replies=(
-                Reply(stdout="3000000\n"),
-                Reply(stdout="3000000\n"),
-            ),
-        ),
+        discovery_rule(cpufreq_candidates(), {core5: "3000000\n"}, node="head"),
+        Rule(prefix=("cat", core5), node="head", replies=(Reply(stdout="3000000\n"),)),
     ]
     runner = FakeRunner(var_root=tmp_path, script=script, default=Reply(exit_code=1))
 
