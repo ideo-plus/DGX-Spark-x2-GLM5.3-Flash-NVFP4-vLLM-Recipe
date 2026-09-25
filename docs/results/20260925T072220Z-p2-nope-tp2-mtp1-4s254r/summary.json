@@ -1,0 +1,734 @@
+{
+  "schema_version": 1,
+  "conditions": {
+    "schema_version": 1,
+    "run_id": "20260925T072220Z-p2-nope-tp2-mtp1-4s254r",
+    "status": "completed",
+    "target": {
+      "name": "p2-nope-tp2-mtp1",
+      "base_url": "http://10.0.1.60:8000/",
+      "model": "glm-5-3-flash",
+      "notes": "MTP を下書き 1 トークンで有効にした full と同じ構成の計測 (起動側の構成名も p2-nope-tp2-mtp1)。実機では未確認",
+      "api_key_env": null,
+      "metrics_url": null,
+      "max_context_tokens": 163840,
+      "metric_map": {},
+      "tool_markup_markers": [
+        "<tool_call>",
+        "</tool_call>",
+        "<arg_key>",
+        "<arg_value>"
+      ]
+    },
+    "server_model": "glm-5-3-flash",
+    "server_version": "0.1.dev1+g0961bbae2.d20260922",
+    "started_at": "2026-09-25T07:22:20.710649Z",
+    "finished_at": "2026-09-25T08:05:39.841220Z",
+    "suites": [
+      "quality"
+    ],
+    "profile_name": "quick",
+    "profile": {
+      "name": "quick",
+      "seed": 0,
+      "sampling": {
+        "temperature": 0.0,
+        "top_p": null,
+        "top_k": null,
+        "thinking": "server_default"
+      },
+      "chars_per_token": {
+        "prose_en": 4.831,
+        "prose_ja": 1.794,
+        "code": 3.505,
+        "log": 2.316
+      },
+      "timeout": {
+        "connect_s": 10.0,
+        "first_event_s": 120.0,
+        "idle_s": 60.0,
+        "total_s": 900.0
+      },
+      "min_successes": 5,
+      "max_consecutive_failures": 5,
+      "length_tolerance": 0.05,
+      "compare_tolerance": 0.02,
+      "metrics_interval_s": 1.0,
+      "output_sanity": {
+        "repeat_min_chars": 12,
+        "repeat_min_count": 8
+      },
+      "sandbox": {
+        "runtime": "auto",
+        "image": "bench-sandbox:py3.13-numpy2.5.3",
+        "image_digest": "sha256:f75a1d43009306248ecbe68c0cc992b700a472037ba6ea336e519404ec1d1de6",
+        "timeout_s": 20.0,
+        "memory_mb": 512,
+        "cpus": 1.0,
+        "pids_limit": 64
+      },
+      "decode": {
+        "trials": 10,
+        "warmup_trials": 2,
+        "max_tokens": 1024
+      },
+      "prefill": {
+        "trials": 5,
+        "warmup_trials": 1,
+        "max_tokens": 16,
+        "target_input_tokens": [
+          8000,
+          32000,
+          128000
+        ]
+      },
+      "concurrency": {
+        "levels": [
+          1,
+          2,
+          4,
+          8
+        ],
+        "rounds": 5,
+        "max_tokens": 256,
+        "input_tokens": 2000
+      },
+      "quality": {
+        "toolcall_tasks": 50,
+        "needle_lengths": [
+          8000,
+          32000,
+          128000
+        ],
+        "needle_depths": [
+          0,
+          25,
+          50,
+          75,
+          100
+        ],
+        "trials_per_cell": 2,
+        "code_max_tokens": 1024,
+        "code_problem_limit": 40
+      },
+      "agent": {
+        "start_tokens": 20000,
+        "end_tokens": 120000,
+        "step_tokens": 20000,
+        "trials_per_stage": 50,
+        "conversations_per_stage": 5,
+        "threshold": 0.01,
+        "max_tokens": 256
+      }
+    },
+    "harness_version": "0.1.0+g4daa66e4",
+    "generator_version": 1,
+    "context_limit": 163840,
+    "warnings": [],
+    "skipped": [],
+    "datasets": [
+      {
+        "name": "HumanEval+",
+        "version": "v0.1.10",
+        "source_url": "https://github.com/evalplus/humanevalplus_release/releases/download/v0.1.10/HumanEvalPlus-OriginFmt.jsonl.gz",
+        "license": "Apache-2.0 (EvalPlus)、MIT (OpenAI HumanEval)",
+        "scoring_method": "応答から取り出したコードに、課題の `test` (`check(candidate)` の定義) と `check(<entry_point>)` の呼び出しを続けて、隔離したコンテナの中で動かす。例外なく終われば正解。正解の割合を、問題の数とともに示す (5.2、5.4)",
+        "sha256": "daa7661c8189924068069b0872a440b491edb60f8bdf431d5957adc88d18bae5"
+      }
+    ]
+  },
+  "incomplete": false,
+  "results": [
+    {
+      "condition": "quality/toolcall",
+      "metric": "accuracy",
+      "tier": "primary",
+      "continuous": null,
+      "proportion": {
+        "numerator": 37,
+        "denominator": 50,
+        "rate": 0.74,
+        "ci95_low": 0.5965523212721564,
+        "ci95_high": 0.853699415603387,
+        "upper95_one_sided": 0.8388254034694
+      },
+      "failures": 0,
+      "flags": [],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0,
+        "not_scored": 0
+      }
+    },
+    {
+      "condition": "quality/code/humaneval+",
+      "metric": "accuracy",
+      "tier": "primary",
+      "continuous": null,
+      "proportion": {
+        "numerator": 22,
+        "denominator": 40,
+        "rate": 0.55,
+        "ci95_low": 0.38490679453434495,
+        "ci95_high": 0.7074116499602496,
+        "upper95_one_sided": 0.6853868490102286
+      },
+      "failures": 0,
+      "flags": [],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0,
+        "not_scored": 0
+      }
+    },
+    {
+      "condition": "quality/needle/8k/d0",
+      "metric": "accuracy",
+      "tier": "primary",
+      "continuous": null,
+      "proportion": {
+        "numerator": 2,
+        "denominator": 2,
+        "rate": 1.0,
+        "ci95_low": 0.15811388300841897,
+        "ci95_high": 1.0,
+        "upper95_one_sided": 1.0
+      },
+      "failures": 0,
+      "flags": [],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0,
+        "not_scored": 0
+      }
+    },
+    {
+      "condition": "quality/needle/8k/d25",
+      "metric": "accuracy",
+      "tier": "primary",
+      "continuous": null,
+      "proportion": {
+        "numerator": 2,
+        "denominator": 2,
+        "rate": 1.0,
+        "ci95_low": 0.15811388300841897,
+        "ci95_high": 1.0,
+        "upper95_one_sided": 1.0
+      },
+      "failures": 0,
+      "flags": [],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0,
+        "not_scored": 0
+      }
+    },
+    {
+      "condition": "quality/needle/8k/d50",
+      "metric": "accuracy",
+      "tier": "primary",
+      "continuous": null,
+      "proportion": {
+        "numerator": 2,
+        "denominator": 2,
+        "rate": 1.0,
+        "ci95_low": 0.15811388300841897,
+        "ci95_high": 1.0,
+        "upper95_one_sided": 1.0
+      },
+      "failures": 0,
+      "flags": [],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0,
+        "not_scored": 0
+      }
+    },
+    {
+      "condition": "quality/needle/8k/d75",
+      "metric": "accuracy",
+      "tier": "primary",
+      "continuous": null,
+      "proportion": {
+        "numerator": 2,
+        "denominator": 2,
+        "rate": 1.0,
+        "ci95_low": 0.15811388300841897,
+        "ci95_high": 1.0,
+        "upper95_one_sided": 1.0
+      },
+      "failures": 0,
+      "flags": [],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0,
+        "not_scored": 0
+      }
+    },
+    {
+      "condition": "quality/needle/8k/d100",
+      "metric": "accuracy",
+      "tier": "primary",
+      "continuous": null,
+      "proportion": {
+        "numerator": 2,
+        "denominator": 2,
+        "rate": 1.0,
+        "ci95_low": 0.15811388300841897,
+        "ci95_high": 1.0,
+        "upper95_one_sided": 1.0
+      },
+      "failures": 0,
+      "flags": [],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0,
+        "not_scored": 0
+      }
+    },
+    {
+      "condition": "quality/needle/32k/d0",
+      "metric": "accuracy",
+      "tier": "primary",
+      "continuous": null,
+      "proportion": {
+        "numerator": 2,
+        "denominator": 2,
+        "rate": 1.0,
+        "ci95_low": 0.15811388300841897,
+        "ci95_high": 1.0,
+        "upper95_one_sided": 1.0
+      },
+      "failures": 0,
+      "flags": [],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0,
+        "not_scored": 0
+      }
+    },
+    {
+      "condition": "quality/needle/32k/d25",
+      "metric": "accuracy",
+      "tier": "primary",
+      "continuous": null,
+      "proportion": {
+        "numerator": 2,
+        "denominator": 2,
+        "rate": 1.0,
+        "ci95_low": 0.15811388300841897,
+        "ci95_high": 1.0,
+        "upper95_one_sided": 1.0
+      },
+      "failures": 0,
+      "flags": [],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0,
+        "not_scored": 0
+      }
+    },
+    {
+      "condition": "quality/needle/32k/d50",
+      "metric": "accuracy",
+      "tier": "primary",
+      "continuous": null,
+      "proportion": {
+        "numerator": 2,
+        "denominator": 2,
+        "rate": 1.0,
+        "ci95_low": 0.15811388300841897,
+        "ci95_high": 1.0,
+        "upper95_one_sided": 1.0
+      },
+      "failures": 0,
+      "flags": [],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0,
+        "not_scored": 0
+      }
+    },
+    {
+      "condition": "quality/needle/32k/d75",
+      "metric": "accuracy",
+      "tier": "primary",
+      "continuous": null,
+      "proportion": {
+        "numerator": 2,
+        "denominator": 2,
+        "rate": 1.0,
+        "ci95_low": 0.15811388300841897,
+        "ci95_high": 1.0,
+        "upper95_one_sided": 1.0
+      },
+      "failures": 0,
+      "flags": [],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0,
+        "not_scored": 0
+      }
+    },
+    {
+      "condition": "quality/needle/32k/d100",
+      "metric": "accuracy",
+      "tier": "primary",
+      "continuous": null,
+      "proportion": {
+        "numerator": 2,
+        "denominator": 2,
+        "rate": 1.0,
+        "ci95_low": 0.15811388300841897,
+        "ci95_high": 1.0,
+        "upper95_one_sided": 1.0
+      },
+      "failures": 0,
+      "flags": [],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0,
+        "not_scored": 0
+      }
+    },
+    {
+      "condition": "quality/needle/128k/d0",
+      "metric": "accuracy",
+      "tier": "primary",
+      "continuous": null,
+      "proportion": {
+        "numerator": 2,
+        "denominator": 2,
+        "rate": 1.0,
+        "ci95_low": 0.15811388300841897,
+        "ci95_high": 1.0,
+        "upper95_one_sided": 1.0
+      },
+      "failures": 0,
+      "flags": [],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0,
+        "not_scored": 0
+      }
+    },
+    {
+      "condition": "quality/needle/128k/d25",
+      "metric": "accuracy",
+      "tier": "primary",
+      "continuous": null,
+      "proportion": {
+        "numerator": 2,
+        "denominator": 2,
+        "rate": 1.0,
+        "ci95_low": 0.15811388300841897,
+        "ci95_high": 1.0,
+        "upper95_one_sided": 1.0
+      },
+      "failures": 0,
+      "flags": [],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0,
+        "not_scored": 0
+      }
+    },
+    {
+      "condition": "quality/needle/128k/d50",
+      "metric": "accuracy",
+      "tier": "primary",
+      "continuous": null,
+      "proportion": {
+        "numerator": 2,
+        "denominator": 2,
+        "rate": 1.0,
+        "ci95_low": 0.15811388300841897,
+        "ci95_high": 1.0,
+        "upper95_one_sided": 1.0
+      },
+      "failures": 0,
+      "flags": [],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0,
+        "not_scored": 0
+      }
+    },
+    {
+      "condition": "quality/needle/128k/d75",
+      "metric": "accuracy",
+      "tier": "primary",
+      "continuous": null,
+      "proportion": {
+        "numerator": 2,
+        "denominator": 2,
+        "rate": 1.0,
+        "ci95_low": 0.15811388300841897,
+        "ci95_high": 1.0,
+        "upper95_one_sided": 1.0
+      },
+      "failures": 0,
+      "flags": [],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0,
+        "not_scored": 0
+      }
+    },
+    {
+      "condition": "quality/needle/128k/d100",
+      "metric": "accuracy",
+      "tier": "primary",
+      "continuous": null,
+      "proportion": {
+        "numerator": 2,
+        "denominator": 2,
+        "rate": 1.0,
+        "ci95_low": 0.15811388300841897,
+        "ci95_high": 1.0,
+        "upper95_one_sided": 1.0
+      },
+      "failures": 0,
+      "flags": [],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0,
+        "not_scored": 0
+      }
+    }
+  ],
+  "agent": null,
+  "server_metrics": {
+    "quality/toolcall": {
+      "spec_acceptance_rate": 0.9567901234567902,
+      "mean_acceptance_length": 1.9567901234567902,
+      "decode_steps": 1508.0,
+      "tokens_per_step": 56.437002652519894,
+      "prefix_cache_hit_rate": 0.0,
+      "kv_usage_peak": 0.026490066225165587,
+      "preemptions": 0.0,
+      "missing": []
+    },
+    "quality/code/humaneval+": {
+      "spec_acceptance_rate": 0.9430968447929965,
+      "mean_acceptance_length": 1.9430968447929966,
+      "decode_steps": 16489.0,
+      "tokens_per_step": 2.263690945478804,
+      "prefix_cache_hit_rate": 0.0,
+      "kv_usage_peak": 0.026490066225165587,
+      "preemptions": 0.0,
+      "missing": []
+    },
+    "quality/needle/8k/d0": {
+      "spec_acceptance_rate": 0.9848484848484849,
+      "mean_acceptance_length": 1.9848484848484849,
+      "decode_steps": 68.0,
+      "tokens_per_step": 246.5735294117647,
+      "prefix_cache_hit_rate": 0.0,
+      "kv_usage_peak": 0.039735099337748325,
+      "preemptions": 0.0,
+      "missing": []
+    },
+    "quality/needle/8k/d25": {
+      "spec_acceptance_rate": 0.9577464788732394,
+      "mean_acceptance_length": 1.9577464788732395,
+      "decode_steps": 73.0,
+      "tokens_per_step": 229.7945205479452,
+      "prefix_cache_hit_rate": 0.0,
+      "kv_usage_peak": 0.039735099337748325,
+      "preemptions": 0.0,
+      "missing": []
+    },
+    "quality/needle/8k/d50": {
+      "spec_acceptance_rate": 0.9672131147540983,
+      "mean_acceptance_length": 1.9672131147540983,
+      "decode_steps": 63.0,
+      "tokens_per_step": 265.968253968254,
+      "prefix_cache_hit_rate": 0.0,
+      "kv_usage_peak": 0.039735099337748325,
+      "preemptions": 0.0,
+      "missing": []
+    },
+    "quality/needle/8k/d75": {
+      "spec_acceptance_rate": 0.9722222222222222,
+      "mean_acceptance_length": 1.9722222222222223,
+      "decode_steps": 74.0,
+      "tokens_per_step": 226.74324324324326,
+      "prefix_cache_hit_rate": 0.0,
+      "kv_usage_peak": 0.039735099337748325,
+      "preemptions": 0.0,
+      "missing": []
+    },
+    "quality/needle/8k/d100": {
+      "spec_acceptance_rate": 0.9444444444444444,
+      "mean_acceptance_length": 1.9444444444444444,
+      "decode_steps": 74.0,
+      "tokens_per_step": 226.6891891891892,
+      "prefix_cache_hit_rate": 0.0,
+      "kv_usage_peak": 0.039735099337748325,
+      "preemptions": 0.0,
+      "missing": []
+    },
+    "quality/needle/32k/d0": {
+      "spec_acceptance_rate": 0.9672131147540983,
+      "mean_acceptance_length": 1.9672131147540983,
+      "decode_steps": 63.0,
+      "tokens_per_step": 1052.5238095238096,
+      "prefix_cache_hit_rate": 0.0,
+      "kv_usage_peak": 0.05960264900662249,
+      "preemptions": 0.0,
+      "missing": []
+    },
+    "quality/needle/32k/d25": {
+      "spec_acceptance_rate": 0.9444444444444444,
+      "mean_acceptance_length": 1.9444444444444444,
+      "decode_steps": 74.0,
+      "tokens_per_step": 896.3243243243244,
+      "prefix_cache_hit_rate": 0.0,
+      "kv_usage_peak": 0.05960264900662249,
+      "preemptions": 0.0,
+      "missing": []
+    },
+    "quality/needle/32k/d50": {
+      "spec_acceptance_rate": 0.9864864864864865,
+      "mean_acceptance_length": 1.9864864864864864,
+      "decode_steps": 76.0,
+      "tokens_per_step": 872.828947368421,
+      "prefix_cache_hit_rate": 0.0,
+      "kv_usage_peak": 0.05960264900662249,
+      "preemptions": 0.0,
+      "missing": []
+    },
+    "quality/needle/32k/d75": {
+      "spec_acceptance_rate": 0.9594594594594594,
+      "mean_acceptance_length": 1.9594594594594594,
+      "decode_steps": 76.0,
+      "tokens_per_step": 872.8026315789474,
+      "prefix_cache_hit_rate": 0.0,
+      "kv_usage_peak": 0.05960264900662249,
+      "preemptions": 0.0,
+      "missing": []
+    },
+    "quality/needle/32k/d100": {
+      "spec_acceptance_rate": 0.9577464788732394,
+      "mean_acceptance_length": 1.9577464788732395,
+      "decode_steps": 73.0,
+      "tokens_per_step": 670.1095890410959,
+      "prefix_cache_hit_rate": 0.2630163478681292,
+      "kv_usage_peak": 0.05960264900662249,
+      "preemptions": 0.0,
+      "missing": []
+    },
+    "quality/needle/128k/d0": {
+      "spec_acceptance_rate": 0.9428571428571428,
+      "mean_acceptance_length": 1.9428571428571428,
+      "decode_steps": 72.0,
+      "tokens_per_step": 2957.375,
+      "prefix_cache_hit_rate": 0.19705831302024768,
+      "kv_usage_peak": 0.13576158940397354,
+      "preemptions": 0.0,
+      "missing": []
+    },
+    "quality/needle/128k/d25": {
+      "spec_acceptance_rate": 0.9156626506024096,
+      "mean_acceptance_length": 1.9156626506024095,
+      "decode_steps": 85.0,
+      "tokens_per_step": 2505.329411764706,
+      "prefix_cache_hit_rate": 0.19705831302024768,
+      "kv_usage_peak": 0.13576158940397354,
+      "preemptions": 0.0,
+      "missing": []
+    },
+    "quality/needle/128k/d50": {
+      "spec_acceptance_rate": 0.9342105263157895,
+      "mean_acceptance_length": 1.9342105263157894,
+      "decode_steps": 78.0,
+      "tokens_per_step": 2730.0128205128203,
+      "prefix_cache_hit_rate": 0.19705831302024768,
+      "kv_usage_peak": 0.13576158940397354,
+      "preemptions": 0.0,
+      "missing": []
+    },
+    "quality/needle/128k/d75": {
+      "spec_acceptance_rate": 0.9230769230769231,
+      "mean_acceptance_length": 1.9230769230769231,
+      "decode_steps": 80.0,
+      "tokens_per_step": 2661.8125,
+      "prefix_cache_hit_rate": 0.19705831302024768,
+      "kv_usage_peak": 0.13576158940397354,
+      "preemptions": 0.0,
+      "missing": []
+    },
+    "quality/needle/128k/d100": {
+      "spec_acceptance_rate": 0.9390243902439024,
+      "mean_acceptance_length": 1.9390243902439024,
+      "decode_steps": 84.0,
+      "tokens_per_step": 1706.1904761904761,
+      "prefix_cache_hit_rate": 0.4598062003803544,
+      "kv_usage_peak": 0.13576158940397354,
+      "preemptions": 0.0,
+      "missing": []
+    }
+  },
+  "datasets": [
+    {
+      "name": "HumanEval+",
+      "version": "v0.1.10",
+      "source_url": "https://github.com/evalplus/humanevalplus_release/releases/download/v0.1.10/HumanEvalPlus-OriginFmt.jsonl.gz",
+      "license": "Apache-2.0 (EvalPlus)、MIT (OpenAI HumanEval)",
+      "scoring_method": "応答から取り出したコードに、課題の `test` (`check(candidate)` の定義) と `check(<entry_point>)` の呼び出しを続けて、隔離したコンテナの中で動かす。例外なく終われば正解。正解の割合を、問題の数とともに示す (5.2、5.4)",
+      "sha256": "daa7661c8189924068069b0872a440b491edb60f8bdf431d5957adc88d18bae5"
+    }
+  ]
+}
