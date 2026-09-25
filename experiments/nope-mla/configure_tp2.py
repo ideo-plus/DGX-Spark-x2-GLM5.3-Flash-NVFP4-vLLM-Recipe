@@ -2,6 +2,9 @@
 
 変種は 3 つ: 初回確認用の `smoke`、計測用の `full`、`full` にモデル付属の MTP を足した
 `full-mtp` (`--spec-tokens N`)。`full-mtp` の構成の名前は `p2-nope-tp2-mtp<N>` になる。
+
+`--nccl-thread-names` を付けると、`NCCL_SET_THREAD_NAME=1` の env を根拠つきで足し、構成の
+名前を `-tn` 付きにする (どの `--variant` にも付けられる)。
 """
 
 from __future__ import annotations
@@ -33,6 +36,16 @@ MTP_QUOTE = (
     "The name of the speculative method to use. … The number of speculative tokens, if provided. "
     "It will default to the number in the draft model config if present, otherwise, it is required."
 )
+THREAD_NAMES_SUFFIX = "-tn"
+THREAD_NAMES_ENV_KEY = "nccl-set-thread-name"
+THREAD_NAMES_SOURCE = "https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html"
+THREAD_NAMES_QUOTE = (
+    "Give more meaningful names to NCCL CPU threads to ease debugging and analysis."
+)
+THREAD_NAMES_WHY = (
+    "#17 で推定した、Worker_TP の中で張り付くメイン以外のスレッドが NCCL の proxy かを、"
+    "top -H のスレッドの名前 (NCCL Progress など) で確かめる。この確認のときだけ付ける"
+)
 
 
 class Variant(NamedTuple):
@@ -44,6 +57,9 @@ class Variant(NamedTuple):
 
     `spec_tokens` は、モデル付属の MTP (投機的デコード) を有効にする下書きのトークン数である。
     `None` なら投機の指定を足さない (smoke と full は `None`)。
+
+    `nccl_thread_names` が真なら、`render` は env に `NCCL_SET_THREAD_NAME=1` を根拠つきで
+    足し、名前は `-tn` 付きになる (`with_thread_names` が作る)。
     """
 
     name: str
@@ -52,6 +68,7 @@ class Variant(NamedTuple):
     nccl_debug_why: str
     arg_overrides: tuple[tuple[str, str, str, str], ...]
     spec_tokens: int | None = None
+    nccl_thread_names: bool = False
 
 
 SMOKE = Variant(
@@ -134,6 +151,18 @@ def mtp_variant(spec_tokens: int) -> Variant:
         nccl_debug_why=FULL.nccl_debug_why,
         arg_overrides=(),
         spec_tokens=spec_tokens,
+    )
+
+
+def with_thread_names(variant: Variant) -> Variant:
+    """`--nccl-thread-names` の構成 (基の変種 + NCCL のスレッドの名前)。"""
+    return variant._replace(
+        name=f"{variant.name}{THREAD_NAMES_SUFFIX}",
+        description=(
+            f"{variant.description}。NCCL の CPU スレッドに名前を付け (NCCL_SET_THREAD_NAME=1)、"
+            "top -H で張り付くスレッドが NCCL の proxy かを確かめる (#17)"
+        ),
+        nccl_thread_names=True,
     )
 
 
@@ -278,6 +307,16 @@ def render(configs_text: str, image: Mapping[str, Any], variant: Variant = SMOKE
             f"source = {json.dumps(origin['source'])}\n"
             f"quote = {json.dumps(origin['quote'], ensure_ascii=False)}\n"
         )
+    if variant.nccl_thread_names:
+        block += (
+            "\n# --- スレッドの名前 (--nccl-thread-names のときだけ) -----\n"
+            f"\n[configs.{variant.name}.env.{THREAD_NAMES_ENV_KEY}]\n"
+            'flag = "NCCL_SET_THREAD_NAME"\n'
+            'value = "1"\n'
+            f"why = {json.dumps(THREAD_NAMES_WHY, ensure_ascii=False)}\n"
+            f"source = {json.dumps(THREAD_NAMES_SOURCE)}\n"
+            f"quote = {json.dumps(THREAD_NAMES_QUOTE)}\n"
+        )
     result = "schema_version = 1\n\n" + block
     tomllib.loads(result)
     return result
@@ -307,6 +346,14 @@ def main(argv: Sequence[str] | None = None) -> None:
         default=None,
         help="full-mtp の、モデル付属の MTP の下書きのトークン数 (1 以上)",
     )
+    parser.add_argument(
+        "--nccl-thread-names",
+        action="store_true",
+        help=(
+            "NCCL のスレッドに名前を付ける env を足し、構成の名前に -tn を付ける"
+            " (どの --variant にも付けられる)"
+        ),
+    )
     parser.add_argument("inspect_json", type=Path)
     parser.add_argument("output", type=Path)
     args = parser.parse_args(argv)
@@ -322,6 +369,8 @@ def main(argv: Sequence[str] | None = None) -> None:
         if args.spec_tokens is not None:
             parser.error("--spec-tokens は --variant full-mtp のときだけ使える")
         variant = VARIANTS[args.variant]
+    if args.nccl_thread_names:
+        variant = with_thread_names(variant)
     generate(args.inspect_json, args.output, variant)
 
 
