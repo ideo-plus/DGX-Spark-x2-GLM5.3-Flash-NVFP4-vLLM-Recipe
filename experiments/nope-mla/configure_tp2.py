@@ -5,6 +5,10 @@
 
 `--nccl-thread-names` を付けると、`NCCL_SET_THREAD_NAME=1` の env を根拠つきで足し、構成の
 名前を `-tn` 付きにする (どの `--variant` にも付けられる)。
+
+`--torch-profiler` を付けると、`--profiler-config` (torch プロファイラー、出力先
+`/logs/torch-profile`) を根拠つきで args に足し、構成の名前を `-prof` 付きにする
+(どの `--variant` にも付けられる)。
 """
 
 from __future__ import annotations
@@ -46,6 +50,25 @@ THREAD_NAMES_WHY = (
     "#17 で推定した、Worker_TP の中で張り付くメイン以外のスレッドが NCCL の proxy かを、"
     "top -H のスレッドの名前 (NCCL Progress など) で確かめる。この確認のときだけ付ける"
 )
+PROFILER_SUFFIX = "-prof"
+PROFILER_ARG_KEY = "profiler-config"
+PROFILER_FLAG = "--profiler-config"
+PROFILER_DIR = "/logs/torch-profile"
+PROFILER_VALUE = '{"profiler":"torch","torch_profiler_dir":"/logs/torch-profile"}'
+PROFILER_SOURCE = (
+    "https://github.com/vllm-project/vllm/blob/"
+    "0961bbae2894d574be790d219651824eb199318e/vllm/config/profiler.py"
+)
+PROFILER_QUOTE = (
+    "Which profiler to use. … Directory to save torch profiler traces. "
+    "Both AsyncLLM's CPU traces and worker's traces (CPU & GPU) will be saved under this "
+    "directory. Note that it must be an absolute path."
+)
+PROFILER_WHY = (
+    "#42 (ADR 0006 の K2 の判断)。1 ステップの GPU の時間の内訳を torch プロファイラーで測る。"
+    "記録は /start_profile と /stop_profile の間だけ。trace は mount-logs で結び付けた /logs の"
+    "下に書き、serve logs で回収する。この計測のときだけ付ける"
+)
 
 
 class Variant(NamedTuple):
@@ -60,6 +83,9 @@ class Variant(NamedTuple):
 
     `nccl_thread_names` が真なら、`render` は env に `NCCL_SET_THREAD_NAME=1` を根拠つきで
     足し、名前は `-tn` 付きになる (`with_thread_names` が作る)。
+
+    `torch_profiler` が真なら、`render` は args に `--profiler-config` を根拠つきで足し、
+    名前は `-prof` 付きになる (`with_torch_profiler` が作る)。
     """
 
     name: str
@@ -69,6 +95,7 @@ class Variant(NamedTuple):
     arg_overrides: tuple[tuple[str, str, str, str], ...]
     spec_tokens: int | None = None
     nccl_thread_names: bool = False
+    torch_profiler: bool = False
 
 
 SMOKE = Variant(
@@ -166,6 +193,18 @@ def with_thread_names(variant: Variant) -> Variant:
     )
 
 
+def with_torch_profiler(variant: Variant) -> Variant:
+    """`--torch-profiler` の構成 (基の変種 + torch プロファイラーの設定)。"""
+    return variant._replace(
+        name=f"{variant.name}{PROFILER_SUFFIX}",
+        description=(
+            f"{variant.description}。torch プロファイラーを有効にし (--profiler-config)、"
+            f"/start_profile と /stop_profile の間の GPU の記録を {PROFILER_DIR} に書く (#42)"
+        ),
+        torch_profiler=True,
+    )
+
+
 def _spec_value(spec_tokens: int) -> str:
     """`--speculative-config` に渡す JSON の値 (vLLM の公式の文書とソースの形)。"""
     return f'{{"method":"mtp","num_speculative_tokens":{spec_tokens}}}'
@@ -214,6 +253,29 @@ def _replace_in_table(block: str, header: str, old_value: str, new_value: str, n
     return block[:start] + table + block[end:]
 
 
+def _insert_arg_table(
+    block: str,
+    variant: Variant,
+    *,
+    key: str,
+    flag: str,
+    value: str,
+    why: str,
+    source: str,
+    quote: str,
+) -> str:
+    """根拠つきの args のテーブルを 1 つ、`args` の末尾 (env のコメントの直前) に足す。"""
+    table = (
+        f"[configs.{variant.name}.args.{key}]\n"
+        f'flag = "{flag}"\n'
+        f"value = '{value}'\n"
+        f"why = {json.dumps(why, ensure_ascii=False)}\n"
+        f"source = {json.dumps(source)}\n"
+        f"quote = {json.dumps(quote, ensure_ascii=False)}\n"
+    )
+    return block.replace(variant.env_comment, table + "\n" + variant.env_comment, 1)
+
+
 def render(configs_text: str, image: Mapping[str, Any], variant: Variant = SMOKE) -> str:
     """configs.toml の p1 構成から `variant` に応じた構成の TOML を返す。"""
     start = configs_text.index(f"[configs.{SOURCE_NAME}]")
@@ -259,16 +321,27 @@ def render(configs_text: str, image: Mapping[str, Any], variant: Variant = SMOKE
             count=1,
             flags=re.MULTILINE,
         )
-        # (b) 投機の指定は、`args` の末尾 (env のコメントの直前) に足す
-        spec_table = (
-            f"[configs.{variant.name}.args.speculative-config]\n"
-            f'flag = "--speculative-config"\n'
-            f"value = '{_spec_value(variant.spec_tokens)}'\n"
-            f"why = {json.dumps(_mtp_why(variant.spec_tokens), ensure_ascii=False)}\n"
-            f"source = {json.dumps(MTP_SOURCE)}\n"
-            f"quote = {json.dumps(MTP_QUOTE, ensure_ascii=False)}\n"
+        block = _insert_arg_table(
+            block,
+            variant,
+            key="speculative-config",
+            flag="--speculative-config",
+            value=_spec_value(variant.spec_tokens),
+            why=_mtp_why(variant.spec_tokens),
+            source=MTP_SOURCE,
+            quote=MTP_QUOTE,
         )
-        block = block.replace(variant.env_comment, spec_table + "\n" + variant.env_comment, 1)
+    if variant.torch_profiler:
+        block = _insert_arg_table(
+            block,
+            variant,
+            key=PROFILER_ARG_KEY,
+            flag=PROFILER_FLAG,
+            value=PROFILER_VALUE,
+            why=PROFILER_WHY,
+            source=PROFILER_SOURCE,
+            quote=PROFILER_QUOTE,
+        )
     data = tomllib.loads(configs_text)
     source_env = data["configs"][NCCL_SOURCE_NAME]["env"]
     additions = (
@@ -354,6 +427,14 @@ def main(argv: Sequence[str] | None = None) -> None:
             " (どの --variant にも付けられる)"
         ),
     )
+    parser.add_argument(
+        "--torch-profiler",
+        action="store_true",
+        help=(
+            "torch プロファイラーの --profiler-config を足し、構成の名前に -prof を付ける"
+            " (どの --variant にも付けられる)"
+        ),
+    )
     parser.add_argument("inspect_json", type=Path)
     parser.add_argument("output", type=Path)
     args = parser.parse_args(argv)
@@ -371,6 +452,8 @@ def main(argv: Sequence[str] | None = None) -> None:
         variant = VARIANTS[args.variant]
     if args.nccl_thread_names:
         variant = with_thread_names(variant)
+    if args.torch_profiler:
+        variant = with_torch_profiler(variant)
     generate(args.inspect_json, args.output, variant)
 
 
