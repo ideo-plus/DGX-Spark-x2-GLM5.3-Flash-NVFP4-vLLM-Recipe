@@ -1027,6 +1027,27 @@ def test_server_metrics_are_carried_per_condition(tmp_path: Path) -> None:
     assert "spec_drafts" in text
 
 
+def test_server_metrics_section_heading_names_generation_tokens(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    _decode_bed(store)
+    store.write_metrics(
+        "decode/code/en",
+        MetricSnapshot(taken_at_utc=AT, raw_text="# before\n", values={}, missing=[]),
+        MetricSnapshot(taken_at_utc=AT_END, raw_text="# after\n", values={}, missing=[]),
+        DerivedMetrics(tokens_per_step=1.0),
+    )
+    _finish(store)
+
+    _, md_path = write_summary(store.run_dir)
+
+    lines = md_path.read_text(encoding="utf-8").splitlines()
+    section = lines.index("## 対象サーバーの内部の指標")
+    header_line = next(line for line in lines[section + 1 :] if line.startswith("|"))
+    cells = [cell.strip() for cell in header_line.strip().strip("|").split("|")]
+    assert len(cells) == 9
+    assert cells[4] == "1 ステップあたりの生成トークン"
+
+
 def test_non_finite_server_metrics_never_reach_the_summary(tmp_path: Path) -> None:
     """外から来た値は範囲も確かめる (注 2.7)。JSON に NaN や Infinity を書かない。
 

@@ -156,7 +156,9 @@ def derive(before: MetricSnapshot, after: MetricSnapshot, kv_peak: float | None)
     accepted = delta(LogicalMetric.SPEC_ACCEPTED_TOKENS)
     draft_tokens = delta(LogicalMetric.SPEC_DRAFT_TOKENS)
     drafts = delta(LogicalMetric.SPEC_DRAFTS)
-    iteration_sum = delta(LogicalMetric.ITERATION_TOKENS_SUM)
+    # `iteration_tokens_total_sum` には prefill の回の入力トークンも入るので、
+    # 1 ステップあたりの生成トークンは生成のカウンターから取る
+    generation = delta(LogicalMetric.GENERATION_TOKENS)
     iteration_count = delta(LogicalMetric.ITERATION_TOKENS_COUNT)
     prefix_hits = delta(LogicalMetric.PREFIX_HITS)
     prefix_queries = delta(LogicalMetric.PREFIX_QUERIES)
@@ -179,7 +181,7 @@ def derive(before: MetricSnapshot, after: MetricSnapshot, kv_peak: float | None)
         spec_acceptance_rate=_ratio(accepted, draft_tokens),
         mean_acceptance_length=mean_acceptance_length,
         decode_steps=iteration_count,
-        tokens_per_step=_ratio(iteration_sum, iteration_count),
+        tokens_per_step=_ratio(generation, iteration_count),
         prefix_cache_hit_rate=_ratio(prefix_hits, prefix_queries),
         kv_usage_peak=resolved_kv_peak,
         preemptions=preemptions,
