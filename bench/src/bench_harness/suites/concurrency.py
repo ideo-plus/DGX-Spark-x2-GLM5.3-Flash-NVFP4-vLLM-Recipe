@@ -23,10 +23,10 @@
 (`run_trial(..., expect_full_output=True)` が、届かなければ `SHORT_OUTPUT`
 を付ける)。
 
-文章の狙いは `target_input_tokens − 包み` である (issue #9)。`target_input_tokens`
+最初の候補は `target_input_tokens − 包み` である (issue #9)。`target_input_tokens`
 だけでは、識別子の行、システムプロンプト 2 行目、指示、チャットテンプレートの
-包みが足されて、実際の入力が狙いより長くなる。包みの分をあらかじめ引いてから
-文章を作る。
+包みが足されて、実際の入力が狙いより長くなる。包みの分をあらかじめ引いた長さを
+最初の候補にしてから、対象サーバーに数えさせて合わせ込む (「文書の合わせ込み」)。
 
 ## 包みの計測 (issue #9)
 
@@ -48,6 +48,39 @@
 runner が `manifest.skipped` に足して、次の水準に進む。`concurrency.input_tokens`
 が小さい設定と、包みが大きい対象サーバーの組み合わせで起こりうる)。
 
+## 文書の合わせ込み (issue #26)
+
+`target_input_tokens − 包み` を文章の長さにしても、実際の入力は狙いより
++3〜4% (約 +65 トークン) 長い側に残った (issue #26。実機の計測。差し引きの
+算術・改行・識別子のばらつきでは説明できず、文章の比の差か、文章があるときだけ
+現れる固定分が原因の候補で、実機のトークナイザーでしか確定できない)。そこで
+`agent` (issue #24) と同じく、原因を仮定せず、文書ごとに `_fit_document` が
+組み立てた要求そのものを数えて合わせ込む。
+
+- 文書ごと = 慣らしを含む各 (round, stream)。concurrency は試行ごとに文章が
+  違うので、「組み立てた要求ごとに数える」を `agent` と同じ粒度で適用すると
+  文書ごとになる
+- 補正は加算: `次の候補 = 今の候補 + (狙い − 数えた長さ)`。文章の長さはトークン
+  数で直接指定できるので、`agent` の比 (`history_scale`) ではなく差で足りる
+- 次の候補が 1 未満、または訪れた候補と同じなら止める (上限
+  `_MAX_LENGTH_COUNTS` 回)。訪れた候補のうち、数えた長さが狙いに最も近いものを
+  送る (同点は先のもの)
+- 数える要求の識別子は、試行の識別子ではなく、専用の名前空間 `_FIT_NONCE_KEY`
+  から `run_id` を含めずに作る (`_fit_nonce`)。試行の識別子で数えると、口が
+  ない対象では `max_tokens=1` の実要求が試行と同じ先頭になり、キャッシュに
+  当たって「効かない条件」の意味が壊れる。`run_id` を含めないので、数える要求は
+  計測ランをまたいで同一になり、文章も計測ランをまたいで同じになる (下の
+  「識別子」節)。残る差は、試行の識別子と合わせ込み用の識別子のトークン数の差で、
+  上限は識別子の 32 文字ぶん
+- 合わせ込みは `_run_round` が task と合図を作る前に、`stream_index` の順に
+  逐次行う (同時に数えても、口がない対象で n 本の prefill が重なるだけで利点が
+  なく、順序も不定になる)
+- 数える要求は `put_body` には保存されず、その条件の `/metrics` の増分に入る
+  (`measure_frame_tokens` と同じ)
+- `ProbeError` は捕まえない (黙って文字数の見積もりに戻さない。runner が計測ランを
+  `aborted` にして止める)。`condition` は `plan_condition` が狙い + 出力の上限で
+  上限判定を済ませているので、`agent` のような段階の飛ばしは要らない
+
 ## 識別子 (`trial_index` / `round_id` / `stream_index`)
 
 `(condition, warmup, trial_index, stream_index)` の 4 つ組が、1 つのレコード
@@ -55,7 +88,8 @@ runner が `manifest.skipped` に足して、次の水準に進む。`concurrenc
 慣らしと本番は別々に数える。`iter_trials` の決まりのとおり)。測った回 r・
 ストリーム k の文章は、`trial_seed` が `run_id` を含まないので、計測ランを
 またいでも同じになる (`cold_prefix_nonce` の先頭の行だけが、`run_id` を含む
-ので計測ランごとに変わる)。
+ので計測ランごとに変わる)。合わせ込みの数える要求の先頭 (`_fit_nonce`) も
+`run_id` を含まないので、候補の文章は計測ランをまたいで同じになる。
 
 ## 慣らし (design.md「同じ回に n 本の接続がそろう前に測らない」)
 
@@ -94,6 +128,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator
+from dataclasses import dataclass
 from typing import Final
 
 from bench_harness.suites.base import (
@@ -138,6 +173,18 @@ _FRAME_NONCE_KEY: Final[str] = "concurrency/frame"
 条件の鍵 (`concurrency/c{n}`) とは別なので、包みを測る要求の先頭の行は、
 どの試行の先頭の行とも重ならない。
 """
+
+_FIT_NONCE_KEY: Final[str] = "concurrency/fit"
+"""合わせ込みの数える要求の識別子の名前空間 (issue #26)。
+
+条件の鍵 (`concurrency/c{n}`) とも包みの名前空間 (`_FRAME_NONCE_KEY`) とも別
+なので、合わせ込みの先頭の行は、どの試行の先頭の行とも包みの先頭の行とも
+重ならない。`cold_prefix_nonce` と違い `run_id` を含めないので、数える要求は
+計測ランをまたいで同じになり、候補の文章も計測ランをまたいで同じになる。
+"""
+
+_MAX_LENGTH_COUNTS: Final[int] = 4
+"""合わせ込みの計測の上限 (agent の `_MAX_LENGTH_COUNTS` と同じ。issue #26)。"""
 
 _SYSTEM_LINES: Final[tuple[str, ...]] = ("長く書くこと。",)
 """システムプロンプトの 1 行目 (識別子の行) のあとに置く行。試行と包みの計測で
@@ -195,12 +242,23 @@ async def _measure_frame(ctx: SuiteContext) -> int:
     )
 
 
-def _document_tokens(cond: ConditionPlan, frame_tokens: int) -> int:
-    """文章に割り当てるトークン数 (`target_input_tokens − 包み`) (issue #9)。
+@dataclass(frozen=True)
+class _DocumentBudget:
+    """1 つの条件の、狙いと文章の最初の候補 (issue #9、#26)。"""
+
+    target_tokens: int
+    """狙いの入力のトークン数 (`target_input_tokens`。None でないと解決済み)。"""
+    document_tokens: int
+    """文章の最初の候補のトークン数 (`target_tokens − 包み`。1 以上)。"""
+
+
+def _document_budget(cond: ConditionPlan, frame_tokens: int) -> _DocumentBudget:
+    """狙いを解決し、文章に割り当てるトークン数 (`target_input_tokens − 包み`) を返す (issue #9)。
 
     狙いが包み以下なら、文章を入れられない。設定 (`concurrency.input_tokens`) と
     対象サーバーの数え方から起こりうる、想定した失敗なので、試行を 1 件も送らずに
     `ConditionAborted` でその条件を飛ばす (狙いと包みのトークン数を理由に残す)。
+    狙いの `None` 検査は、この関数だけが行う (合わせ込みは解決済みの値を受け取る)。
     """
     target_tokens = cond.target_input_tokens
     if target_tokens is None:
@@ -218,33 +276,94 @@ def _document_tokens(cond: ConditionPlan, frame_tokens: int) -> int:
                 "(concurrency.input_tokens を包みより大きくすること)",
             )
         )
-    return document_tokens
+    return _DocumentBudget(target_tokens=target_tokens, document_tokens=document_tokens)
+
+
+def _fit_nonce(ctx: SuiteContext) -> str:
+    """合わせ込みの数える要求の識別子 (issue #26)。
+
+    `run_id` を含めないので、同じ対象なら計測ランをまたいで同じ要求になり、
+    文章も計測ランをまたいで同じになる。試行の識別子 (`cold_prefix_nonce`)
+    や包みの識別子 (`_measure_frame`) とは別の名前空間なので、口がない対象で
+    `max_tokens=1` の実要求になっても、どの試行の先頭とも重ならない。
+    """
+    return ctx.corpus.prefix_nonce(ctx.profile.seed, _FIT_NONCE_KEY)
+
+
+@dataclass(frozen=True)
+class _FittedDocument:
+    """文書ごとの合わせ込みの結果 (issue #26)。"""
+
+    document: str
+    input_tokens: int
+    """合わせ込み用の識別子の要求全体を、対象サーバーが数えた長さ。"""
+
+
+async def _fit_document(
+    ctx: SuiteContext,
+    cond: ConditionPlan,
+    *,
+    budget: _DocumentBudget,
+    round_index: int,
+    warmup: bool,
+    stream_index: int,
+) -> _FittedDocument:
+    """1 本の文章を、対象サーバーに数えさせて狙いに合わせ込む (issue #26)。
+
+    `budget.document_tokens` (`target_input_tokens − 包み`) を最初の候補にし、
+    組み立てた要求 (包み + 文章 + 指示) そのものを数えさせ、`次の候補 = 今の候補 +
+    (狙い − 数えた長さ)` の加算で補正する。狙いは `budget.target_tokens`。次の候補が
+    1 未満、または訪れた候補と同じなら止める (上限 `_MAX_LENGTH_COUNTS` 回)。訪れた
+    候補のうち、数えた長さが狙いに最も近いものを返す (同点は先のもの)。
+
+    種は試行と同じ `trial_seed` を使うので、選んだ文章は試行のものと同じになる
+    (試行は `cold_prefix_nonce` の先頭の行だけが違う)。数える要求の `ProbeError`
+    は捕まえない (黙って見積もりに戻さない)。
+    """
+    target = budget.target_tokens
+    system = _system_for(_fit_nonce(ctx))
+    seed = trial_seed(
+        ctx.profile.seed, cond.key, round_index, warmup=warmup, stream_index=stream_index
+    )
+    candidate = budget.document_tokens
+    seen: set[int] = set()
+    best: _FittedDocument | None = None
+    for _ in range(_MAX_LENGTH_COUNTS):
+        seen.add(candidate)
+        document = ctx.corpus.prose(_DOCUMENT_LANG, candidate, seed)
+        counted = await measure_frame_tokens(
+            ctx, system=system, messages=single_user_message(_user_text(document))
+        )
+        if best is None or abs(counted - target) < abs(best.input_tokens - target):
+            best = _FittedDocument(document, counted)
+        nxt = candidate + (target - counted)
+        if nxt < 1 or nxt in seen:
+            break
+        candidate = nxt
+    assert best is not None, "_fit_document は 1 回目で必ず数える"
+    return best
 
 
 def _round_input(
     ctx: SuiteContext,
     cond: ConditionPlan,
     *,
-    document_tokens: int,
+    document: str,
     round_index: int,
     warmup: bool,
     stream_index: int,
 ) -> tuple[str, list[InputMessage]]:
     """1 本ぶんの、先頭も中身も重ならない入力を作る (4.1)。
 
-    先頭の識別子 (`cold_prefix_nonce`) と、文章そのものを作る種
-    (`trial_seed`) の両方に `stream_index` を混ぜるので、同じ回の n 本は、
-    システムプロンプトの 1 行目も、文章の中身も、互いに重ならない。
-    `document_tokens` は、狙いから包みを引いたあとの、文章に割り当てる
-    トークン数 (`_document_tokens`)。
+    システムプロンプトの 1 行目が同じ回の n 本で重ならないのは、先頭の識別子
+    (`cold_prefix_nonce`) に `stream_index` を混ぜるから。文章の中身が重ならない
+    のは、`document` を作る `_fit_document` の種 (`trial_seed`) に `stream_index`
+    が入るから。`document` は、`_fit_document` が対象サーバーに数えて合わせ込んだ
+    文章で、ここでは作らない。
     """
     nonce = cold_prefix_nonce(
         ctx, cond, trial_index=round_index, warmup=warmup, stream_index=stream_index
     )
-    seed = trial_seed(
-        ctx.profile.seed, cond.key, round_index, warmup=warmup, stream_index=stream_index
-    )
-    document = ctx.corpus.prose(_DOCUMENT_LANG, document_tokens, seed)
     return _system_for(nonce), single_user_message(_user_text(document))
 
 
@@ -252,7 +371,7 @@ async def _run_stream(
     ctx: SuiteContext,
     cond: ConditionPlan,
     *,
-    document_tokens: int,
+    document: str,
     round_index: int,
     warmup: bool,
     stream_index: int,
@@ -262,7 +381,7 @@ async def _run_stream(
     system, messages = _round_input(
         ctx,
         cond,
-        document_tokens=document_tokens,
+        document=document,
         round_index=round_index,
         warmup=warmup,
         stream_index=stream_index,
@@ -286,11 +405,14 @@ async def _run_round(
     ctx: SuiteContext,
     cond: ConditionPlan,
     *,
-    document_tokens: int,
+    budget: _DocumentBudget,
     round_index: int,
     warmup: bool,
 ) -> list[TrialRecord]:
     """1 回ぶんの `cond.concurrency` 本を、合図で同時に送り始める。
+
+    その前に、task と合図を作らずに、n 本の文書を `stream_index` の順に
+    逐次合わせ込む (issue #26。この module の docstring「文書の合わせ込み」)。
 
     1 本でも例外 (`put_body` の失敗、`asyncio.CancelledError` を含む) を
     投げたら、残りの task をすべて打ち切り、後始末 (`return_exceptions=True`)
@@ -299,13 +421,25 @@ async def _run_round(
     docstring「合図と、失敗したときに固まらないこと」)。
     """
     n = cond.concurrency
+    fitted: list[_FittedDocument] = []
+    for stream_index in range(n):
+        fitted.append(
+            await _fit_document(
+                ctx,
+                cond,
+                budget=budget,
+                round_index=round_index,
+                warmup=warmup,
+                stream_index=stream_index,
+            )
+        )
     gate = _RoundGate(n)
     tasks: list[asyncio.Task[TrialRecord]] = [
         asyncio.create_task(
             _run_stream(
                 ctx,
                 cond,
-                document_tokens=document_tokens,
+                document=fitted[stream_index].document,
                 round_index=round_index,
                 warmup=warmup,
                 stream_index=stream_index,
@@ -359,12 +493,12 @@ class ConcurrencySuite:
         self, ctx: SuiteContext, cond: ConditionPlan
     ) -> AsyncIterator[TrialRecord]:
         frame_tokens = await self._frame.tokens_for(ctx)
-        document_tokens = _document_tokens(cond, frame_tokens)
+        budget = _document_budget(cond, frame_tokens)
         for round_index, warmup in iter_trials(cond):
             records = await _run_round(
                 ctx,
                 cond,
-                document_tokens=document_tokens,
+                budget=budget,
                 round_index=round_index,
                 warmup=warmup,
             )
