@@ -1,0 +1,122 @@
+{
+  "derivation": {
+    "conversion": {
+      "args": [
+        "--source-repo",
+        "RedHatAI/GLM-5.3-Flash-NVFP4",
+        "--source-revision",
+        "18d55bfd5a2194887738da73753975c9d3842f46",
+        "--pattern",
+        ".*\\.layers\\.(?:0|1|2)\\.mlp\\.(?:gate|up|down)_proj$|.*\\.layers\\.\\d+\\.mlp\\.shared_experts\\.(?:gate|up|down)_proj$|.*\\.layers\\.\\d+\\.shared_head\\.head$|(?:.*\\.)?lm_head$"
+      ],
+      "commit": "2961fef133194876d1f97394cb7dab9f8c14420e",
+      "target_pattern": ".*\\.layers\\.(?:0|1|2)\\.mlp\\.(?:gate|up|down)_proj$|.*\\.layers\\.\\d+\\.mlp\\.shared_experts\\.(?:gate|up|down)_proj$|.*\\.layers\\.\\d+\\.shared_head\\.head$|(?:.*\\.)?lm_head$",
+      "tool": "experiments/k2-quant"
+    },
+    "name": "k2s1",
+    "origin": {
+      "repo": "RedHatAI/GLM-5.3-Flash-NVFP4",
+      "revision": "18d55bfd5a2194887738da73753975c9d3842f46"
+    }
+  },
+  "files": [
+    {
+      "path": "chat_template.jinja",
+      "sha256": "0c4099f3382d6c92700dfb99725025360966fd73032f0ecf32377c0d9e6309c5",
+      "size": 10950
+    },
+    {
+      "path": "config.json",
+      "sha256": "fd496fd0e4864f30331167a99e4049644fa5c475e95ce8e42f65384f36604cda",
+      "size": 51401
+    },
+    {
+      "path": "generation_config.json",
+      "sha256": "e9e93ee323895fa5e8e160f1f9826fd98b6bd7b3935435f423c3554f88bfa3ac",
+      "size": 177
+    },
+    {
+      "path": "model-00001-of-00010.safetensors",
+      "sha256": "10e1e41c501b90191cbc9aac6212b3909da425991b438d64e0330399696eada0",
+      "size": 19474859984
+    },
+    {
+      "path": "model-00002-of-00010.safetensors",
+      "sha256": "927c243f7dd42eec71a706418c548a6357cad9521e6146592b54862f938726fa",
+      "size": 19877143860
+    },
+    {
+      "path": "model-00003-of-00010.safetensors",
+      "sha256": "870f97205482b654bc5a0c2a48c61bbc6440c3b53110f13e298fdce5c5709925",
+      "size": 19900201168
+    },
+    {
+      "path": "model-00004-of-00010.safetensors",
+      "sha256": "925cf47c77565f25880322c562ee277aedeb83bcae20ce56bd0cb4295f751161",
+      "size": 19874678156
+    },
+    {
+      "path": "model-00005-of-00010.safetensors",
+      "sha256": "7b711179bf0ba8d98396b6ffb1ebf44db2bbccfa635b0bdc6deff65e7cadae31",
+      "size": 19900199760
+    },
+    {
+      "path": "model-00006-of-00010.safetensors",
+      "sha256": "5b35f702d6aac1736301874c952427a3842854f3b15234a4c68fb5bdaafda250",
+      "size": 19874675348
+    },
+    {
+      "path": "model-00007-of-00010.safetensors",
+      "sha256": "00ee84a4237018f13dade559e4ab451b848254299156b748844b158287e5e1ee",
+      "size": 19900200744
+    },
+    {
+      "path": "model-00008-of-00010.safetensors",
+      "sha256": "315fd4ddcdfcb36893cef7127cceb90aebf139f3573cb1e6f2c00c0e1f4a68bf",
+      "size": 19874676228
+    },
+    {
+      "path": "model-00009-of-00010.safetensors",
+      "sha256": "191aabf80b89037ff107f83175dc8e032c4ba694000985dfed2f19764ea70768",
+      "size": 19900198136
+    },
+    {
+      "path": "model-00010-of-00010.safetensors",
+      "sha256": "de711dd6f6e04842e4aee2cfec2e5d294e945939cdf0070d3b3a8d23b8604c9c",
+      "size": 9506503332
+    },
+    {
+      "path": "model.safetensors.index.json",
+      "sha256": "a189c4806eb0008f0766ffb6fde2a78fd1010848387f87082f2e8a60546fb434",
+      "size": 17071481
+    },
+    {
+      "path": "model_mtp.safetensors",
+      "sha256": "3fb6eab693c79e58eb824585a05b17ad602266790e883d774d6179f82270aedf",
+      "size": 7593427760
+    },
+    {
+      "path": "processor_config.json",
+      "sha256": "aae38374c94b08cc9b0547c6e64f05b951bd9735cea571c6988f5ed552bed3ed",
+      "size": 909
+    },
+    {
+      "path": "recipe.yaml",
+      "sha256": "c90bdcc6cd502c44af68ed4017740fe448d213f537a1a9509dc6437b9833c673",
+      "size": 1200
+    },
+    {
+      "path": "tokenizer.json",
+      "sha256": "0cfe2c099a7702a0921abc315ee039deb51e4a34b4818fc509bd27fa3dc4acc1",
+      "size": 20217541
+    },
+    {
+      "path": "tokenizer_config.json",
+      "sha256": "77af7d4769cd62c107b90495cac9b0ba81573c86486821bfba2980c04285ec7a",
+      "size": 790
+    }
+  ],
+  "generated_at": "2026-09-26T12:03:45.448492Z",
+  "kind": "derived",
+  "total_bytes": 195714118925
+}
