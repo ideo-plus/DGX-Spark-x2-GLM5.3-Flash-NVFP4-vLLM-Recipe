@@ -32,6 +32,14 @@
    - 仮置きの `<変換の道具>` が文書に残っていない
 9. コード塊の `serve derived-import` の option 名が、`cli.build_parser()` の
    `derived-import` の解析器に実在し、その必須の option をすべて含む
+10. §1 の突き合わせ (2 台の写しの `sha256sum` と、Mac の `shasum -a 256`) は、コード塊の命令として
+    読める形で、hash コマンドの**それぞれの**直後に `| LC_ALL=C sort` がある (`*.py` の展開順は
+    ロケールで違う。2026-09-26 に、中身が同じでも差分が出た)。段落と注釈の行の字面は見ない
+11. §0 の見本の JSON が、道具の写しの既定の正規表現 (`DEFAULT_PATTERN`) と同じ値を書き、`lm_head` と
+    MTP の `shared_head.head` を既定の対象にしない (#68)。`modules` は、その正規表現が選ぶ名前
+12. §8 (実機でしか分からないこと) が、2026-09-26 に分かったこと (変換の所要時間と 2 台の一致、
+    ページキャッシュで `--load-format instanttensor` の起動が落ち、`auto` なら読めること) を、
+    既存の項目を残したまま述べる
 
 RED: 文書がなければ、`_read_text` で `pytest.fail` する。道具の写しや `derived-import` が
 まだなければ、その理由を示して落とす。
@@ -41,6 +49,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import json
 import re
 import shlex
 from dataclasses import dataclass
@@ -98,6 +107,7 @@ REQUIRED_MARKERS: Final[tuple[str, ...]] = (
     "⚠",
     "kind",
     "derivation",
+    "LC_ALL=C sort",
 )
 """手順書に必要な印。"""
 
@@ -811,3 +821,294 @@ def test_the_derived_import_options_exist_in_the_real_cli() -> None:
         if required - used:
             problems.append(f"`derived-import` の必須の option {sorted(required - used)} がない")
     assert not problems, "\n".join(problems)
+
+
+# --- 10. §1 の突き合わせの並べ替え ---------------------------------------
+
+_HASH_COMMAND: Final[re.Pattern[str]] = re.compile(r"\b(?:sha256sum|shasum\s+-a\s+256)\b")
+"""2 台の写しと Mac の写しの、ファイルごとの SHA-256 を出す命令。"""
+
+_SORTED_AFTER_HASH_COMMAND: Final[re.Pattern[str]] = re.compile(r"[^|)'\"]*\|\s*LC_ALL=C\s+sort\b")
+"""hash コマンドの直後 (引数のあと、同じ引用符と括弧の中) の `| LC_ALL=C sort`。
+
+`ssh` の引用符や `<( … )` の括弧を越えては探さない。片側の並べ替えを、もう片側のもので
+代用させないため。
+"""
+
+_MINIMUM_CHECKSUM_COMMANDS: Final[int] = 4
+"""突き合わせの hash コマンドの数: 2 台 (`spark-153d`、`spark-5083`) × 2 側 (Spark と Mac)。"""
+
+
+def _checksum_sort_problems(text: str) -> tuple[int, list[str]]:
+    """文書のコード塊の命令行にある hash コマンドの数と、直後に並べ替えがないものの説明。
+
+    段落と、コード塊の中の注釈の行 (`#` で始まる行) は、見ない。
+    """
+    checked = 0
+    problems: list[str] = []
+    for line in _command_lines(text):
+        for found in _HASH_COMMAND.finditer(line):
+            checked += 1
+            if _SORTED_AFTER_HASH_COMMAND.match(line, found.end()) is None:
+                problems.append(
+                    f"`{found.group(0)}` の直後に `| LC_ALL=C sort` がない: {line.strip()[:100]}"
+                )
+    return checked, problems
+
+
+def test_the_checksum_comparison_sorts_every_side_by_file_name() -> None:
+    """§1 の突き合わせは、2 台 × 2 側の hash コマンドのそれぞれの直後で、並べ替えてから比べる。
+
+    `*.py` の展開順は、ロケールで違う (Spark と Mac で、中身が同じでも差分が出た)。
+    片側だけを並べ替えても、もう片側の順は変わらない。
+    """
+    checked, problems = _checksum_sort_problems(_read_text(DOC_PATH))
+
+    assert checked >= _MINIMUM_CHECKSUM_COMMANDS, (
+        f"突き合わせの hash コマンドが {checked} 個しか読めない (2 台 × 2 側 = "
+        f"{_MINIMUM_CHECKSUM_COMMANDS} 個が要る): {DOC_PATH}"
+    )
+    assert not problems, "\n".join(problems)
+
+
+_SYNTHETIC_CHECKSUM_COMPARISON: Final[tuple[str, ...]] = (
+    "diff \\",
+    "  <(ssh spark-153d 'cd /a && sha256sum *.py | LC_ALL=C sort -k 2') \\",
+    "  <(cd /b && shasum -a 256 *.py | LC_ALL=C sort -k 2)",
+    "diff \\",
+    "  <(ssh spark-5083 'cd /a && sha256sum *.py | LC_ALL=C sort -k 2') \\",
+    "  <(cd /b && shasum -a 256 *.py | LC_ALL=C sort -k 2)",
+)
+"""2 台 × 2 側の、すべて並べ替えてから比べる突き合わせの見本。行はバックスラッシュで継ぐ。"""
+
+
+def test_a_checksum_comparison_that_sorts_every_side_has_no_problem() -> None:
+    """2 台 × 2 側のすべての hash コマンドの直後に並べ替えがあれば、4 個数えられ、問題がない。"""
+    text = _synthetic_document("突き合わせる。", list(_SYNTHETIC_CHECKSUM_COMPARISON))
+
+    checked, problems = _checksum_sort_problems(text)
+
+    assert checked == _MINIMUM_CHECKSUM_COMMANDS
+    assert problems == []
+
+
+@pytest.mark.parametrize(
+    ("ssh_side", "label"),
+    [
+        ("sha256sum *.py", "並べ替えがない"),
+        ("sha256sum *.py | sort -k 2", "LC_ALL=C のない sort (ロケールに依る)"),
+    ],
+)
+def test_a_checksum_comparison_that_sorts_only_the_mac_side_is_a_problem(
+    ssh_side: str, label: str
+) -> None:
+    """片側 (ssh 側) が、ロケールに依らない並べ替えをしない命令行は、その命令行を示して落ちる。
+
+    Mac 側 (`shasum -a 256 *.py | LC_ALL=C sort -k 2`) に並べ替えがあっても、代用にならない。
+    """
+    lines = list(_SYNTHETIC_CHECKSUM_COMPARISON)
+    lines[1] = f"  <(ssh spark-153d 'cd /a && {ssh_side}') \\"
+    text = _synthetic_document("突き合わせる。", lines)
+
+    checked, problems = _checksum_sort_problems(text)
+
+    assert checked == _MINIMUM_CHECKSUM_COMMANDS, label
+    assert len(problems) == 1, label
+    assert "sha256sum" in problems[0]
+    assert "spark-153d" in problems[0]
+
+
+def test_checksum_words_in_a_paragraph_or_a_comment_line_are_not_counted() -> None:
+    """段落の `sha256sum` / `shasum -a 256` の説明と、コード塊の注釈行は、検査の対象にならない。
+
+    数えられるのは、コード塊の命令行の 4 個だけで、問題はない。
+    """
+    text = _synthetic_document(
+        "2 台の写しの `sha256sum` を、Mac の `shasum -a 256` と突き合わせる。",
+        ["# sha256sum は並べ替えてから比べる", *_SYNTHETIC_CHECKSUM_COMPARISON],
+    )
+
+    checked, problems = _checksum_sort_problems(text)
+
+    assert checked == _MINIMUM_CHECKSUM_COMMANDS
+    assert problems == []
+
+
+# --- 11. §0 の見本の JSON --------------------------------------------------
+
+TOOL_SELECTION_PATH: Final[Path] = (
+    SERVING_DIR / "payload" / "k2-quant" / "k2_quant" / "selection.py"
+)
+"""変換の道具の写しの、対象の選択 (`DEFAULT_PATTERN`)。実行せず、`ast` で読む。"""
+
+
+def _tool_default_pattern() -> str:
+    """変換の道具の写しの `DEFAULT_PATTERN` (実行せず、`ast` で定数を読む)。"""
+    if not TOOL_SELECTION_PATH.is_file():
+        pytest.fail(
+            f"変換の道具の写しがない (serving/payload/k2-quant/ に置く): {TOOL_SELECTION_PATH}"
+        )
+    tree = ast.parse(
+        TOOL_SELECTION_PATH.read_text(encoding="utf-8"), filename=str(TOOL_SELECTION_PATH)
+    )
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.AnnAssign)
+            and isinstance(node.target, ast.Name)
+            and node.target.id == "DEFAULT_PATTERN"
+            and node.value is not None
+        ):
+            value = ast.literal_eval(node.value)
+            assert isinstance(value, str), (
+                f"DEFAULT_PATTERN が文字列ではない: {TOOL_SELECTION_PATH}"
+            )
+            return value
+    pytest.fail(f"`DEFAULT_PATTERN` が読めない: {TOOL_SELECTION_PATH}")
+
+
+def _json_sample(key: str) -> dict[str, object]:
+    """手順書のコード塊のうち、JSON として読め、最上位に `key` を持つものの、唯一の 1 つ。"""
+    samples: list[dict[str, object]] = []
+    for block in _code_blocks(_read_text(DOC_PATH)):
+        try:
+            parsed = json.loads(block.text)
+        except ValueError:
+            continue
+        if isinstance(parsed, dict) and key in parsed:
+            samples.append(parsed)
+    assert len(samples) == 1, (
+        f"最上位に `{key}` を持つ JSON のコード塊が 1 つではない: {len(samples)}"
+    )
+    return samples[0]
+
+
+def _object(value: object, where: str) -> dict[str, object]:
+    assert isinstance(value, dict), f"{where} が JSON の object ではない"
+    return value
+
+
+def _pattern_argument(args: object, where: str) -> str:
+    """`args` の列の、`--pattern` の直後の値。"""
+    assert isinstance(args, list), f"{where} が列ではない"
+    assert args.count("--pattern") == 1, f"{where} の `--pattern` が 1 つではない"
+    value = args[args.index("--pattern") + 1]
+    assert isinstance(value, str), f"{where} の `--pattern` の値が文字列ではない"
+    return value
+
+
+def _tool_manifest_sample() -> dict[str, object]:
+    """§0 の、道具が書く manifest の見本の `conversion`。"""
+    return _object(_json_sample("conversion")["conversion"], "道具の見本の conversion")
+
+
+def _derived_conversion_sample() -> dict[str, object]:
+    """§0 の、serving が読む派生のマニフェストの見本の `derivation.conversion`。"""
+    derivation = _object(_json_sample("derivation")["derivation"], "派生の見本の derivation")
+    return _object(derivation["conversion"], "派生の見本の derivation.conversion")
+
+
+def test_the_manifest_samples_show_the_default_pattern_of_the_tool_copy() -> None:
+    """§0 の 2 つの見本の `pattern`・`args` の `--pattern`・`target_pattern` が、道具の写しの
+    `DEFAULT_PATTERN` と同じ文字列である。
+
+    手順書は「`--pattern` は渡さなくても、実際に使った既定の値を書きます」と述べている。
+    """
+    default = _tool_default_pattern()
+    tool = _tool_manifest_sample()
+    derived = _derived_conversion_sample()
+
+    assert tool["pattern"] == default
+    assert _pattern_argument(tool["args"], "道具の見本の args") == default
+    assert _pattern_argument(derived["args"], "派生の見本の args") == default
+    assert derived["target_pattern"] == default
+
+
+def test_the_manifest_sample_pattern_does_not_select_lm_head_or_the_mtp_shared_head() -> None:
+    """§0 の見本の `pattern` は、dense と共有の専門家を選び、`lm_head` と MTP の
+    `shared_head.head` は選ばない (#68)。
+
+    `re.match` は、道具が checkpoint のモジュール名に当てるのと同じ当て方。
+    """
+    pattern = str(_tool_manifest_sample()["pattern"])
+
+    for selected in (
+        "model.language_model.layers.0.mlp.gate_proj",
+        "model.language_model.layers.3.mlp.shared_experts.up_proj",
+    ):
+        assert re.match(pattern, selected), selected
+    for not_selected in (
+        "lm_head",
+        "model.language_model.layers.45.shared_head.head",
+    ):
+        assert not re.match(pattern, not_selected), not_selected
+
+
+def test_the_manifest_sample_modules_are_selected_by_the_sample_pattern() -> None:
+    """§0 の見本の `modules` の名前が、どれも、見本の `pattern` で選ばれる名前である。
+
+    `pattern` から `lm_head` を外したのに、`modules` の見本が `["lm_head"]` のままだと、
+    見本が自分の `pattern` と食い違う。
+    """
+    tool = _tool_manifest_sample()
+    modules = tool["modules"]
+    assert isinstance(modules, list)
+    assert modules, "§0 の見本の modules が空"
+
+    not_selected = [
+        module
+        for module in modules
+        if not isinstance(module, str) or not re.match(str(tool["pattern"]), module)
+    ]
+    assert not not_selected, f"見本の pattern で選ばれない modules: {not_selected}"
+
+
+# --- 12. §8 実機でしか分からないこと -----------------------------------
+
+
+def _section_8(text: str) -> str:
+    """`## 8.` の見出しから、次の `## ` の見出し (なければ末尾) の手前まで (コード塊の中は除く)。"""
+    lines = text.splitlines()
+    inside = _lines_inside(_code_blocks(text))
+    headings = [
+        number
+        for number, line in enumerate(lines, start=1)
+        if number not in inside and line.startswith("## ")
+    ]
+    begin = next((number for number in headings if lines[number - 1].startswith("## 8.")), None)
+    assert begin is not None, f"`## 8.` の見出しがない: {DOC_PATH}"
+    end = next((number for number in headings if number > begin), len(lines) + 1)
+    return "\n".join(lines[begin - 1 : end - 1])
+
+
+SECTION_8_NEW_MARKERS: Final[tuple[str, ...]] = (
+    "2026-09-26",
+    "8.5 分",
+    "バイト単位",
+    "ページキャッシュ",
+    "instanttensor",
+    "exceeds device memory budget",
+    "--load-format auto",
+)
+"""§8 に足す、2026-09-26 に分かったことの印 (変換は 2 台とも約 8.5 分でバイト単位で一致、
+変換と照合の直後はページキャッシュが埋まり `--load-format instanttensor` の起動が
+`buffer_size ... exceeds device memory budget` で落ち、`--load-format auto` なら読める)。"""
+
+SECTION_8_KEPT_MARKERS: Final[tuple[str, ...]] = (
+    "numpy",
+    "184 GiB",
+    "GPU のメモリ",
+    "匿名",
+)
+"""§8 の既存の項目 (追記の対象でないもの) の印。Issue は「足す」なので、置き換えない。"""
+
+
+@pytest.mark.parametrize("marker", SECTION_8_NEW_MARKERS)
+def test_section_8_records_what_was_learned_on_2026_09_26(marker: str) -> None:
+    """§8 に、2026-09-26 に分かったこと (変換の時間と一致、`instanttensor` の失敗と回避) がある。"""
+    assert marker in _section_8(_read_text(DOC_PATH))
+
+
+@pytest.mark.parametrize("marker", SECTION_8_KEPT_MARKERS)
+def test_section_8_keeps_the_existing_open_questions(marker: str) -> None:
+    """§8 の既存の項目 (`numpy`、空き、起動の時間と GPU のメモリ、匿名) を、消していない。"""
+    assert marker in _section_8(_read_text(DOC_PATH))

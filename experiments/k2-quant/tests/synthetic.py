@@ -5,11 +5,13 @@
 サブディレクトリを `tmp_path` の下に作る。乱数は `manual_seed` で固定し、全 0 の
 行と 1 要素だけ大きい行を含める。
 
-- 既定の正規表現が拾う (`DEFAULT_TARGET_MODULES`。dense・共有の専門家・`lm_head`)
+- 既定の正規表現が拾う (`DEFAULT_TARGET_MODULES`。dense・共有の専門家)
 - 既定の正規表現が拾わない (`IGNORE_NAMES` のうち対象でないものと、専門家・ルーター・
-  attention・visual・embed_tokens・norm・MTP の `eh_proj`)。`eh_proj` は、vLLM が
-  quant_config を受けない plain `nn.Linear` として実装しているため、既定の対象から外れる
-  負例として、テンソルは残したまま `DEFAULT_TARGET_MODULES` から除いている。
+  attention・visual・embed_tokens・norm・`lm_head`・MTP の `eh_proj` と `shared_head.head`)。
+  `eh_proj` は、vLLM が quant_config を受けない plain `nn.Linear` として実装しているため、
+  `lm_head` と `shared_head.head` は、FP8 (W8A16) の `ParallelLMHead` を humming の線形
+  カーネルで読めない (#68) ため、既定の対象から外れる負例として、テンソルは残したまま
+  `DEFAULT_TARGET_MODULES` から除いている。
 
 書き込みは `safetensors.torch.save_file` (参照実装) で行う。
 """
@@ -47,15 +49,17 @@ DEFAULT_TARGET_MODULES: tuple[str, ...] = (
     "model.language_model.layers.0.mlp.gate_proj",
     "model.language_model.layers.3.mlp.shared_experts.up_proj",
     "model.language_model.layers.45.mlp.shared_experts.down_proj",
-    "lm_head",
+    "model.language_model.layers.2.mlp.down_proj",
 )
-"""既定の正規表現が拾うモジュール名 (Issue #56 の第 1 段の範囲)。MTP の `eh_proj` は、vLLM が
+"""既定の正規表現が拾うモジュール名 (dense と共有の専門家)。MTP の `eh_proj` は、vLLM が
 quant_config を受けない plain `nn.Linear` として実装しているため含めない
-(`vllm/models/glm5next/common/mtp.py:49`、commit 0961bbae)。"""
+(`vllm/models/glm5next/common/mtp.py:49`、commit 0961bbae)。`lm_head` と `shared_head.head` は、
+FP8 の `ParallelLMHead` を読めない (#68) ため含めない。"""
 
 IGNORE_NAMES: tuple[str, ...] = (
     "model.language_model.layers.0.self_attn.q_proj",
     "model.language_model.layers.0.mlp.gate_proj",
+    "model.language_model.layers.2.mlp.down_proj",
     "model.language_model.layers.3.mlp.gate",
     "model.language_model.layers.3.mlp.shared_experts.up_proj",
     "model.language_model.layers.7.mlp.shared_experts.down_proj",
@@ -68,7 +72,8 @@ IGNORE_NAMES: tuple[str, ...] = (
 
 SHARED_HEAD_MODULE: str = "model.language_model.layers.45.shared_head.head"
 """MTP の head (`shared_head.head`) のモジュール名。実機の index にあるかは未確認なので、
-既定の合成 checkpoint には入れず、`build_checkpoint(include_shared_head=True)` のときだけ足す。"""
+既定の合成 checkpoint には入れず、`build_checkpoint(include_shared_head=True)` のときだけ足す。
+既定では変換しない (#68) 負例として、`--pattern` で明示したときだけ変換する正例として使う。"""
 
 ARCHITECTURES: tuple[str, ...] = ("Glm5NextForConditionalGeneration",)
 
@@ -196,6 +201,10 @@ def _shard_tensors(*, include_shared_head: bool) -> dict[str, dict[str, torch.Te
             f"{layer3}.mlp.gate.weight": _matrix(2, 4, seed=5),
         },
         SHARD_NAMES[2]: {
+            # 既定で変換しない `lm_head` (#68) だけでは、この shard に既定の対象が 1 つも
+            # 無くなる。書き直しの経路を通り、書き直した shard の中で `lm_head` が保たれることを
+            # 確かめるため、dense の層 2 の対象を足す
+            f"{language_model}.layers.2.mlp.down_proj.weight": _matrix(4, 8, seed=12),
             "lm_head.weight": _matrix(16, 4, seed=6),
             f"{language_model}.embed_tokens.weight": _matrix(16, 4, seed=7),
             f"{language_model}.norm.weight": _vector(4, seed=8),

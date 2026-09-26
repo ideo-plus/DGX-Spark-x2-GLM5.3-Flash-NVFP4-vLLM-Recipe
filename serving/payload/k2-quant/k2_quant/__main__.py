@@ -53,8 +53,9 @@ def _build_parser() -> argparse.ArgumentParser:
             "入力 checkpoint のモジュール名 (`.weight` を除いた名前) に `re.match` で当てて、\n"
             "変換するモジュールを選ぶ正規表現。config.json の target は、選ばれたモジュール\n"
             "から作る (この正規表現は書かない)。\n"
-            "既定は第 1 段の範囲 (dense・共有の専門家・MTP の head・lm_head。MTP の eh_proj は\n"
-            "quant_config を受けない plain nn.Linear なので既定から外す):\n"
+            "既定は第 1 段の範囲のうち dense と共有の専門家。vLLM が FP8 を読めない部分\n"
+            "(MTP の eh_proj は quant_config を受けない plain nn.Linear、ParallelLMHead は\n"
+            "FP8 (W8A16) を読めない (#68)) は既定から外す:\n"
             f"{DEFAULT_PATTERN}"
         ),
     )
