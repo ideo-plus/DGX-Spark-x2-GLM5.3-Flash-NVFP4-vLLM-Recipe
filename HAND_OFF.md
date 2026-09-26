@@ -112,7 +112,7 @@ NCCL のログは古いものも回収される。所有確認済みコンテナ
 
 使っている TAKT は 0.66.0。固定したワークフローの導入元、使い分け、検証結果は
 [開発手順](docs/development/takt-preparation.md) を参照する。
-`.takt/runtime.yaml` は profile 名の割り当て、モデル・接続先の実体は `~/.takt/runtime.yaml` にある。
+`.takt/runtime.yaml` に、段階の割り当てとプロファイル（モデル）の両方を置き、Git で管理する（2026-09-26 から。同じ名前のプロファイルは `~/.takt/runtime.yaml` よりこちらが勝つ）。
 PR まで作る依頼は GitHub issue の本文に書き、`--pipeline --auto-pr -b <branch> -i <番号>` で渡す（`--task` では全文が PR タイトルになり失敗する）。
 TAKT のコミットが、依頼で分けるよう求めた変更を 1 つにまとめることがあるので、PR の前に差分を確かめる。
 worktree は作っていない。今後 worktree を使う場合は `mise trust` を実行する。
@@ -129,7 +129,7 @@ worktree は作っていない。今後 worktree を使う場合は `mise trust`
 | `rate_limit_fallback` | `claude-opus-5-5`。本来は続けて codex / `gpt-6-sol`（上限中はコメントアウト） |
 | `codex_cli_path` | mise の codex 0.156.0 の実体。codex を更新したらパスも直す |
 
-Codex の割り当てに戻すときは、`~/.takt/runtime.yaml` と `config.yaml` のコメント行を戻す。`codex_cli_path` は残す。
+Codex の割り当てに戻すときは、`.takt/runtime.yaml` と `~/.takt/config.yaml` のコメント行を戻す。`codex_cli_path` は残す。
 
 各サービスの利用上限（2026-09-24 時点）:
 

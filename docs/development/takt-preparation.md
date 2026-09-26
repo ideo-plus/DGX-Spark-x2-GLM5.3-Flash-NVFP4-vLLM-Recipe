@@ -11,8 +11,11 @@ takt は Mac 上で構成・コード・試験・文書を作る。Spark の状�
 - `CLAUDE.md` と `AGENTS.md` に、文字列・argv・SHA-256 を使う安全条件や根拠固定のテストを維持する例外を記載した。
 - 出典とローカルの変更点は [.takt/UPSTREAM.md](../../.takt/UPSTREAM.md) にある。
 
-モデルの接続先はマシン側の `~/.takt/runtime.yaml` に置き、リポジトリには保存しない。
-プロジェクトの `.takt/runtime.yaml` は profile 名による段階の割り当てだけを共有する。
+2026-09-26 から、このプロジェクトのプロファイル（profile 名 → provider とモデル）も、プロジェクトの `.takt/runtime.yaml` に置いて Git で管理する。
+TAKT は `~/.takt/runtime.yaml` とプロジェクトのファイルを重ねて読み、同じ名前のプロファイルはプロジェクトが勝つ。
+こうすると、マシン全体の設定を、ほかのリポジトリと共有しなくて済む。worktree でも同じ設定で動く。
+一時的な切り替え（提供元の障害の回避など）は、その worktree の中だけで書き換え、コミットしない。
+以下の 2026-09-26 より前の記述は、当時のマシン側の設定のものである。
 導入時の T0 は、テストが OpenCode 経由の Ollama Cloud、実装が OpenCode Go。
 Ollama の接続先は `localhost:11434` で、Spark は使わない。
 T1 は Sonnet、T2 は Opus、計画は Fable、最終判断は Astra という既存の設定を維持した。
