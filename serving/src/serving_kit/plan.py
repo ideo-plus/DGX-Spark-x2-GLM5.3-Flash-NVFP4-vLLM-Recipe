@@ -567,7 +567,7 @@ def _labels(
         LABEL_CONFIG_SHA256: config_sha256,
     }
     if config.weights is not None:
-        labels[LABEL_WEIGHTS] = f"{config.weights.repo}@{config.weights.revision}"
+        labels[LABEL_WEIGHTS] = config.weights.identity
     if run is not None:
         labels[LABEL_RUN] = run
     return labels

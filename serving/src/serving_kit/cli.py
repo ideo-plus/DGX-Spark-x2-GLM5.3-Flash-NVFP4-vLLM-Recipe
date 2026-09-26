@@ -130,6 +130,7 @@ from serving_kit import config as config_mod
 from serving_kit import weights as weights_mod
 from serving_kit.remote import RemoteError, RemoteRunner, SshRunner
 from serving_kit.types import (
+    AnyWeightsManifest,
     ConfigDef,
     GateResult,
     LaunchObservation,
@@ -468,13 +469,13 @@ class _Context:
         nodes = self.nodes()
         return config_mod.select_config(configs, str(self.args.config), nodes), nodes
 
-    def manifest(self, config: ConfigDef) -> WeightsManifest | None:
+    def manifest(self, config: ConfigDef) -> AnyWeightsManifest | None:
         """構成が指す重みのマニフェストを読む (重みを持たない構成では `None`)。"""
         if config.weights is None:
             return None
         return weights_mod.load_manifest(self.serving / "weights" / config.weights.manifest)
 
-    def required_manifest(self, config: ConfigDef) -> WeightsManifest:
+    def required_manifest(self, config: ConfigDef) -> AnyWeightsManifest:
         """重みを持つことを前提にして読む (持たない構成は、Spark に触る前に断る)。"""
         manifest = self.manifest(config)
         if manifest is None:

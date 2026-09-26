@@ -47,6 +47,7 @@ from serving_kit import logs as lg
 from serving_kit import netcheck as nc
 from serving_kit import probe as pr
 from serving_kit import thinking as th
+from serving_kit import types as kt
 from serving_kit import watch as wt
 from serving_kit import weights as wg
 from serving_kit.config import ConfigError
@@ -1401,6 +1402,273 @@ def test_verify_refuses_a_config_without_weights(tmp_path: Path) -> None:
     result = run(["verify", INSPECT_CONFIG, "--yes"], repo)
     assert result.code == cli.EXIT_PRECONDITION
     assert result.spy.made == []
+
+
+# --- 派生の重み (手元で変換した重み) の構成 --------------------------------
+
+DERIVED_NAME = "k2s1"
+DERIVED_CONFIG = "p2-nope-tp2-full-k2s1"
+DERIVED_FETCH_CONFIG = "p2-fetch-k2s1"
+DERIVED_MANIFEST_NAME = f"{DERIVED_NAME}.manifest.json"
+DERIVED_TOOL = "experiments/k2-quant/convert.py"
+DERIVED_COMMIT = "a" * 40
+DERIVED_TARGET = r"^model\.layers\.\d+\.self_attn\..*$"
+DERIVED_RECORD_PATH = f"{REMOTE_ROOT}/state/{DERIVED_NAME}.derived.verified.json"
+DERIVED_DIRECTORY = f"{REMOTE_ROOT}/models/{DERIVED_NAME}"
+
+
+def _derived_weights_table(name: str) -> str:
+    """構成 `name` の `weights` の節 (派生。元の参照と変換の条件を持つ)。"""
+    lines = [
+        f"[configs.{name}.weights]",
+        'kind = "derived"',
+        f'name = "{DERIVED_NAME}"',
+        f'manifest = "{DERIVED_MANIFEST_NAME}"',
+        f'mount_at = "/models/{DERIVED_NAME}"',
+        "",
+        f"[configs.{name}.weights.origin]",
+        f'repo = "{REPO}"',
+        f'revision = "{REVISION}"',
+        f'manifest = "{MANIFEST_NAME}"',
+        "",
+        f"[configs.{name}.weights.conversion]",
+        f'tool = "{DERIVED_TOOL}"',
+        f'commit = "{DERIVED_COMMIT}"',
+        'args = ["--dtype", "fp8"]',
+        f"target_pattern = {_toml_value(DERIVED_TARGET)}",
+    ]
+    return "\n".join(lines) + "\n\n"
+
+
+def _derived_serve_config(port: int) -> str:
+    name = DERIVED_CONFIG
+    text = _header(name, "serve", ROLES, served=SERVED_MODEL, weights=False)
+    text += _derived_weights_table(name)
+    text += _setting(
+        f"configs.{name}.docker.models",
+        flag="--mount",
+        value="type=bind,source={remote_root}/models/" + DERIVED_NAME + ",target={weights.mount_at}"
+        ",readonly",
+    )
+    text += _setting(
+        f"configs.{name}.docker.cache",
+        flag="--mount",
+        value="type=bind,source={remote_root}/cache,target=/root/.cache",
+    )
+    text += _setting(f"configs.{name}.args.model-path", value="{weights.mount_at}")
+    text += _setting(
+        f"configs.{name}.args.served-model-name", flag="--served-model-name", value=SERVED_MODEL
+    )
+    text += _setting(f"configs.{name}.args.host", flag="--host", value="{head.lan_addr}")
+    text += _setting(f"configs.{name}.args.port", flag="--port", value=str(port), is_port=True)
+    text += _setting(
+        f"configs.{name}.args.master-port", flag="--master-port", value="29501", is_port=True
+    )
+    text += _setting(
+        f"configs.{name}.env.host-ip",
+        flag="VLLM_HOST_IP",
+        value="{node.fabric_addr}",
+        measured=True,
+    )
+    return text
+
+
+def _derived_fetch_config() -> str:
+    """派生の重みを `serve fetch` に掛けようとする構成 (Hub の取得の構成の重みを差し替えたもの)。"""
+    name = DERIVED_FETCH_CONFIG
+    text = _header(name, "fetch", ROLES, weights=False)
+    text += _derived_weights_table(name)
+    text += _setting(f"configs.{name}.docker.entrypoint", flag="--entrypoint", value="hf")
+    text += _setting(
+        f"configs.{name}.docker.models",
+        flag="--mount",
+        value="type=bind,source={remote_root}/models,target=/models",
+    )
+    text += _setting(f"configs.{name}.args.download", value="download")
+    text += _setting(f"configs.{name}.args.repo", value=REPO)
+    text += _setting(f"configs.{name}.args.revision", flag="--revision", value=REVISION)
+    text += _setting(
+        f"configs.{name}.args.local-dir", flag="--local-dir", value="{weights.mount_at}"
+    )
+    text += _setting(f"configs.{name}.env.telemetry", flag="HF_HUB_DISABLE_TELEMETRY", value="1")
+    return text
+
+
+def _derived_manifest(origin_revision: str = REVISION) -> kt.DerivedWeightsManifest:
+    """派生の構成が指す、変換の結果のマニフェスト (`origin_revision` は元の重みの版)。"""
+    derivation = kt.Derivation(
+        name=DERIVED_NAME,
+        origin=kt.WeightsOrigin(repo=REPO, revision=origin_revision),
+        conversion=kt.ConversionSpec(
+            tool=DERIVED_TOOL,
+            commit=DERIVED_COMMIT,
+            args=("--dtype", "fp8"),
+            target_pattern=DERIVED_TARGET,
+        ),
+    )
+    return kt.DerivedWeightsManifest(
+        kind="derived",
+        derivation=derivation,
+        generated_at=datetime(2026, 9, 26, 1, 0, 0, tzinfo=UTC),
+        total_bytes=MANIFEST.total_bytes,
+        files=MANIFEST.files,
+    )
+
+
+def make_derived_repo(tmp_path: Path, *, origin_revision: str = REVISION) -> Repo:
+    """`make_repo` のリポジトリに、派生の重みの構成 2 つと、派生のマニフェストを足す。
+
+    `origin_revision` は、派生のマニフェストが元にした重みの版 (構成に書いた版と変えると、
+    マニフェストと構成が食い違う)。
+    """
+    repo = make_repo(tmp_path)
+    with repo.configs.open("a", encoding="utf-8") as stream:
+        stream.write(_derived_serve_config(UNUSED_PORT))
+        stream.write(_derived_fetch_config())
+    manifest_path = repo.serving / "weights" / DERIVED_MANIFEST_NAME
+    manifest_path.write_bytes(wg.to_json_bytes(_derived_manifest(origin_revision)))
+    return repo
+
+
+def _derived_record_json(role: NodeRole) -> str:
+    """その台の、派生の重みの照合の記録 (関門 `weights_verified` が読む形)。"""
+    manifest = _derived_manifest()
+    return kt.DerivedVerificationRecord(
+        kind="derived",
+        derivation=manifest.derivation,
+        scope="all",
+        node=role,
+        verified_at=datetime(2026, 9, 26, 1, 30, tzinfo=UTC),
+        file_count=len(manifest.files),
+        total_bytes=manifest.total_bytes,
+    ).model_dump_json()
+
+
+def derived_gate_rules() -> tuple[Rule, ...]:
+    """`gate_rules` の、重みの照合の記録の読み取りだけを、派生の記録の道筋のものに替えた台本。"""
+    rules = [rule for rule in gate_rules() if rule.prefix != ("cat",)]
+    rules.extend(
+        Rule(
+            prefix=("cat", DERIVED_RECORD_PATH),
+            node=role,
+            replies=(Reply(stdout=_derived_record_json(role)),),
+        )
+        for role in ROLES
+    )
+    return tuple(rules)
+
+
+def derived_verify_rules() -> tuple[Rule, ...]:
+    """`serve verify` の台本 (関門は通り、2 台の `sha256sum` はマニフェストと合う)。"""
+    lines = "".join(
+        f"{entry.sha256}  {DERIVED_DIRECTORY}/{entry.path}\n" for entry in MANIFEST.files
+    )
+    rules = [
+        Rule(prefix=("sha256sum",), node=role, replies=(Reply(stdout=lines),)) for role in ROLES
+    ]
+    return (*rules, Rule(kind="push", replies=(Reply(),)), *gate_rules())
+
+
+def weights_verified_gates(out: str) -> list[dict[str, str]]:
+    """`serve check` の標準出力から、関門 `weights_verified` の結果 (台ごと) を取り出す。"""
+    pairs = kv(out)
+    found: list[dict[str, str]] = []
+    index = 1
+    while f"gate.{index}.name" in pairs:
+        if pairs[f"gate.{index}.name"] == g.GATE_WEIGHTS_VERIFIED:
+            found.append(
+                {
+                    "node": pairs[f"gate.{index}.node"],
+                    "passed": pairs[f"gate.{index}.passed"],
+                    "detail": pairs[f"gate.{index}.detail"],
+                }
+            )
+        index += 1
+    return found
+
+
+def test_check_passes_the_weights_gate_of_a_derived_weights_config(tmp_path: Path) -> None:
+    """派生の構成に、派生のマニフェストと一致する記録があれば、`serve check` は通る。"""
+    repo = make_derived_repo(tmp_path)
+    spy = Spy(script=derived_gate_rules(), default=Reply())
+
+    result = run(["check", DERIVED_CONFIG], repo, spy=spy)
+
+    assert result.code == cli.EXIT_OK, result.out
+    gates = weights_verified_gates(result.out)
+    assert [(gate["node"], gate["passed"]) for gate in gates] == [
+        ("head", "true"),
+        ("worker", "true"),
+    ]
+
+
+def test_check_refuses_a_derived_manifest_that_does_not_match_the_config(tmp_path: Path) -> None:
+    """派生のマニフェストが、構成の元の重みと違う版を指すと、両方の同一性を示して断る。"""
+    other_revision = "c" * 40
+    repo = make_derived_repo(tmp_path, origin_revision=other_revision)
+    spy = Spy(script=derived_gate_rules(), default=Reply())
+
+    result = run(["check", DERIVED_CONFIG], repo, spy=spy)
+
+    assert result.code == cli.EXIT_PRECONDITION
+    assert kv(result.out)["status"] == "refused"
+    gates = weights_verified_gates(result.out)
+    assert [gate["passed"] for gate in gates] == ["false", "false"]
+    for gate in gates:
+        assert f"derived:{DERIVED_NAME}:{REPO}@{REVISION}" in gate["detail"]
+        assert f"derived:{DERIVED_NAME}:{REPO}@{other_revision}" in gate["detail"]
+
+
+def test_check_refuses_a_derived_config_whose_origin_manifest_is_another_weights(
+    tmp_path: Path,
+) -> None:
+    """元の重みのマニフェストの版が `origin` と違えば、`serve check` は Spark に触らずに断る。"""
+    repo = make_derived_repo(tmp_path)
+    other = MANIFEST.model_copy(update={"revision": "c" * 40})
+    repo.manifest.write_bytes(wg.to_json_bytes(other))
+    spy = Spy(script=derived_gate_rules(), default=Reply())
+
+    result = run(["check", DERIVED_CONFIG], repo, spy=spy)
+
+    assert result.code == cli.EXIT_PRECONDITION
+    assert f"configs.{DERIVED_CONFIG}.weights.origin.manifest" in result.err
+    assert spy.made == []
+
+
+def test_verify_checks_a_derived_weights_config_and_puts_the_derived_record(
+    tmp_path: Path,
+) -> None:
+    """`serve verify` は派生の構成で `sha256sum` を流し、派生の名前の記録を `state/` に配る。"""
+    repo = make_derived_repo(tmp_path)
+    spy = Spy(script=derived_verify_rules(), default=Reply())
+
+    result = run(["verify", DERIVED_CONFIG, "--yes"], repo, spy=spy)
+
+    assert result.code == cli.EXIT_OK, result.out + result.err
+    assert kv(result.out)["status"] == "verified"
+    runner = spy.runner
+    digests = [argv for argv in runner.argvs if argv[0] == "sha256sum"]
+    assert len(digests) == len(ROLES)
+    assert all(path.startswith(f"{DERIVED_DIRECTORY}/") for argv in digests for path in argv[2:])
+    assert [push.node for push in runner.pushes] == list(ROLES)
+    for push in runner.pushes:
+        assert push.remote == "state"
+        assert push.local_dir is not None
+        assert sorted(item.name for item in push.local_dir.iterdir()) == [
+            f"{DERIVED_NAME}.derived.verified.json"
+        ]
+
+
+def test_fetch_refuses_a_derived_weights_config_without_touching_spark(tmp_path: Path) -> None:
+    """派生の重みには取得元がないので、`serve fetch` は終了コード 1 で断り、Spark に触らない。"""
+    repo = make_derived_repo(tmp_path)
+    spy = Spy(default=Reply())
+
+    result = run(["fetch", DERIVED_FETCH_CONFIG, "--yes"], repo, spy=spy)
+
+    assert result.code == cli.EXIT_PRECONDITION
+    assert "エラー: " in result.err
+    assert [call for runner in spy.made for call in runner.calls] == []
 
 
 # --- serve start / stop / status / smoke ----------------------------------

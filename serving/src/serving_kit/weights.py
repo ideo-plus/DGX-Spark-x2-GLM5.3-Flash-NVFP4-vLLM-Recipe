@@ -141,17 +141,24 @@ from serving_kit.guards import (
     match_running,
     request_approval,
     rollback_commands,
-    verification_record_path,
+    weights_record_path,
+    weights_ref_mismatch,
     weights_slug,
 )
 from serving_kit.plan import LABEL_KIND, LABEL_WEIGHTS, build_plans
 from serving_kit.remote import RemoteError, RemoteRunner
 from serving_kit.types import (
     MANIFEST_EXCLUDED_PATHS,
+    AnyVerificationRecord,
+    AnyWeightsManifest,
+    AnyWeightsRef,
     ApprovedPlan,
     CommandResult,
     ConfigDef,
     ContainerPlan,
+    DerivedVerificationRecord,
+    DerivedWeightsManifest,
+    DerivedWeightsRef,
     GateResult,
     ManifestFile,
     NodeDef,
@@ -161,7 +168,6 @@ from serving_kit.types import (
     VerificationRecord,
     VerificationScope,
     WeightsManifest,
-    WeightsRef,
 )
 
 __all__ = [
@@ -774,8 +780,8 @@ def manifest_path(repo: str, *, weights_dir: Path | None = None) -> Path:
     return directory / f"{weights_slug(repo)}.manifest.json"
 
 
-def to_json_bytes(manifest: WeightsManifest) -> bytes:
-    """`WeightsManifest` を、同じ入力なら同じバイト列になる形で書き出す。
+def to_json_bytes(manifest: AnyWeightsManifest) -> bytes:
+    """マニフェストを、同じ入力なら同じバイト列になる形で書き出す。
 
     鍵の順 (アルファベット順)、2 字の字下げ、末尾の改行を固定する (`logs.py` の
     `collect.json` と同じ流儀。tasks.md 3.2 の完了の状態: 同じ入力から同じファイルができる)。
@@ -785,23 +791,34 @@ def to_json_bytes(manifest: WeightsManifest) -> bytes:
     return text.encode("utf-8")
 
 
-def write_manifest(manifest: WeightsManifest, path: Path) -> None:
+def write_manifest(manifest: AnyWeightsManifest, path: Path) -> None:
     """マニフェストをファイルに書く (道筋は呼ぶ側が決める。既定は `manifest_path` を使うこと)。"""
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(to_json_bytes(manifest))
 
 
-def load_manifest(path: Path) -> WeightsManifest:
-    """マニフェストを読む (`guards` にまだ読む関数がないので、ここに置く)。"""
+def load_manifest(path: Path) -> AnyWeightsManifest:
+    """マニフェストを読む (`guards` にまだ読む関数がないので、ここに置く)。
+
+    読み分けは、最上位の `kind` が `"derived"` かどうかだけで行う。Hub のマニフェストは
+    `kind` を持たないので、いまと同じ `WeightsManifest` として読む (項目の有無から、
+    派生だと推測しない)。
+    """
     try:
         text = path.read_text(encoding="utf-8")
     except OSError as exc:
         raise WeightsError(f"マニフェスト '{path}' を読めない: {exc}") from exc
     try:
-        return WeightsManifest.model_validate_json(text)
+        raw = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise WeightsError(f"マニフェスト '{path}' の JSON を読めない: {exc}") from exc
+    derived = isinstance(raw, dict) and raw.get("kind") == "derived"
+    model = DerivedWeightsManifest if derived else WeightsManifest
+    try:
+        return model.model_validate_json(text)
     except ValidationError as exc:
         raise WeightsError(
-            f"マニフェスト '{path}' の中身が WeightsManifest の形でない: {exc}"
+            f"マニフェスト '{path}' の中身が {model.__name__} の形でない: {exc}"
         ) from exc
 
 
@@ -880,8 +897,9 @@ def load_manifest(path: Path) -> WeightsManifest:
 #    含む 6 つの置き場所までで、その下の名前は作らない)。取得の構成では、`models/` そのものを
 #    結び付けて `--local-dir` で下の名前を指す書き方も採れる (親でも読めるようにしてある)。
 #    どちらにするかは、6.2 (構成の値) と 5.1 (`serve push` の計画) で決める
-# 6. **記録の道筋は `guards.verification_record_path` が決める**。範囲ごとに別のファイル
-#    (`….verified.json` と `….probe.verified.json`) になる。Mac で作った 1 ファイルを、
+# 6. **記録の道筋は `guards.weights_record_path` が決める**。範囲ごとに別のファイル
+#    (`….verified.json` と `….probe.verified.json`。派生は `….derived.verified.json`) に
+#    なる。Mac で作った 1 ファイルを、
 #    `push(delete=False)` で `state/` に置く (`remote` が、宛先を `payload/` と `state/` に
 #    絞っている)。**配る元は、この module だけが使う `<record_dir>/verified/<役割>/` にし、
 #    配る前に空にする**。`remote.push` は、渡したディレクトリの中身を丸ごと送るので、呼ぶ側が
@@ -1028,7 +1046,7 @@ class NodeVerification:
     """
 
     node: NodeRole
-    record: VerificationRecord
+    record: AnyVerificationRecord
     remote_path: str
     mismatched: tuple[str, ...] = ()
     missing: tuple[str, ...] = ()
@@ -1190,7 +1208,9 @@ def weights_dir_on_spark(argv: Sequence[str], mount_at: str) -> str:
     return best[1]
 
 
-def scoped_files(manifest: WeightsManifest, scope: VerificationScope) -> tuple[ManifestFile, ...]:
+def scoped_files(
+    manifest: AnyWeightsManifest, scope: VerificationScope
+) -> tuple[ManifestFile, ...]:
     """照合の範囲のファイル (`probe_files` は、safetensors を除いたもの)。"""
     return manifest.probe_files if scope == _SCOPE_PROBE_FILES else manifest.files
 
@@ -1272,17 +1292,19 @@ def _refusal_detail(refused: Sequence[GateResult]) -> str:
     )
 
 
-def _weights_of(config: ConfigDef, manifest: WeightsManifest) -> WeightsRef:
-    """構成の重みの参照を取り、マニフェストと同じものを指しているかを確かめる。"""
+def _weights_of(config: ConfigDef, manifest: AnyWeightsManifest) -> AnyWeightsRef:
+    """構成の重みの参照を取り、マニフェストと同じものを指しているかを確かめる。
+
+    派生の重みは、名前と元の重みだけでなく、**変換の条件 (道具・コミット・引数・対象の
+    正規表現)** まで一致していなければ、Spark に触る前に断る (`guards.weights_ref_mismatch`
+    が関門と同じ比較をする)。
+    """
     weights = config.weights
     if weights is None:
         raise ConfigError(f"構成 '{config.name}' は、重みを持たないので、取得も照合もできない")
-    if manifest.repo != weights.repo or manifest.revision != weights.revision:
-        raise WeightsRefError(
-            "渡されたマニフェストが、構成の重みと違う。マニフェスト:"
-            f" {manifest.repo}@{manifest.revision}、構成:"
-            f" {weights.repo}@{weights.revision}"
-        )
+    mismatch = weights_ref_mismatch(weights, manifest)
+    if mismatch is not None:
+        raise WeightsRefError(mismatch)
     return weights
 
 
@@ -1440,12 +1462,12 @@ def _fetch_gates(
     return tuple(gates)
 
 
-def _fetching_now(mine: Sequence[OwnContainer], weights: WeightsRef) -> tuple[OwnContainer, ...]:
+def _fetching_now(mine: Sequence[OwnContainer], weights: AnyWeightsRef) -> tuple[OwnContainer, ...]:
     """この重みの取得が、いま動いている行 (照合を始めない理由。決めごとの 8b)。
 
     種類のラベルが `fetch` で、重みのラベルがこの重みのもの (または、読めない) 行を見る。
     """
-    label = f"{weights.repo}@{weights.revision}"
+    label = weights.identity
     return tuple(
         item
         for item in mine
@@ -1460,7 +1482,7 @@ def _verify_gates(
     config: ConfigDef,
     nodes: Mapping[NodeRole, NodeDef],
     plans: Sequence[ContainerPlan],
-    weights: WeightsRef,
+    weights: AnyWeightsRef,
     *,
     read_timeout_s: float,
 ) -> tuple[GateResult, ...]:
@@ -1901,7 +1923,7 @@ def _read_digests(
 
 
 def _weights_dirs(
-    config: ConfigDef, plans: Sequence[ContainerPlan], weights: WeightsRef
+    config: ConfigDef, plans: Sequence[ContainerPlan], weights: AnyWeightsRef
 ) -> Mapping[NodeRole, str]:
     """台ごとの、**Spark の側の**重みの置き場所を、先に決めておく。
 
@@ -1915,12 +1937,51 @@ def _weights_dirs(
     }
 
 
+def _make_record(
+    manifest: AnyWeightsManifest,
+    *,
+    scope: VerificationScope,
+    node: NodeRole,
+    verified_at: datetime,
+    files: Sequence[ManifestFile],
+    mismatched: tuple[str, ...],
+) -> AnyVerificationRecord:
+    """照合の結果の記録を、マニフェストの種類に合わせて組み立てる。
+
+    Hub は `repo` と版、派生は `derivation` (名前・元の重み・変換の条件) を同一性の
+    項目として持つ。件数と合計と `scope` と `node` は、どちらも同じである。構成の重みと
+    マニフェストの種類が合っていることは、入口の `_weights_of` が確かめている。
+    """
+    total_bytes = sum(entry.size for entry in files)
+    if isinstance(manifest, DerivedWeightsManifest):
+        return DerivedVerificationRecord(
+            kind="derived",
+            derivation=manifest.derivation,
+            scope=scope,
+            node=node,
+            verified_at=verified_at,
+            file_count=len(files),
+            total_bytes=total_bytes,
+            mismatched=mismatched,
+        )
+    return VerificationRecord(
+        repo=manifest.repo,
+        revision=manifest.revision,
+        scope=scope,
+        node=node,
+        verified_at=verified_at,
+        file_count=len(files),
+        total_bytes=total_bytes,
+        mismatched=mismatched,
+    )
+
+
 def _verify_one(
     runner: RemoteRunner,
     node: NodeDef,
     directory: str,
-    weights: WeightsRef,
-    manifest: WeightsManifest,
+    weights: AnyWeightsRef,
+    manifest: AnyWeightsManifest,
     *,
     scope: VerificationScope,
     record_dir: Path,
@@ -1942,17 +2003,15 @@ def _verify_one(
         for entry in files
         if entry.path in digests and digests[entry.path] != entry.sha256
     )
-    record = VerificationRecord(
-        repo=manifest.repo,
-        revision=manifest.revision,
+    record = _make_record(
+        manifest,
         scope=scope,
         node=node.role,
         verified_at=verified_at,
-        file_count=len(files),
-        total_bytes=sum(entry.size for entry in files),
+        files=files,
         mismatched=tuple(sorted({*mismatched, *unverified})),
     )
-    remote_path = _push_record(runner, node, record, weights.repo, record_dir=record_dir)
+    remote_path = _push_record(runner, node, record, weights, record_dir=record_dir)
     return NodeVerification(
         node=node.role,
         record=record,
@@ -1963,7 +2022,7 @@ def _verify_one(
     )
 
 
-def _record_bytes(record: VerificationRecord) -> bytes:
+def _record_bytes(record: AnyVerificationRecord) -> bytes:
     """記録を、同じ入力なら同じバイト列になる形で書き出す (`to_json_bytes` と同じ流儀)。"""
     text = json.dumps(record.model_dump(mode="json"), ensure_ascii=False, indent=2, sort_keys=True)
     return (text + "\n").encode("utf-8")
@@ -1972,23 +2031,24 @@ def _record_bytes(record: VerificationRecord) -> bytes:
 def _push_record(
     runner: RemoteRunner,
     node: NodeDef,
-    record: VerificationRecord,
-    repo: str,
+    record: AnyVerificationRecord,
+    weights: AnyWeightsRef,
     *,
     record_dir: Path,
 ) -> str:
     """照合の結果の記録を Mac で作り、Spark の `state/` に置く。
 
-    道筋は `guards.verification_record_path` が決める (範囲ごとに別のファイル)。配布は
-    `push(delete=False)` で、**了承済みの計画に入っていなければ `remote` が断る**。
+    道筋は `guards.weights_record_path` が決める (Hub は `<slug>`、派生は `<名前>.derived`。
+    範囲ごとに別のファイル)。配布は `push(delete=False)` で、**了承済みの計画に入っていなければ
+    `remote` が断る**。
     """
-    remote_path = verification_record_path(node, repo, record.scope)
+    remote_path = weights_record_path(node, weights, record.scope)
     place = PurePosixPath(remote_path)
     expected = f"{node.remote_root}/{RECORD_SUBDIR}"
     if str(place.parent) != expected:
         raise WeightsError(
             f"照合の記録の道筋 ({remote_path}) が、配れる宛先 ({expected}/) の下にない"
-            " (guards.verification_record_path と、この module の決まりが食い違っている)"
+            " (guards.weights_record_path と、この module の決まりが食い違っている)"
         )
     # 配る元は、この module だけが使う場所にして、配る前に空にする (決めごとの 6)。
     # `push` は、渡したディレクトリの中身を丸ごと送るので、よそのファイル (回収した記録や、
@@ -2024,8 +2084,8 @@ def _verify_nodes(
     config: ConfigDef,
     nodes: Mapping[NodeRole, NodeDef],
     directories: Mapping[NodeRole, str],
-    weights: WeightsRef,
-    manifest: WeightsManifest,
+    weights: AnyWeightsRef,
+    manifest: AnyWeightsManifest,
     *,
     scope: VerificationScope,
     record_dir: Path,
@@ -2053,10 +2113,18 @@ def _verify_nodes(
     )
     failed = tuple(item for item in verifications if not item.ok)
     if failed:
+        # Hub の重みは `serve fetch` で取り直せる。派生の重みは、`serve fetch` が断るので、
+        # 変換の道具で作り直す (`guards._how_to_verify` も、同じように案内を分けている)
+        redo = (
+            "作り直すときは、計測者が変換の道具で変換し直す (`serve fetch` は、手元で変換した"
+            "派生の重みを取得できない。手順は `k2-derived-weights-procedure.md` の §1)"
+            if isinstance(weights, DerivedWeightsRef)
+            else "取り直すときは、計測者が `serve fetch` を打ち直す"
+        )
         raise WeightsMismatchError(
-            f"{weights.repo}@{weights.revision} の重みが、マニフェストと合わない (対象"
+            f"{weights.identity} の重みが、マニフェストと合わない (対象"
             f" {scope}): " + " / ".join(item.text for item in failed) + "。"
-            "黙って取り直さない。取り直すときは、計測者が `serve fetch` を打ち直す",
+            "黙って取り直さない。" + redo,
             verifications,
         )
     return verifications
@@ -2069,7 +2137,7 @@ def fetch_weights(
     runner: RemoteRunner,
     config: ConfigDef,
     nodes: Mapping[NodeRole, NodeDef],
-    manifest: WeightsManifest,
+    manifest: AnyWeightsManifest,
     started_at: datetime,
     *,
     confirmer: Confirmer,
@@ -2145,6 +2213,13 @@ def fetch_weights(
         raise ConfigError(
             f"重みの取得に使えるのは、kind = '{_KIND_FETCH}' の構成だけである"
             f" (構成 '{config.name}' の kind は '{config.kind}')"
+        )
+    if isinstance(config.weights, DerivedWeightsRef):
+        # 手元で作った重みには、Hub の取得元がない (置くのは変換の道具、照合は `serve verify`)。
+        # Spark に触る前に断る (module の docstring の「早く断る」)。
+        raise ConfigError(
+            f"構成 '{config.name}' の重みは、手元で変換した派生の重みである。"
+            "Hub からは取得できない (置くのは変換の道具、照合は `serve verify`)"
         )
     _check_verified_at(verified_at)
     _check_record_dir(record_dir)
@@ -2275,7 +2350,7 @@ def verify_weights(
     runner: RemoteRunner,
     config: ConfigDef,
     nodes: Mapping[NodeRole, NodeDef],
-    manifest: WeightsManifest,
+    manifest: AnyWeightsManifest,
     started_at: datetime,
     *,
     confirmer: Confirmer,

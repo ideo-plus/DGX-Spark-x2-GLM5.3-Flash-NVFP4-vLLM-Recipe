@@ -44,6 +44,7 @@ from typing import Any
 import httpx
 import pytest
 
+from serving_kit import types as kit_types
 from serving_kit import weights as w
 
 REPO = "test-org/test-weights"
@@ -332,6 +333,139 @@ def test_writing_and_loading_a_manifest_round_trips(tmp_path: Path) -> None:
     assert loaded == manifest
     assert w.to_json_bytes(loaded) == w.to_json_bytes(manifest)
     assert path.read_bytes() == w.to_json_bytes(manifest)
+
+
+# --- 派生の重み (手元で変換した重み) のマニフェスト -------------------------
+
+ORIGIN_REPO = "RedHatAI/GLM-5.3-Flash-NVFP4"
+ORIGIN_REVISION = "18d55bfd" + "0" * 32
+DERIVED_TOOL = "experiments/k2-quant/convert.py"
+DERIVED_COMMIT = "b" * 40
+DERIVED_TARGET = r"^model\.layers\.\d+\.self_attn\..*$"
+
+
+def _derived_payload() -> dict[str, Any]:
+    """#56 の道具が書く、派生のマニフェストの JSON (契約の形。`serving_kit` を通さず手で書く)。"""
+    return {
+        "kind": "derived",
+        "derivation": {
+            "name": "k2s1",
+            "origin": {"repo": ORIGIN_REPO, "revision": ORIGIN_REVISION},
+            "conversion": {
+                "tool": DERIVED_TOOL,
+                "commit": DERIVED_COMMIT,
+                "args": ["--dtype", "fp8", "--note", "日本語"],
+                "target_pattern": DERIVED_TARGET,
+            },
+        },
+        "generated_at": "2026-09-25T00:00:00Z",
+        "total_bytes": 5096,
+        "files": [
+            {"path": "config.json", "sha256": "1" * 64, "size": 96},
+            {"path": "model-00001-of-00001.safetensors", "sha256": "2" * 64, "size": 5000},
+        ],
+    }
+
+
+def _hub_payload() -> dict[str, Any]:
+    return {
+        "repo": ORIGIN_REPO,
+        "revision": ORIGIN_REVISION,
+        "generated_at": "2026-09-25T00:00:00Z",
+        "total_bytes": 96,
+        "files": [{"path": "config.json", "sha256": "1" * 64, "size": 96}],
+    }
+
+
+def _write_json(path: Path, payload: dict[str, Any]) -> Path:
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return path
+
+
+def _derived_manifest() -> kit_types.DerivedWeightsManifest:
+    return kit_types.DerivedWeightsManifest.model_validate(_derived_payload())
+
+
+def test_a_derived_manifest_file_is_loaded_as_a_derived_manifest(tmp_path: Path) -> None:
+    path = _write_json(tmp_path / "k2s1.manifest.json", _derived_payload())
+
+    loaded = w.load_manifest(path)
+
+    assert isinstance(loaded, kit_types.DerivedWeightsManifest)
+    assert loaded.derivation.name == "k2s1"
+    assert loaded.derivation.origin.repo == ORIGIN_REPO
+    assert loaded.derivation.origin.revision == ORIGIN_REVISION
+    assert loaded.derivation.conversion.commit == DERIVED_COMMIT
+    assert loaded.derivation.conversion.args == ("--dtype", "fp8", "--note", "日本語")
+    assert loaded.derivation.conversion.target_pattern == DERIVED_TARGET
+    assert loaded.total_bytes == 5096
+    assert [entry.path for entry in loaded.files] == [
+        "config.json",
+        "model-00001-of-00001.safetensors",
+    ]
+
+
+def test_a_hub_manifest_file_is_still_loaded_as_a_hub_manifest(tmp_path: Path) -> None:
+    path = _write_json(tmp_path / "hub.manifest.json", _hub_payload())
+
+    loaded = w.load_manifest(path)
+
+    assert isinstance(loaded, kit_types.WeightsManifest)
+    assert (loaded.repo, loaded.revision) == (ORIGIN_REPO, ORIGIN_REVISION)
+
+
+def test_a_derived_looking_file_without_the_kind_is_not_read_as_derived(tmp_path: Path) -> None:
+    # 読み分けは、明示した `kind` だけで行う。項目の有無から、派生だと推測して読まない
+    payload = _derived_payload()
+    del payload["kind"]
+    path = _write_json(tmp_path / "k2s1.manifest.json", payload)
+
+    with pytest.raises(w.WeightsError) as caught:
+        w.load_manifest(path)
+
+    assert str(path) in str(caught.value)
+
+
+def test_a_derived_manifest_file_with_a_broken_body_refuses_with_a_weights_error(
+    tmp_path: Path,
+) -> None:
+    payload = _derived_payload()
+    del payload["derivation"]["conversion"]["commit"]
+    path = _write_json(tmp_path / "k2s1.manifest.json", payload)
+
+    with pytest.raises(w.WeightsError) as caught:
+        w.load_manifest(path)
+
+    assert str(path) in str(caught.value)
+
+
+def test_writing_and_loading_a_derived_manifest_round_trips(tmp_path: Path) -> None:
+    manifest = _derived_manifest()
+    path = tmp_path / "weights" / "k2s1.manifest.json"
+
+    w.write_manifest(manifest, path)
+    loaded = w.load_manifest(path)
+
+    assert loaded == manifest
+    assert w.to_json_bytes(loaded) == w.to_json_bytes(manifest)
+    assert path.read_bytes() == w.to_json_bytes(manifest)
+
+
+def test_the_same_derived_input_produces_byte_identical_manifests() -> None:
+    bytes1 = w.to_json_bytes(_derived_manifest())
+    bytes2 = w.to_json_bytes(_derived_manifest())
+
+    assert bytes1 == bytes2
+    assert bytes1.endswith(b"\n")
+    assert not bytes1.endswith(b"\n\n")
+    payload = json.loads(bytes1)
+    assert payload["kind"] == "derived"
+    assert list(payload.keys()) == sorted(payload.keys())
+    assert list(payload["derivation"].keys()) == sorted(payload["derivation"].keys())
+    assert list(payload["derivation"]["conversion"].keys()) == sorted(
+        payload["derivation"]["conversion"].keys()
+    )
+    assert list(payload["files"][0].keys()) == sorted(payload["files"][0].keys())
 
 
 # --- 誤り: 大きさと sha256 --------------------------------------------------

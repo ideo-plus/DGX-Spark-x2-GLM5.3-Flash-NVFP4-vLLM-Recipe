@@ -124,6 +124,7 @@ from serving_kit.logs import DEFAULT_TAIL_LINES, LOG_READ_TIMEOUT_S
 from serving_kit.plan import build_plans
 from serving_kit.remote import RemoteError, RemoteRunner
 from serving_kit.types import (
+    AnyWeightsManifest,
     ConfigDef,
     ContainerPlan,
     GateResult,
@@ -133,7 +134,6 @@ from serving_kit.types import (
     NodeRole,
     ProbeOutcome,
     ProbeStatus,
-    WeightsManifest,
 )
 
 __all__ = ["PROBE_LANG", "ProbeError", "run_probe"]
@@ -390,7 +390,7 @@ def run_probe(
     record_dir: Path,
     repo_commit: str,
     repo_dirty: bool,
-    manifest: WeightsManifest | None = None,
+    manifest: AnyWeightsManifest | None = None,
     timeout_s: float | None = None,
     poll_interval_s: float = lifecycle.READY_POLL_INTERVAL_S,
     sleep: Callable[[float], None] | None = None,

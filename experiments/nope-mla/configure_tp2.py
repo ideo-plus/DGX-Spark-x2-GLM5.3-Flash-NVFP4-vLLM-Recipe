@@ -10,6 +10,13 @@
 `/logs/torch-profile`、スタックの記録と `key_averages` の表の書き出しは切る) を根拠つきで
 args に足し、構成の名前を `-prof` 付きにする (どの `--variant` にも付けられる)。
 
+`--weights <名前>` を付けると、`serving/weights/<名前>.manifest.json` (手元で変換した重みの、
+コミットした派生のマニフェスト) から重みの参照 (元の重みの参照と変換の条件) を組み、
+`weights` の節と `mount-weights` を派生の重み (`{remote_root}/models/<名前>`、読み取り専用)
+に差し替える。構成の名前は基の変種名の直後に `-<名前>` を付ける (どの `--variant` にも付け
+られる)。マニフェストが無い、`kind` が `derived` でない、`derivation.name` が `<名前>` と違う、
+元の重みが `p1-nvfp4-tp2` の重みと違うときは、生成の前に断る。
+
 `full` と `full-mtp` は、重みの読み込み方を `--load-format instanttensor` にするのを既定とし、
 根拠つきで args に足す (構成の名前は変えない。`#50`)。`--load-format auto` を付けると既定を
 外し、出力は `#50` より前の既定と同じになる。`smoke` には既定を付けない。
@@ -39,11 +46,18 @@ from typing import Any, NamedTuple
 
 ROOT = Path(__file__).resolve().parents[2]
 CONFIGS_PATH = ROOT / "serving/config/configs.toml"
+WEIGHTS_DIR = ROOT / "serving/weights"
+"""コミットした重みのマニフェストの置き場 (`--weights <名前>` が読む)。"""
 EXPECTED_IMAGE_ID = "sha256:9df45888d2d726a1818be1005ace819808d4a1e8b4ec01a3efa7bc7f10a40c90"
 IMAGE_SEEN_AS = "vllm-nope:0961bbae-fi070"
 IMAGE_MEASURED = "docs/results/2026-09-22-nope-build.md"
 SOURCE_NAME = "p1-nvfp4-tp2"
 TARGET_NAME = "p2-nope-tp2-smoke"
+DERIVED_MOUNT_WHY = (
+    "手元で変換した重みを、書き換えない形で見せる (固定したマニフェストと、ファイルごとの "
+    "SHA-256 を守る。requirements 3.4)"
+)
+"""派生の重みを読み取り専用で結び付ける理由。p1 の `mount-weights` の理由を写す。"""
 FULL_TARGET_NAME = "p2-nope-tp2-full"
 NCCL_SOURCE_NAME = "netcheck-bandwidth"
 FULL_MTP_VARIANT_NAME = "full-mtp"
@@ -155,6 +169,25 @@ LOAD_STRATEGY_PROVENANCE: Mapping[str, tuple[str, str]] = {
 }
 
 
+class DerivedWeights(NamedTuple):
+    """`--weights` で選ぶ、手元で変換した重み (コミットした派生マニフェストから組む)。
+
+    `origin_*` は元の重み (p1 の重みと一致することを生成の前に確かめる)。`tool`・`commit`・
+    `args`・`target_pattern` は変換の条件で、そのまま構成の TOML に写す。`manifest` は
+    変換の結果のマニフェストの名前である。
+    """
+
+    name: str
+    origin_repo: str
+    origin_revision: str
+    origin_manifest: str
+    manifest: str
+    tool: str
+    commit: str
+    args: tuple[str, ...]
+    target_pattern: str
+
+
 class LoadFormat(NamedTuple):
     """args に書く `--load-format` の値と、その理由。"""
 
@@ -187,6 +220,9 @@ class Variant(NamedTuple):
 
     `safetensors_load_strategy` は、safetensors の読み方の値 (`None` なら足さない)。
     `with_load_strategy` が作り、名前は `-sls-<値>` 付きになる。
+
+    `weights` は、手元で変換した重みを使うときの指定 (`None` なら p1 の重みのまま)。
+    `with_weights` が作り、名前は `-<名前>` 付きになる。
     """
 
     name: str
@@ -199,6 +235,7 @@ class Variant(NamedTuple):
     torch_profiler: bool = False
     load_format: LoadFormat | None = None
     safetensors_load_strategy: str | None = None
+    weights: DerivedWeights | None = None
 
 
 SMOKE = Variant(
@@ -351,6 +388,93 @@ def with_load_strategy(variant: Variant, strategy: str) -> Variant:
     )
 
 
+def load_derived_manifest(path: Path) -> dict[str, Any]:
+    """コミットした派生のマニフェストを読み、契約の形 (存在と型) を確かめる。
+
+    形が違えば `ValueError`。読み分けは `kind` だけで行い、項目の有無からは推測しない。
+    """
+    if not path.is_file():
+        raise ValueError(f"派生のマニフェストがない: {path}")
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"派生のマニフェストを読めない: {path} ({exc})") from exc
+    if not isinstance(data, dict) or data.get("kind") != "derived":
+        raise ValueError(f"派生のマニフェストでない (kind = \"derived\" が要る): {path}")
+    derivation = data.get("derivation")
+    if not isinstance(derivation, dict):
+        raise ValueError(f"派生のマニフェストに derivation がない: {path}")
+    origin = derivation.get("origin")
+    conversion = derivation.get("conversion")
+    if (
+        not isinstance(derivation.get("name"), str)
+        or not isinstance(origin, dict)
+        or not isinstance(conversion, dict)
+    ):
+        raise ValueError(f"派生のマニフェストの derivation の形が正しくない: {path}")
+    args = conversion.get("args")
+    if (
+        not isinstance(origin.get("repo"), str)
+        or not isinstance(origin.get("revision"), str)
+        or not isinstance(conversion.get("tool"), str)
+        or not isinstance(conversion.get("commit"), str)
+        or not isinstance(conversion.get("target_pattern"), str)
+        or not isinstance(args, list)
+        or any(not isinstance(item, str) for item in args)
+    ):
+        raise ValueError(f"派生のマニフェストの項目の形が正しくない: {path}")
+    return data
+
+
+def derived_weights(
+    name: str, data: Mapping[str, Any], p1_weights: Mapping[str, Any]
+) -> DerivedWeights:
+    """`--weights <名前>` の指定を、コミット済みの派生マニフェストから組む。
+
+    名前が違う、元の参照が p1 の重みと違うときは `ValueError` (生成の前に断る)。
+    """
+    derivation: Mapping[str, Any] = data["derivation"]
+    origin: Mapping[str, Any] = derivation["origin"]
+    conversion: Mapping[str, Any] = derivation["conversion"]
+    if derivation["name"] != name:
+        raise ValueError(
+            f"派生のマニフェストの名前 ({derivation['name']}) が、--weights の値 ({name}) と違う"
+        )
+    if origin["repo"] != p1_weights["repo"] or origin["revision"] != p1_weights["revision"]:
+        raise ValueError(
+            f"派生のマニフェストの元の重み ({origin['repo']}@{origin['revision']}) が、"
+            f"p1 の重み ({p1_weights['repo']}@{p1_weights['revision']}) と違う"
+        )
+    return DerivedWeights(
+        name=name,
+        origin_repo=str(origin["repo"]),
+        origin_revision=str(origin["revision"]),
+        origin_manifest=str(p1_weights["manifest"]),
+        manifest=f"{name}.manifest.json",
+        tool=str(conversion["tool"]),
+        commit=str(conversion["commit"]),
+        args=tuple(str(item) for item in conversion["args"]),
+        target_pattern=str(conversion["target_pattern"]),
+    )
+
+
+def with_weights(variant: Variant, derived: DerivedWeights) -> Variant:
+    """`--weights <名前>` の構成 (基の変種 + 手元で変換した重み)。
+
+    名前の接尾辞は、基の変種名の直後 (`p2-nope-tp2-full-k2s1`) に付ける。重みの違いは、
+    道具のフラグ (`-tn` / `-prof` / `-lf-…`) より本質的な差なので先に置く。
+    """
+    return variant._replace(
+        name=f"{variant.name}-{derived.name}",
+        description=(
+            f"{variant.description}。重みは、手元で変換した派生の重み {derived.name}"
+            f" (元: {derived.origin_repo}@{derived.origin_revision}、"
+            f"変換 {derived.tool}@{derived.commit[:8]})。実機では未確認"
+        ),
+        weights=derived,
+    )
+
+
 def _load_option_why(flag: str, value: str) -> str:
     """読み込み方の引数 (`--load-format` / `--safetensors-load-strategy`) を足す理由。
 
@@ -393,6 +517,40 @@ def load_image(inspect_json: Path) -> dict[str, Any]:
     if type(size) is not int or size <= 0:
         raise ValueError("イメージの大きさが不正")
     return image
+
+
+def _derived_weights_section(name: str, derived: DerivedWeights) -> str:
+    """派生の重みの節 (`kind` / `name` / `manifest` / `mount_at` と、元の参照と変換の条件)。"""
+    return (
+        f"[configs.{name}.weights]\n"
+        'kind = "derived"\n'
+        f"name = {json.dumps(derived.name)}\n"
+        f"manifest = {json.dumps(derived.manifest)}\n"
+        f'mount_at = {json.dumps(f"/models/{derived.name}")}\n'
+        "\n"
+        f"[configs.{name}.weights.origin]\n"
+        f"repo = {json.dumps(derived.origin_repo)}\n"
+        f"revision = {json.dumps(derived.origin_revision)}\n"
+        f"manifest = {json.dumps(derived.origin_manifest)}\n"
+        "\n"
+        f"[configs.{name}.weights.conversion]\n"
+        f"tool = {json.dumps(derived.tool)}\n"
+        f"commit = {json.dumps(derived.commit)}\n"
+        f"args = {json.dumps(list(derived.args), ensure_ascii=False)}\n"
+        f"target_pattern = {json.dumps(derived.target_pattern, ensure_ascii=False)}\n"
+    )
+
+
+def _replace_weights_section(block: str, name: str, derived: DerivedWeights) -> str:
+    """p1 の weights の節を、派生の重みの節に置き換える。
+
+    `[configs.p1-nvfp4-tp2.weights]` から、次の `# --- docker の設定` の直前までを差し替える
+    (p1 の節のコメントも、いっしょに落とす)。
+    """
+    marker = "# --- docker の設定"
+    start = block.index(f"[configs.{SOURCE_NAME}.weights]")
+    end = block.index(marker, start)
+    return block[:start] + _derived_weights_section(name, derived) + "\n" + block[end:]
 
 
 def _replace_in_table(block: str, header: str, old_value: str, new_value: str, new_why: str) -> str:
@@ -457,6 +615,18 @@ def render(configs_text: str, image: Mapping[str, Any], variant: Variant = SMOKE
             old_value,
             new_value,
             why,
+        )
+    if variant.weights is not None:
+        derived = variant.weights
+        source_config = tomllib.loads(configs_text)["configs"][SOURCE_NAME]
+        block = _replace_weights_section(block, variant.name, derived)
+        block = _replace_in_table(
+            block,
+            f"[configs.{SOURCE_NAME}.docker.mount-weights]",
+            source_config["docker"]["mount-weights"]["value"],
+            "type=bind,source={remote_root}/models/"
+            f"{derived.name},target=/models/{derived.name},readonly",
+            DERIVED_MOUNT_WHY,
         )
     block = block.replace(f"configs.{SOURCE_NAME}", f"configs.{variant.name}")
     block = re.sub(
@@ -604,6 +774,15 @@ def main(argv: Sequence[str] | None = None) -> None:
         help="full-mtp の、モデル付属の MTP の下書きのトークン数 (1 以上)",
     )
     parser.add_argument(
+        "--weights",
+        default=None,
+        help=(
+            "使う、手元で変換した重みの名前 (serving/weights/<名前>.manifest.json を読む)。"
+            "構成の名前に -<名前> を付け、重みの結び付けを {remote_root}/models/<名前> に"
+            "差し替える (読み取り専用)"
+        ),
+    )
+    parser.add_argument(
         "--nccl-thread-names",
         action="store_true",
         help=(
@@ -655,6 +834,17 @@ def main(argv: Sequence[str] | None = None) -> None:
         if args.spec_tokens is not None:
             parser.error("--spec-tokens は --variant full-mtp のときだけ使える")
         variant = VARIANTS[args.variant]
+    if args.weights is not None:
+        manifest_path = WEIGHTS_DIR / f"{args.weights}.manifest.json"
+        try:
+            data = load_derived_manifest(manifest_path)
+            p1_weights = tomllib.loads(CONFIGS_PATH.read_text(encoding="utf-8"))["configs"][
+                SOURCE_NAME
+            ]["weights"]
+            derived = derived_weights(args.weights, data, p1_weights)
+        except ValueError as exc:
+            parser.error(str(exc))
+        variant = with_weights(variant, derived)
     if args.nccl_thread_names:
         variant = with_thread_names(variant)
     if args.torch_profiler:

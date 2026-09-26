@@ -31,6 +31,7 @@ import pytest
 from pydantic import HttpUrl
 
 from serving_kit import plan as p
+from serving_kit import types as kt
 from serving_kit.config import ConfigError
 from serving_kit.types import (
     ConfigDef,
@@ -550,6 +551,49 @@ def test_labels_appear_in_the_argv_as_label_pairs() -> None:
         if item == "--label" and index + 1 < len(head.argv)
     }
     assert pairs == {f"{key}={value}" for key, value in head.labels.items()}
+
+
+DERIVED_NAME = "k2s1"
+DERIVED_MOUNT_AT = f"/models/{DERIVED_NAME}"
+
+
+def derived_serve_config() -> ConfigDef:
+    """`serve_config` の重みを、手元で変換した重み (派生) に差し替えた構成。
+
+    置き場所は `{remote_root}/models/k2s1` で、コンテナの中の `/models/k2s1` に読み取り専用で
+    結び付ける。
+    """
+    weights = kt.DerivedWeightsRef(
+        kind="derived",
+        name=DERIVED_NAME,
+        origin=kt.OriginWeightsRef(repo=REPO, revision=REVISION, manifest=WEIGHTS.manifest),
+        conversion=kt.ConversionSpec(
+            tool="experiments/k2-quant/convert.py",
+            commit="a" * 40,
+            args=("--dtype", "fp8"),
+            target_pattern=r"^model\.layers\.\d+\.self_attn\..*$",
+        ),
+        manifest=f"{DERIVED_NAME}.manifest.json",
+        mount_at=DERIVED_MOUNT_AT,
+    )
+    docker = _serve_docker()
+    docker["mount-weights"] = _setting(
+        "--mount",
+        f"type=bind,source={{remote_root}}/models/{DERIVED_NAME},target={DERIVED_MOUNT_AT},readonly",
+    )
+    return serve_config().model_copy(
+        update={"name": "p2-nope-tp2-full-k2s1", "weights": weights, "docker": docker}
+    )
+
+
+def test_a_derived_weights_config_labels_the_container_with_the_derived_identity() -> None:
+    """派生の重みの構成は、`vllm-baseline.weights` に `derived:<名前>:<repo>@<版>` を付ける。"""
+    expected = f"derived:{DERIVED_NAME}:{REPO}@{REVISION}"
+
+    for item in _build(derived_serve_config()):
+        assert item.labels["vllm-baseline.weights"] == expected
+        label_at = item.argv.index(f"vllm-baseline.weights={expected}")
+        assert item.argv[label_at - 1] == "--label"
 
 
 def test_started_at_must_carry_a_timezone() -> None:
