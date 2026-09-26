@@ -13,6 +13,7 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from k2_quant.convert import ConversionError, execute_plan, plan_conversion
+from k2_quant.presets import DEFAULT_PRESET, PRESET_NAMES
 from k2_quant.selection import DEFAULT_PATTERN
 
 
@@ -46,14 +47,31 @@ def _build_parser() -> argparse.ArgumentParser:
         required=True,
         help="元の revision (manifest の変換条件に書く)",
     )
-    parser.add_argument(
+    selection_group = parser.add_mutually_exclusive_group()
+    selection_group.add_argument(
+        "--preset",
+        choices=PRESET_NAMES,
+        default=DEFAULT_PRESET,
+        help=(
+            "対象の選び方の名前。k2s1 は第 1 段の既定 (下の --pattern の既定と同じ)。k2s2a は\n"
+            "第 1 段の対象 + MLA の射影 + KDA のまとめていない射影 + lm_head (MLA と KDA の層は\n"
+            "入力 config.json の text_config.layer_types から決め、無ければ何も書かずに終了 1)。\n"
+            "--pattern と同時には使えない。manifest には、解決後の正規表現を --pattern として書く\n"
+            f"(既定: {DEFAULT_PRESET})"
+        ),
+    )
+    selection_group.add_argument(
         "--pattern",
-        default=DEFAULT_PATTERN,
+        default=None,
         help=(
             "入力 checkpoint のモジュール名 (`.weight` を除いた名前) に `re.match` で当てて、\n"
             "変換するモジュールを選ぶ正規表現。config.json の target は、選ばれたモジュール\n"
             "から作る (この正規表現は書かない)。\n"
-            "既定は第 1 段の範囲のうち dense と共有の専門家。vLLM が FP8 を読めない部分\n"
+            "vLLM で 1 つの線形層にまとまる組 (q_a_proj と kv_a_proj_with_mqa、\n"
+            "gate_proj と up_proj、KDA の q・k・v・b・f_a・g_a) の一部だけが選ばれると、\n"
+            "何も書かずに終了 1。\n"
+            "指定しないときは --preset の選び方を使う。--preset k2s1 (既定) の正規表現は、\n"
+            "第 1 段の範囲のうち dense と共有の専門家。vLLM が FP8 を読めない部分\n"
             "(MTP の eh_proj は quant_config を受けない plain nn.Linear、ParallelLMHead は\n"
             "FP8 (W8A16) を読めない (#68)) は既定から外す:\n"
             f"{DEFAULT_PATTERN}"
@@ -73,7 +91,7 @@ def _build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
     try:
-        plan = plan_conversion(args.source, pattern=args.pattern)
+        plan = plan_conversion(args.source, pattern=args.pattern, preset=args.preset)
         execute_plan(
             plan,
             args.output,

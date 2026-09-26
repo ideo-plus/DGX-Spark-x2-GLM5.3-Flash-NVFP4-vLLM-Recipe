@@ -23,6 +23,12 @@
 
 これらを含めたいとき (実験目的) は、`--pattern` にその分岐を足して渡す (README の「`--pattern` の
 書き方」)。変換自体はできるが、vLLM 0961bbae では読み込めない。
+
+第 2a 段 (Issue #74) の対象は、`config.json` の層種の並びから決める。`k2_quant.presets` が
+`--preset k2s2a` の正規表現を作り、この module の `select_modules` に渡す。
+
+vLLM で 1 つの線形層にまとまる組 (`FUSED_GROUPS`) は、`validate_fused_groups` が、選ばれたモジュール
+のうち一部だけが選ばれた組を、変換の前に断る。FP8 の重みと BF16 の重みが、1 つの線形層に混ざるため。
 """
 
 from __future__ import annotations
@@ -40,6 +46,17 @@ DEFAULT_PATTERN: Final[str] = (
 
 WEIGHT_SUFFIX: Final = ".weight"
 SUPPORTED_DTYPES: Final = frozenset({"BF16", "F16", "F32"})
+
+FUSED_GROUPS: Final[tuple[tuple[str, ...], ...]] = (
+    # MLA: vLLM の `fused_qkv_a_proj`
+    ("q_a_proj", "kv_a_proj_with_mqa"),
+    # MLP (dense と共有の専門家): vLLM の `gate_up_proj`
+    ("gate_proj", "up_proj"),
+    # KDA: vLLM の `in_proj_qkvbfg_a`
+    ("q_proj", "k_proj", "v_proj", "b_proj", "forget_gate.f_a_proj", "g_a_proj"),
+)
+"""vLLM で 1 つの線形層にまとまる組。組の名前は、同じ親 (`...self_attn`、`...mlp` など) の下の
+モジュール名の末尾。組の定義はここだけに置く。"""
 
 
 class SelectionError(ValueError):
@@ -84,3 +101,31 @@ def validate_targets(modules: Sequence[str], tensors: Mapping[str, TensorInfo]) 
             raise SelectionError(f"{module}: unsupported dtype {weight.dtype}")
         if len(weight.shape) != 2:
             raise SelectionError(f"{module}: weight is not 2-dimensional: {weight.shape}")
+
+
+def validate_fused_groups(modules: Sequence[str], tensors: Mapping[str, TensorInfo]) -> None:
+    """まとめた層の組が、checkpoint に実在する分について、全員選ばれているかを確かめる。
+
+    組のうち一部だけが選ばれていれば `SelectionError` (選ばれていない相手の名前を全部示す)。
+    相手の `.weight` が checkpoint に無ければ、混ざることがないので通す。組は同じ親の下だけで
+    数える。
+    """
+    selected = set(modules)
+    for module in modules:
+        for group in FUSED_GROUPS:
+            for member in group:
+                suffix = f".{member}"
+                if not module.endswith(suffix):
+                    continue
+                parent = module[: -len(suffix)]
+                present = {
+                    f"{parent}.{name}"
+                    for name in group
+                    if f"{parent}.{name}{WEIGHT_SUFFIX}" in tensors
+                }
+                missing = sorted(present - selected)
+                if missing:
+                    raise SelectionError(
+                        f"{parent}: fused group {'+'.join(group)} is partially selected; "
+                        f"missing {missing}"
+                    )

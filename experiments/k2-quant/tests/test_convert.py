@@ -13,6 +13,17 @@
 - 同じ入力・同じ引数なら出力はバイト単位で同じ
 - 出力先は、新しいディレクトリか、存在する空のディレクトリ (bind mount の宛先)
 - 入力の不備では出力を 1 ファイルも書かずに終了 1
+
+第 2a 段 (Issue #74) の選び方 (`--preset k2s2a`) も、合成 checkpoint
+(`synthetic.build_stage2_checkpoint`。MLA の層、KDA の層、`layer_types` に載らない層を持つ) の
+端から端まで確かめる。
+
+- 層種の並びから決めた MLA の射影・KDA のまとめていない射影・`lm_head` (と第 1 段の対象) だけを
+  変換し、まとめた層・`kv_b_proj`・indexer・並びに載らない層は変えない
+- `layer_types` が無い config では、何も書かずに終了 1
+- 変換の前に、まとめた層の組の一部だけが選ばれる `--pattern` を、何も書かずに断る
+- `--preset` を渡さない変換と `--preset k2s1` は、全ファイルがバイト単位で同じ。`--preset k2s2a` の
+  manifest は、解決後の `--pattern` だけで同じ出力を再現できる
 """
 
 from __future__ import annotations
@@ -50,6 +61,7 @@ def _run(
     output: Path,
     *,
     pattern: str | None = None,
+    preset: str | None = None,
     link: bool = False,
 ) -> int:
     argv = [
@@ -64,6 +76,8 @@ def _run(
     ]
     if pattern is not None:
         argv += ["--pattern", pattern]
+    if preset is not None:
+        argv += ["--preset", preset]
     if link:
         argv += ["--link"]
     return main(argv)
@@ -120,12 +134,40 @@ def _tensor_identity(path: Path, name: str) -> tuple[torch.dtype, tuple[int, ...
     """テンソルの (dtype, 形, 生のバイト列)。参照実装で読む。"""
     with safe_open(str(path), framework="pt") as handle:
         tensor: torch.Tensor = handle.get_tensor(name)
-    raw = tensor.contiguous().view(torch.uint8).numpy().tobytes()
-    return tensor.dtype, tuple(tensor.shape), raw
+    return _identity(tensor)
 
 
 def _tensor_bytes(path: Path, name: str) -> bytes:
     return _tensor_identity(path, name)[2]
+
+
+def _identity(tensor: torch.Tensor) -> tuple[torch.dtype, tuple[int, ...], bytes]:
+    """読み込んだテンソルの (dtype, 形, 生のバイト列)。"""
+    raw = tensor.contiguous().view(torch.uint8).numpy().tobytes()
+    return tensor.dtype, tuple(tensor.shape), raw
+
+
+def _runtime_name(module: str) -> str:
+    """checkpoint のモジュール名から、vLLM の実行時の名前を作る。
+
+    本体は `language_model.model.layers.N...`、MTP (層 45) は `model.layers.45...`、`lm_head` は
+    `language_model.lm_head`。
+    """
+    if module == "lm_head":
+        return "language_model.lm_head"
+    rest = module.removeprefix("model.language_model.")
+    if rest.startswith("layers.45."):
+        return f"model.{rest}"
+    return f"language_model.model.{rest}"
+
+
+def _assert_same_files(first: Path, second: Path) -> None:
+    """2 つの出力ディレクトリが、同じ名前のファイルを持ち、全ファイルがバイト単位で同じ。"""
+    first_files = sorted(path.name for path in first.iterdir())
+    second_files = sorted(path.name for path in second.iterdir())
+    assert first_files == second_files
+    for name in first_files:
+        assert (first / name).read_bytes() == (second / name).read_bytes(), name
 
 
 def test_copied_shards_and_other_files_keep_identical_bytes(tmp_path: Path) -> None:
@@ -778,3 +820,224 @@ def test_rejects_source_containing_manifest(tmp_path: Path) -> None:
 
     assert _run(source, output) == 1
     assert not output.exists()
+
+
+# --- 第 2a 段 (`--preset k2s2a`) と、まとめた層の整合の検査 (Issue #74) -------------------
+
+
+def test_stage2a_preset_converts_the_mla_kda_projections_lm_head_and_stage1_range(
+    tmp_path: Path,
+) -> None:
+    """`--preset k2s2a` は、層種の並びから決めた MLA の射影 (層 3)、KDA のまとめていない射影
+    (層 0)、`lm_head`、第 1 段の既定の対象 (dense と共有の専門家) の 15 個だけを変換する (C1)。
+
+    manifest の `modules` がその 15 個と一致し、出力の `targets` が、それぞれの実行時の名前
+    (`language_model.model.layers.3.self_attn.q_a_proj`、
+    `language_model.model.layers.0.self_attn.forget_gate.f_b_proj`、
+    `language_model.lm_head` など) に当たる。
+    """
+    source = tmp_path / "source"
+    output = tmp_path / "output"
+    synthetic.build_stage2_checkpoint(source)
+
+    assert _run(source, output, preset="k2s2a") == 0
+
+    modules = _manifest_conversion(output)["modules"]
+    assert len(modules) == 15
+    assert sorted(modules) == sorted(synthetic.STAGE2A_TARGET_MODULES)
+    target = _group_target(output)
+    for module in synthetic.STAGE2A_TARGET_MODULES:
+        assert _hits(target, _runtime_name(module)), module
+    for runtime in (
+        "language_model.model.layers.3.self_attn.q_a_proj",
+        "language_model.model.layers.0.self_attn.forget_gate.f_b_proj",
+        "language_model.lm_head",
+    ):
+        assert _hits(target, runtime), runtime
+
+
+def test_stage2a_preset_leaves_merged_layers_kv_b_indexer_and_unlisted_layers_untouched(
+    tmp_path: Path,
+) -> None:
+    """同じ字面でも、KDA のまとめた層 (q・k・v・b・f_a・g_a)、MLA の `kv_b_proj`、indexer、
+    `layer_types` に載らない層 45 の `o_proj` は選ばれない (C1)。
+
+    それらは dtype とバイト列を保ち、`weight_scale` が増えず、`ignore` に残り、出力の `targets` が
+    実行時の名前に当たらない。専門家の `weight_packed`・`weight_scale`・`weight_global_scale` は
+    候補にならず、そのまま残る。
+    """
+    source = tmp_path / "source"
+    output = tmp_path / "output"
+    synthetic.build_stage2_checkpoint(source)
+
+    assert _run(source, output, preset="k2s2a") == 0
+
+    before = _load_tensors(source)
+    after = _load_tensors(output)
+    ignore = _read_config(output / synthetic.CONFIG_NAME)["quantization_config"]["ignore"]
+    target = _group_target(output)
+    for module in synthetic.STAGE2_UNTOUCHED_MODULES:
+        weight = f"{module}.weight"
+        assert _identity(after[weight]) == _identity(before[weight]), module
+        assert after[weight].dtype == torch.bfloat16, module
+        assert f"{module}.weight_scale" not in after, module
+        assert module in ignore, module
+        assert not _hits(target, _runtime_name(module)), module
+    expert = synthetic.STAGE2_EXPERT_MODULE
+    for suffix in ("weight_packed", "weight_scale", "weight_global_scale"):
+        name = f"{expert}.{suffix}"
+        assert _identity(after[name]) == _identity(before[name]), name
+    assert f"{expert}.weight" not in after
+
+
+def test_stage2a_preset_refuses_a_config_without_layer_types_and_writes_nothing(
+    tmp_path: Path,
+) -> None:
+    """`text_config.layer_types` が無い config (第 1 段の合成 checkpoint) では、`--preset k2s2a` は
+    終了 1 で、出力ディレクトリを作らない (C2)。
+    """
+    source = tmp_path / "source"
+    output = tmp_path / "output"
+    synthetic.build_checkpoint(source)
+
+    assert _run(source, output, preset="k2s2a") == 1
+    assert not output.exists()
+
+
+def test_a_pattern_selecting_a_whole_fused_group_converts_the_group(tmp_path: Path) -> None:
+    """組の全員 (`q_a_proj` と `kv_a_proj_with_mqa`) を選ぶ `--pattern` は通り、両方が FP8 の
+    `weight` と F32 の `weight_scale` になる (C3)。
+    """
+    source = tmp_path / "source"
+    output = tmp_path / "output"
+    synthetic.build_stage2_checkpoint(source)
+    group = (
+        "model.language_model.layers.3.self_attn.q_a_proj",
+        "model.language_model.layers.3.self_attn.kv_a_proj_with_mqa",
+    )
+
+    assert (
+        _run(
+            source,
+            output,
+            pattern=r".*\.layers\.3\.self_attn\.(?:q_a_proj|kv_a_proj_with_mqa)$",
+        )
+        == 0
+    )
+
+    converted = _load_tensors(output)
+    for module in group:
+        assert converted[f"{module}.weight"].dtype == torch.float8_e4m3fn, module
+        assert converted[f"{module}.weight_scale"].dtype == torch.float32, module
+    assert sorted(_manifest_conversion(output)["modules"]) == sorted(group)
+
+
+@pytest.mark.parametrize(
+    ("pattern", "missing"),
+    [
+        pytest.param(
+            r".*\.layers\.3\.self_attn\.q_a_proj$",
+            ("model.language_model.layers.3.self_attn.kv_a_proj_with_mqa",),
+            id="mla-q_a-without-kv_a",
+        ),
+        pytest.param(
+            r".*\.layers\.0\.self_attn\.q_proj$",
+            (
+                "model.language_model.layers.0.self_attn.k_proj",
+                "model.language_model.layers.0.self_attn.v_proj",
+                "model.language_model.layers.0.self_attn.b_proj",
+                "model.language_model.layers.0.self_attn.forget_gate.f_a_proj",
+                "model.language_model.layers.0.self_attn.g_a_proj",
+            ),
+            id="kda-q-without-the-other-five",
+        ),
+        pytest.param(
+            r".*\.layers\.0\.mlp\.gate_proj$",
+            ("model.language_model.layers.0.mlp.up_proj",),
+            id="dense-gate-without-up",
+        ),
+    ],
+)
+def test_a_pattern_selecting_part_of_a_fused_group_is_refused_before_writing(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    pattern: str,
+    missing: tuple[str, ...],
+) -> None:
+    """組の一部だけを選ぶ `--pattern` は、変換の前に終了 1 で断り、出力ディレクトリを作らない。
+    標準エラーに、選ばれていない相手の名前が全部ある (C3)。
+    """
+    source = tmp_path / "source"
+    output = tmp_path / "output"
+    synthetic.build_stage2_checkpoint(source)
+
+    assert _run(source, output, pattern=pattern) == 1
+
+    assert not output.exists()
+    error = capsys.readouterr().err
+    for name in missing:
+        assert name in error, name
+
+
+def test_stage1_preset_gives_the_same_output_as_omitting_it(tmp_path: Path) -> None:
+    """`--preset k2s1` は、`--preset` も `--pattern` も渡さない変換と、全ファイル (manifest を含む)
+    がバイト単位で同じ (C4)。第 1 段の既定の選び方と出力は変わらない。
+    """
+    source = tmp_path / "source"
+    omitted = tmp_path / "omitted"
+    explicit = tmp_path / "explicit"
+    synthetic.build_checkpoint(source)
+
+    assert _run(source, omitted) == 0
+    assert _run(source, explicit, preset="k2s1") == 0
+
+    _assert_same_files(omitted, explicit)
+
+
+@pytest.mark.parametrize("preset", ["k2s1", "k2s2a"])
+def test_preset_and_pattern_cannot_be_combined(tmp_path: Path, preset: str) -> None:
+    """`--preset` と `--pattern` を同時に渡すと、どちらの選び方を使うか決まらないので、引数の解析が
+    断り (終了 2)、出力ディレクトリを作らない (C1)。
+
+    `--preset` の既定と同じ値を明示した場合も同じ。片方が黙って無視されると、`--preset k2s2a` を
+    付けたつもりが別の選び方で変換され、manifest には解決後の `--pattern` しか残らない。
+    """
+    source = tmp_path / "source"
+    output = tmp_path / "output"
+    synthetic.build_stage2_checkpoint(source)
+
+    with pytest.raises(SystemExit) as excinfo:
+        _run(source, output, preset=preset, pattern=NARROW_PATTERN)
+
+    assert excinfo.value.code == 2
+    assert not output.exists()
+
+
+def test_stage2a_manifest_records_the_resolved_pattern_and_reproduces_the_output(
+    tmp_path: Path,
+) -> None:
+    """`--preset k2s2a` の manifest は、解決後の `--pattern` を `pattern` と `args` に書き、
+    `--preset` は書かない。`args` の `--pattern` だけで変換し直すと、全ファイルが同じ (C1)。
+
+    取り込み側 (`serve derived-import`) は `conversion.args` をそのまま 2 台目の変換の引数にする。
+    """
+    source = tmp_path / "source"
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    synthetic.build_stage2_checkpoint(source)
+
+    assert _run(source, first, preset="k2s2a") == 0
+
+    conversion = _manifest_conversion(first)
+    pattern = conversion["pattern"]
+    assert pattern != DEFAULT_PATTERN
+    assert conversion["args"] == [
+        "--source-repo",
+        SOURCE_REPO,
+        "--source-revision",
+        SOURCE_REVISION,
+        "--pattern",
+        pattern,
+    ]
+    assert _run(source, second, pattern=pattern) == 0
+    _assert_same_files(first, second)

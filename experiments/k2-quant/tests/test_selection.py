@@ -9,9 +9,17 @@ plain `nn.Linear` なので、既定の対象から外している。`lm_head` �
 FP8 (W8A16、compressed-tensors) の `ParallelLMHead` を humming の線形カーネルで読めない
 (#68) ので、既定の対象から外している。この正規表現は checkpoint の名前だけに当てる。実行時の層名に
 当てる `config.json` の target は、変換したモジュールから作る (`tests/test_quant_config.py`)。
+
+まとめた層の整合の検査 (Issue #74 の C3) も確かめる。vLLM で 1 つの線形層にまとまる組
+(MLA の `q_a_proj` と `kv_a_proj_with_mqa`、MLP の `gate_proj` と `up_proj`、KDA の
+q・k・v・b・f_a・g_a) は、組のうち checkpoint に実在する名前の一部だけが選ばれたら断り、
+全員が選ばれるか、相手が checkpoint に無ければ通す。
 """
 
 from __future__ import annotations
+
+from collections.abc import Sequence
+from typing import Any
 
 import pytest
 
@@ -20,6 +28,24 @@ from k2_quant.safetensors_file import TensorInfo
 
 LANGUAGE_MODEL = "model.language_model"
 PROJECTIONS = ("gate_proj", "up_proj", "down_proj")
+
+MLA_FUSED_GROUP = ("q_a_proj", "kv_a_proj_with_mqa")
+MLP_FUSED_GROUP = ("gate_proj", "up_proj")
+KDA_FUSED_GROUP = ("q_proj", "k_proj", "v_proj", "b_proj", "forget_gate.f_a_proj", "g_a_proj")
+"""Issue #74 が挙げる、vLLM で 1 つの線形層にまとまる組 (MLA の `fused_qkv_a_proj`、MLP の
+`gate_up_proj`、KDA の `in_proj_qkvbfg_a`)。"""
+
+FUSED_GROUP_LOCATIONS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
+    ("mla-q_a-kv_a", f"{LANGUAGE_MODEL}.layers.3.self_attn", MLA_FUSED_GROUP),
+    ("dense-gate-up", f"{LANGUAGE_MODEL}.layers.0.mlp", MLP_FUSED_GROUP),
+    ("shared-expert-gate-up", f"{LANGUAGE_MODEL}.layers.3.mlp.shared_experts", MLP_FUSED_GROUP),
+    ("kda-qkvbfg-a", f"{LANGUAGE_MODEL}.layers.0.self_attn", KDA_FUSED_GROUP),
+)
+"""(試験の名前, 組の親の名前, 組の名前)。組の全員は同じ親の下にある。"""
+
+FUSED_GROUP_PARAMS = [
+    pytest.param(parent, members, id=label) for label, parent, members in FUSED_GROUP_LOCATIONS
+]
 
 
 def _first_stage_modules() -> set[str]:
@@ -250,3 +276,98 @@ def test_validate_targets_rejects_non_two_dimensional_weight() -> None:
 
     with pytest.raises(selection.SelectionError):
         selection.validate_targets([module], tensors)
+
+
+def _group_tensors(parent: str, members: Sequence[str]) -> dict[str, TensorInfo]:
+    """親の下に、組の名前ごとの BF16 の 2 次元の `.weight` を持つ checkpoint のテンソル。"""
+    return {
+        f"{parent}.{member}.weight": _info(f"{parent}.{member}.weight", "BF16", (4, 4))
+        for member in members
+    }
+
+
+def _partial_selections() -> list[Any]:
+    """組ごとに、「組の 1 人だけ」「組の 1 人を除く全員」を選んだ場合 (どちらも組の一部だけ)。"""
+    cases: list[Any] = []
+    for label, parent, members in FUSED_GROUP_LOCATIONS:
+        seen: set[frozenset[str]] = set()
+        for member in members:
+            partial_selections = (
+                (f"only-{member}", (member,)),
+                (f"all-but-{member}", tuple(name for name in members if name != member)),
+            )
+            for partial_label, selected in partial_selections:
+                if frozenset(selected) in seen:
+                    continue
+                seen.add(frozenset(selected))
+                cases.append(pytest.param(parent, members, selected, id=f"{label}:{partial_label}"))
+    return cases
+
+
+def test_fused_groups_are_the_three_groups_of_the_issue() -> None:
+    """組の定義は、Issue #74 が挙げる 3 つ (MLA の q_a と kv_a、MLP の gate と up、KDA の 6 つ)
+    (C3)。
+    """
+    groups = {frozenset(group) for group in selection.FUSED_GROUPS}
+
+    assert groups == {
+        frozenset(MLA_FUSED_GROUP),
+        frozenset(MLP_FUSED_GROUP),
+        frozenset(KDA_FUSED_GROUP),
+    }
+    assert len(selection.FUSED_GROUPS) == 3
+
+
+@pytest.mark.parametrize(("parent", "members"), FUSED_GROUP_PARAMS)
+def test_validate_fused_groups_accepts_a_group_selected_whole(
+    parent: str, members: Sequence[str]
+) -> None:
+    """組の全員が checkpoint にあり、全員が選ばれていれば通す (C3)。"""
+    tensors = _group_tensors(parent, members)
+
+    selection.validate_fused_groups([f"{parent}.{member}" for member in members], tensors)
+
+
+@pytest.mark.parametrize(("parent", "members", "selected"), _partial_selections())
+def test_validate_fused_groups_rejects_a_group_selected_partly(
+    parent: str, members: Sequence[str], selected: Sequence[str]
+) -> None:
+    """組の全員が checkpoint にあるのに、一部だけが選ばれていれば断る。断る理由に、選ばれていない
+    相手の名前が全部ある (C3)。
+
+    FP8 になる線形層と BF16 のままの線形層が、vLLM の 1 つの線形層に混ざってしまう。
+    """
+    tensors = _group_tensors(parent, members)
+    missing = [f"{parent}.{member}" for member in members if member not in selected]
+
+    with pytest.raises(selection.SelectionError) as excinfo:
+        selection.validate_fused_groups([f"{parent}.{member}" for member in selected], tensors)
+
+    for name in missing:
+        assert name in str(excinfo.value)
+
+
+@pytest.mark.parametrize(("parent", "members"), FUSED_GROUP_PARAMS)
+def test_validate_fused_groups_accepts_a_selected_member_whose_partners_are_not_in_the_checkpoint(
+    parent: str, members: Sequence[str]
+) -> None:
+    """組の相手が checkpoint に `.weight` として無ければ、1 人だけが選ばれていても通す (C3)。
+
+    相手の重みが無ければ、FP8 と BF16 が混ざることはない。第 1 段の合成 checkpoint の層 3 の
+    共有の専門家 (`up_proj` だけがある) がこの形。
+    """
+    tensors = _group_tensors(parent, members[:1])
+
+    selection.validate_fused_groups([f"{parent}.{members[0]}"], tensors)
+
+
+def test_validate_fused_groups_does_not_pair_a_member_with_a_partner_of_another_parent() -> None:
+    """組は同じ親の下だけで数える。別の層の相手が checkpoint にあっても、この層に相手が無ければ
+    通す (C3)。
+    """
+    tensors = {
+        **_group_tensors(f"{LANGUAGE_MODEL}.layers.0.mlp", ("gate_proj",)),
+        **_group_tensors(f"{LANGUAGE_MODEL}.layers.1.mlp", ("up_proj",)),
+    }
+
+    selection.validate_fused_groups([f"{LANGUAGE_MODEL}.layers.0.mlp.gate_proj"], tensors)
