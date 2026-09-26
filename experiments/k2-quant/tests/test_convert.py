@@ -833,7 +833,7 @@ def test_stage2a_preset_converts_the_mla_kda_projections_lm_head_and_stage1_rang
 
     manifest の `modules` がその 15 個と一致し、出力の `targets` が、それぞれの実行時の名前
     (`language_model.model.layers.3.self_attn.q_a_proj`、
-    `language_model.model.layers.0.self_attn.forget_gate.f_b_proj`、
+    `language_model.model.layers.0.self_attn.f_b_proj`、
     `language_model.lm_head` など) に当たる。
     """
     source = tmp_path / "source"
@@ -850,10 +850,39 @@ def test_stage2a_preset_converts_the_mla_kda_projections_lm_head_and_stage1_rang
         assert _hits(target, _runtime_name(module)), module
     for runtime in (
         "language_model.model.layers.3.self_attn.q_a_proj",
-        "language_model.model.layers.0.self_attn.forget_gate.f_b_proj",
+        "language_model.model.layers.0.self_attn.f_b_proj",
         "language_model.lm_head",
     ):
         assert _hits(target, runtime), runtime
+
+
+def test_stage2a_preset_selects_the_kda_f_b_proj_by_tensor_name_not_by_the_ignore_form(
+    tmp_path: Path,
+) -> None:
+    """実機と同じく、`ignore` は KDA の `f_b_proj` を `self_attn.forget_gate.f_b_proj` の形で持ち、
+    テンソル名は `self_attn.f_b_proj.weight` (`forget_gate.` なし) の合成 checkpoint でも、
+    `--preset k2s2a` は、テンソル名で `f_b_proj` を選んで FP8 にする (#76)。
+
+    出力の `weight` は FP8、`weight_scale` が増え、manifest の `modules` に入り、出力の `targets` が
+    実行時の名前 (`language_model.model.layers.0.self_attn.f_b_proj`) に当たる。
+    """
+    f_b_proj = "model.language_model.layers.0.self_attn.f_b_proj"
+    source = tmp_path / "source"
+    output = tmp_path / "output"
+    synthetic.build_stage2_checkpoint(source)
+    source_tensors = _load_tensors(source)
+    source_ignore = _read_config(source / synthetic.CONFIG_NAME)["quantization_config"]["ignore"]
+    assert source_tensors[f"{f_b_proj}.weight"].dtype == torch.bfloat16
+    assert "model.language_model.layers.0.self_attn.forget_gate.f_b_proj" in source_ignore
+    assert f_b_proj not in source_ignore
+
+    assert _run(source, output, preset="k2s2a") == 0
+
+    converted = _load_tensors(output)
+    assert converted[f"{f_b_proj}.weight"].dtype == torch.float8_e4m3fn
+    assert converted[f"{f_b_proj}.weight_scale"].dtype == torch.float32
+    assert f_b_proj in _manifest_conversion(output)["modules"]
+    assert _hits(_group_target(output), "language_model.model.layers.0.self_attn.f_b_proj")
 
 
 def test_stage2a_preset_leaves_merged_layers_kv_b_indexer_and_unlisted_layers_untouched(
@@ -863,8 +892,9 @@ def test_stage2a_preset_leaves_merged_layers_kv_b_indexer_and_unlisted_layers_un
     `layer_types` に載らない層 45 の `o_proj` は選ばれない (C1)。
 
     それらは dtype とバイト列を保ち、`weight_scale` が増えず、`ignore` に残り、出力の `targets` が
-    実行時の名前に当たらない。専門家の `weight_packed`・`weight_scale`・`weight_global_scale` は
-    候補にならず、そのまま残る。
+    実行時の名前に当たらない。`ignore` には、入力の `ignore` にあった名前で残る (KDA の `f_a_proj`
+    は、実機の `ignore` と同じ `forget_gate.` 付きの名前 (#76))。専門家の `weight_packed`・
+    `weight_scale`・`weight_global_scale` は候補にならず、そのまま残る。
     """
     source = tmp_path / "source"
     output = tmp_path / "output"
@@ -881,13 +911,41 @@ def test_stage2a_preset_leaves_merged_layers_kv_b_indexer_and_unlisted_layers_un
         assert _identity(after[weight]) == _identity(before[weight]), module
         assert after[weight].dtype == torch.bfloat16, module
         assert f"{module}.weight_scale" not in after, module
-        assert module in ignore, module
+        assert synthetic.stage2_ignore_name(module) in ignore, module
         assert not _hits(target, _runtime_name(module)), module
     expert = synthetic.STAGE2_EXPERT_MODULE
     for suffix in ("weight_packed", "weight_scale", "weight_global_scale"):
         name = f"{expert}.{suffix}"
         assert _identity(after[name]) == _identity(before[name]), name
     assert f"{expert}.weight" not in after
+
+
+def test_stage2a_preset_keeps_the_kda_f_a_proj_in_bf16_and_its_forget_gate_ignore_name(
+    tmp_path: Path,
+) -> None:
+    """まとめた層の KDA の `f_a_proj` (テンソル名は `self_attn.f_a_proj.weight`) は、
+    `--preset k2s2a` でも BF16 のままで、`ignore` の `self_attn.forget_gate.f_a_proj` (実機の
+    `ignore` の名前の形) が残る (#76)。
+    """
+    f_a_proj = "model.language_model.layers.0.self_attn.f_a_proj"
+    ignore_name = "model.language_model.layers.0.self_attn.forget_gate.f_a_proj"
+    source = tmp_path / "source"
+    output = tmp_path / "output"
+    synthetic.build_stage2_checkpoint(source)
+    before = _load_tensors(source)
+    source_ignore = _read_config(source / synthetic.CONFIG_NAME)["quantization_config"]["ignore"]
+    assert f"{f_a_proj}.weight" in before
+    assert ignore_name in source_ignore
+    assert f_a_proj not in source_ignore
+
+    assert _run(source, output, preset="k2s2a") == 0
+
+    after = _load_tensors(output)
+    ignore = _read_config(output / synthetic.CONFIG_NAME)["quantization_config"]["ignore"]
+    assert after[f"{f_a_proj}.weight"].dtype == torch.bfloat16
+    assert _identity(after[f"{f_a_proj}.weight"]) == _identity(before[f"{f_a_proj}.weight"])
+    assert f"{f_a_proj}.weight_scale" not in after
+    assert ignore_name in ignore
 
 
 def test_stage2a_preset_refuses_a_config_without_layer_types_and_writes_nothing(
@@ -946,7 +1004,7 @@ def test_a_pattern_selecting_a_whole_fused_group_converts_the_group(tmp_path: Pa
                 "model.language_model.layers.0.self_attn.k_proj",
                 "model.language_model.layers.0.self_attn.v_proj",
                 "model.language_model.layers.0.self_attn.b_proj",
-                "model.language_model.layers.0.self_attn.forget_gate.f_a_proj",
+                "model.language_model.layers.0.self_attn.f_a_proj",
                 "model.language_model.layers.0.self_attn.g_a_proj",
             ),
             id="kda-q-without-the-other-five",

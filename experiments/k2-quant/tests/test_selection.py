@@ -31,9 +31,10 @@ PROJECTIONS = ("gate_proj", "up_proj", "down_proj")
 
 MLA_FUSED_GROUP = ("q_a_proj", "kv_a_proj_with_mqa")
 MLP_FUSED_GROUP = ("gate_proj", "up_proj")
-KDA_FUSED_GROUP = ("q_proj", "k_proj", "v_proj", "b_proj", "forget_gate.f_a_proj", "g_a_proj")
+KDA_FUSED_GROUP = ("q_proj", "k_proj", "v_proj", "b_proj", "f_a_proj", "g_a_proj")
 """Issue #74 が挙げる、vLLM で 1 つの線形層にまとまる組 (MLA の `fused_qkv_a_proj`、MLP の
-`gate_up_proj`、KDA の `in_proj_qkvbfg_a`)。"""
+`gate_up_proj`、KDA の `in_proj_qkvbfg_a`)。名前は checkpoint のテンソル名の形で、KDA の
+`f_a_proj` に `forget_gate.` は付かない (#76)。"""
 
 FUSED_GROUP_LOCATIONS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     ("mla-q_a-kv_a", f"{LANGUAGE_MODEL}.layers.3.self_attn", MLA_FUSED_GROUP),

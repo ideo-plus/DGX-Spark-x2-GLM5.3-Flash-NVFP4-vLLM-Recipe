@@ -53,7 +53,7 @@ FUSED_GROUPS: Final[tuple[tuple[str, ...], ...]] = (
     # MLP (dense と共有の専門家): vLLM の `gate_up_proj`
     ("gate_proj", "up_proj"),
     # KDA: vLLM の `in_proj_qkvbfg_a`
-    ("q_proj", "k_proj", "v_proj", "b_proj", "forget_gate.f_a_proj", "g_a_proj"),
+    ("q_proj", "k_proj", "v_proj", "b_proj", "f_a_proj", "g_a_proj"),
 )
 """vLLM で 1 つの線形層にまとまる組。組の名前は、同じ親 (`...self_attn`、`...mlp` など) の下の
 モジュール名の末尾。組の定義はここだけに置く。"""
