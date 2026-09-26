@@ -332,6 +332,25 @@ class InputOverContextLimitError(ProbeError):
     """
 
 
+def _raise_if_cancel_was_swallowed() -> None:
+    """打ち切りの要求が残っているのに、await が普通に戻ってきたら、`CancelledError` を投げる。
+
+    issue #55 の原因。anyio 4.15.1 の `connect_tcp` (httpx → httpcore が接続の確立に
+    使う。`anyio/_core/_sockets.py` の happy eyeballs の task group) は、接続が決まった
+    子の `tg.cancel_scope.cancel()` と、外からの `Task.cancel()` が同じ回に重なると、
+    後者を握りつぶす。`CancelledError` は消え、`Task.cancelling()` だけが 1 のまま残る
+    ので、呼び出し側は打ち切られたことに気づけず、計測が最後まで走ってしまう。
+    Python 3.12 と 3.13 の両方で再現した。
+
+    打ち切りの要求が残っている (`cancelling() > 0`) ときに、HTTP の呼び出しから
+    普通に戻ってきたら、握りつぶされたとみなして `CancelledError` を投げる。
+    """
+    task = asyncio.current_task()
+    assert task is not None, "コルーチンの中から呼ぶので、実行中の task がある"
+    if task.cancelling() > 0:
+        raise asyncio.CancelledError
+
+
 async def count_input_tokens(
     client: MessagesClient,
     target: TargetDef,
@@ -356,8 +375,13 @@ async def count_input_tokens(
     気づけるように)。代わりの数え方も失敗したときも同様だが、その失敗が入力の
     長さの上限を超えた HTTP 400 (`is_context_limit_error`) のときだけは、
     `ProbeError` の派生型 `InputOverContextLimitError` を投げて区別する。
+
+    外から打ち切られた (`Task.cancel()`) ときは、`CancelledError` をそのまま
+    伝える。HTTP の層が打ち切りを握りつぶして普通に戻ってきたときも、次の要求を
+    送らずに投げ直す (`_raise_if_cancel_was_swallowed`、issue #55)。
     """
     tokens = await _try_count_tokens_endpoint(target, request, api_key, aux_timeout_s)
+    _raise_if_cancel_was_swallowed()
     if tokens is not None:
         return TokenCount(tokens=tokens, method="count_tokens")
 
@@ -366,6 +390,7 @@ async def count_input_tokens(
         request.model_copy(update={"max_tokens": 1}).model_dump()
     )
     result = await client.stream(fallback_request, timeout)
+    _raise_if_cancel_was_swallowed()
     if result.error is None and result.usage is not None:
         return TokenCount(tokens=result.usage.total_input_tokens, method="one_token_request")
 

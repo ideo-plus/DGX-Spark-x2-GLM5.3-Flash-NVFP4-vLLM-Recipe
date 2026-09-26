@@ -607,6 +607,36 @@ async def test_count_tokens_negative_value_raises_probe_error(
             await count_input_tokens(client, target, make_request(TOKEN_TEXT))
 
 
+async def test_count_input_tokens_propagates_a_cancel_that_the_fallback_request_swallowed(
+    fake_server: FakeServer,
+    swallow_the_first_cancel_on: Callable[[str], asyncio.Event],
+) -> None:
+    """代わりの要求の HTTP 呼び出しが打ち切りを握りつぶしても、打ち切りは伝わる (issue #55)。
+
+    握りつぶされた状態は `swallow_the_first_cancel_on` (conftest.py) が作る。
+    握りつぶされたままなら、`TokenCount` が普通に返ってきてしまう。口の往復で握りつぶ
+    された場合は、同時処理のまとまりの試験 (test_suites_concurrency.py) が確かめる。
+    """
+    fake_server.set_count_tokens_enabled(False)
+    target = target_for(fake_server)
+    stalled = swallow_the_first_cancel_on("/v1/messages")
+
+    async with client_for(fake_server) as client:
+        task = asyncio.create_task(count_input_tokens(client, target, make_request(TOKEN_TEXT)))
+        try:
+            await asyncio.wait_for(stalled.wait(), timeout=5.0)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(task, timeout=5.0)
+        except BaseException:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+            raise
+
+    # 握りつぶされた 1 本が、代わりの要求そのもの。それ以外は送られない
+    assert fake_server.call_count("/v1/messages") == 1
+
+
 # --- 上限に収まるかどうか (3.1、3.6、6.9) -----------------------------------
 
 
