@@ -38,7 +38,10 @@ src = ["src", "tests", "payload/k2-quant"]
 # 1 文字も変えずに置いたもの (task 4.2)。整形も静的検査も、この上流の原文を書き換えない・
 # 誤りとして指摘しないよう、ruff の対象から外す (`allreduce_bench.py` は自前のコードなので
 # 対象のまま。ruff check / ruff format --check のどちらも通す)。
-extend-exclude = ["payload/vllm_sanity_check.py"]
+# `payload/vllm-overlay/` は、固定した vLLM のファイルにパッチを当てた写し (ADR 0007、#73)。
+# 上流の整形のまま置き、「固定のソース + パッチ」とのバイト単位の一致を優先するので、同じく
+# ruff の対象から外す (写しの先頭は上流の SPDX の表記のままで、`# ruff: noqa` は足さない)。
+extend-exclude = ["payload/vllm_sanity_check.py", "payload/vllm-overlay"]
 # `extend-exclude` は、ディレクトリを歩くときにしか効かない。道筋を明示して渡されたときにも
 # 外すために、`force-exclude` も付ける。ただし、どちらも、ruff を `serving/` の外から呼ぶと
 # 効かない (設定は、作業ディレクトリから探される)。どこから呼ばれても原文を守るのは、

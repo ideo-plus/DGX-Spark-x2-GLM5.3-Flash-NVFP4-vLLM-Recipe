@@ -41,23 +41,34 @@
     ページキャッシュで `--load-format instanttensor` の起動が落ち、`auto` なら読めること) を、
     既存の項目を残したまま述べる
 
-RED: 文書がなければ、`_read_text` で `pytest.fail` する。道具の写しや `derived-import` が
+RED: 文書がなければ、`read_text` で `pytest.fail` する。道具の写しや `derived-import` が
 まだなければ、その理由を示して落とす。
 """
 
 from __future__ import annotations
 
-import argparse
 import ast
 import json
 import re
 import shlex
-from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Final
 
 import pytest
 
+from procedure_doc_kit import (
+    MACHINE_CALLS,
+    SERVE_CALL,
+    CodeBlock,
+    ask_mark_problems,
+    checksum_sort_problems,
+    code_blocks,
+    command_lines,
+    lines_inside,
+    read_text,
+    relative_link_targets,
+    subparser_map,
+)
 from serving_kit import cli
 from serving_kit import config as c
 from serving_kit.types import WeightsRef
@@ -112,19 +123,12 @@ REQUIRED_MARKERS: Final[tuple[str, ...]] = (
 """手順書に必要な印。"""
 
 
-def _read_text(path: Path) -> str:
-    """文書の全文 (なければ、そこで落とす)。"""
-    if not path.is_file():
-        pytest.fail(f"文書がない: {path}")
-    return path.read_text(encoding="utf-8")
-
-
 # --- 1. 「書かないこと」の決まり -------------------------------------------
 
 
 def test_the_procedure_states_the_write_nothing_rule_up_front() -> None:
     """先頭に「書かないこと」の決まりと、その 3 項目がある。"""
-    text = _read_text(DOC_PATH)
+    text = read_text(DOC_PATH)
     mark_index = text.find(_WRITE_NOTHING_MARK)
     assert mark_index >= 0, f"「{_WRITE_NOTHING_MARK}」の決まりがない: {DOC_PATH}"
 
@@ -147,30 +151,18 @@ def test_the_procedure_states_the_write_nothing_rule_up_front() -> None:
 @pytest.mark.parametrize("marker", REQUIRED_MARKERS)
 def test_the_procedure_mentions_the_required_marker(marker: str) -> None:
     """手順書に、生成・変換・一致の確認・照合・関門・起動・回収・停止・⚠ の印がある。"""
-    assert marker in _read_text(DOC_PATH)
+    assert marker in read_text(DOC_PATH)
 
 
 # --- 4. serve のサブコマンドの実在 ----------------------------------------
 
 
-_SERVE_CALL: Final[re.Pattern[str]] = re.compile(r"\bserve +([a-z][a-z-]*)(?![\w-])")
-"""手順書の中の `serve <サブコマンド>` (`p2-…` のような、数字を含む構成の名前は拾わない)。"""
-
-
-def _subparser_map(parser: argparse.ArgumentParser) -> dict[str, argparse.ArgumentParser]:
-    """引数解析器の、サブコマンドの名前から解析器への対応。"""
-    for action in parser._actions:
-        if isinstance(action, argparse._SubParsersAction):
-            return dict(action._name_parser_map)
-    pytest.fail("build_parser() にサブコマンドの解析器がない")
-
-
 def test_every_serve_command_in_the_procedure_exists() -> None:
     """手順書が打たせるコマンドが、すべて実在する (存在しない引数を書かないための歯止め)。"""
-    text = _read_text(DOC_PATH)
-    top = _subparser_map(cli.build_parser())
+    text = read_text(DOC_PATH)
+    top = subparser_map(cli.build_parser())
 
-    used = {found.group(1) for found in _SERVE_CALL.finditer(text)}
+    used = {found.group(1) for found in SERVE_CALL.finditer(text)}
     assert used, "手順書に `serve <サブコマンド>` が 1 つもない"
     assert not sorted(used - set(top)), f"実在しないサブコマンド: {sorted(used - set(top))}"
 
@@ -178,130 +170,17 @@ def test_every_serve_command_in_the_procedure_exists() -> None:
 # --- 5. 相対リンクの実在 --------------------------------------------------
 
 
-_MARKDOWN_LINK: Final[re.Pattern[str]] = re.compile(r"\[[^\]]*\]\(([^)]+)\)")
-
-
-def _relative_link_targets(text: str) -> list[str]:
-    """本文中の `[text](path)` のうち、外部の URL でも見出しへのアンカーでもないもの。"""
-    targets: list[str] = []
-    for found in _MARKDOWN_LINK.finditer(text):
-        target = found.group(1).strip()
-        if target.startswith(("http://", "https://", "#", "mailto:")):
-            continue
-        targets.append(target)
-    return targets
-
-
 def test_every_relative_link_in_the_procedure_resolves_to_a_real_file() -> None:
     """手順書のリポジトリ内の相対リンクが、すべて実在するファイルを指す。"""
-    text = _read_text(DOC_PATH)
-    targets = _relative_link_targets(text)
+    text = read_text(DOC_PATH)
+    targets = relative_link_targets(text)
     assert targets, "手順書にリポジトリ内の相対リンクが 1 つもない"
 
     missing = [target for target in targets if not (DOC_PATH.parent / target).is_file()]
     assert not missing, f"手順書のリンクの道筋が実在しない: {missing}"
 
 
-# --- コード塊の走査 -------------------------------------------------------
-
-
-_FENCE: Final[re.Pattern[str]] = re.compile(r"^\s*(`{3,}|~{3,})")
-"""コード塊の囲い (開きと閉じ)。開きには言語名が続いてよい。"""
-
-_HEADING: Final[re.Pattern[str]] = re.compile(r"^#{1,6}\s")
-
-
-@dataclass(frozen=True)
-class _CodeBlock:
-    """文書の中の 1 つのコード塊 (囲みで挟まれた部分)。"""
-
-    open_line: int
-    """開きの囲みの行番号 (1 起点)。"""
-
-    close_line: int
-    """閉じの囲みの行番号。"""
-
-    lines: tuple[tuple[int, str], ...]
-    """中身 (行番号と、その行)。"""
-
-    @property
-    def text(self) -> str:
-        """中身の全文 (注釈の行も含む)。"""
-        return "\n".join(line for _, line in self.lines)
-
-    @property
-    def commands(self) -> str:
-        """中身のうち、注釈の行 (`#` で始まる行) を除いたもの。"""
-        return "\n".join(line for _, line in self.lines if not line.lstrip().startswith("#"))
-
-
-def _code_blocks(text: str) -> list[_CodeBlock]:
-    """文書のコード塊を、現れた順に返す (`` ` `` と `~` の囲みの両方を見る)。"""
-    blocks: list[_CodeBlock] = []
-    fence: str | None = None
-    opened = 0
-    body: list[tuple[int, str]] = []
-    for number, line in enumerate(text.splitlines(), start=1):
-        found = _FENCE.match(line)
-        if fence is None:
-            if found is not None:
-                fence, opened, body = found.group(1), number, []
-            continue
-        if found is not None and line.strip() == found.group(1) and _closes(fence, found.group(1)):
-            blocks.append(_CodeBlock(opened, number, tuple(body)))
-            fence = None
-        else:
-            body.append((number, line))
-    assert fence is None, f"{opened} 行目のコード塊が閉じていない"
-    return blocks
-
-
-def _closes(opening: str, closing: str) -> bool:
-    """閉じの囲みが、開きの囲みと同じ文字で、同じ長さ以上か。"""
-    return closing[0] == opening[0] and len(closing) >= len(opening)
-
-
-def _lines_inside(blocks: list[_CodeBlock]) -> set[int]:
-    """コード塊の中 (囲みの行も含む) にある行番号。見出しと取り違えないために使う。"""
-    inside: set[int] = set()
-    for block in blocks:
-        inside.update(range(block.open_line, block.close_line + 1))
-    return inside
-
-
-def _nearest_heading(lines: list[str], inside: set[int], before: int) -> str:
-    """`before` 行目より前で、いちばん近い見出しの行 (コード塊の中の `#` の注釈は見ない)。"""
-    for number in range(before - 1, 0, -1):
-        if number not in inside and _HEADING.match(lines[number - 1]):
-            return lines[number - 1]
-    return ""
-
-
-def _preceding_paragraph(lines: list[str], before: int) -> str:
-    """`before` 行目の、すぐ前の段落 (空行を飛ばし、空行かコード塊の囲みまでの連なり)。"""
-    number = before - 1
-    while number >= 1 and not lines[number - 1].strip():
-        number -= 1
-    collected: list[str] = []
-    while number >= 1 and lines[number - 1].strip() and not _FENCE.match(lines[number - 1]):
-        collected.append(lines[number - 1])
-        number -= 1
-    return "\n".join(reversed(collected))
-
-
 # --- 6. 実機を操作する塊の ⚠ ---------------------------------------------
-
-_ASK_MARKS: Final[tuple[str, ...]] = ("⚠", "了承を得てから")
-
-_MACHINE_CALLS: Final[dict[str, re.Pattern[str]]] = {
-    "ssh": re.compile(r"\bssh +"),
-    "docker run": re.compile(r"\bdocker +run\b"),
-    "serve push": re.compile(r"\bserve +push(?![\w-])"),
-    "serve verify": re.compile(r"\bserve +verify(?![\w-])"),
-    "serve start": re.compile(r"\bserve +start(?![\w-])"),
-    "serve stop": re.compile(r"\bserve +stop(?![\w-])"),
-}
-"""実機を操作する呼び出し (Spark に入る、コンテナを起こす、配る、照合する、起動する、止める)。"""
 
 _MACHINE_CALLS_THE_PROCEDURE_MUST_SHOW: Final[frozenset[str]] = frozenset(
     {"docker run", "serve push", "serve verify", "serve start"}
@@ -318,29 +197,7 @@ def test_every_block_that_touches_the_machines_is_preceded_by_the_ask_mark() -> 
     見るのは、その塊の直前の見出しと、直前の段落 (空行で区切られた、塊のすぐ上の連なり) を
     合わせた範囲である。節をまたいで、前の節の印を数えない。
     """
-    text = _read_text(DOC_PATH)
-    lines = text.splitlines()
-    blocks = _code_blocks(text)
-    inside = _lines_inside(blocks)
-
-    shown: set[str] = set()
-    problems: list[str] = []
-    for block in blocks:
-        calls = sorted(
-            name for name, pattern in _MACHINE_CALLS.items() if pattern.search(block.text)
-        )
-        if not calls:
-            continue
-        shown.update(calls)
-        heading = _nearest_heading(lines, inside, block.open_line)
-        paragraph = _preceding_paragraph(lines, block.open_line)
-        window = f"{heading}\n{paragraph}"
-        missing = [mark for mark in _ASK_MARKS if mark not in window]
-        if missing:
-            problems.append(
-                f"{block.open_line} 行目からの、{calls} を含む塊の直前の見出しと段落に、"
-                f"{missing} がない"
-            )
+    shown, problems = ask_mark_problems(read_text(DOC_PATH))
 
     absent = sorted(_MACHINE_CALLS_THE_PROCEDURE_MUST_SHOW - shown)
     assert not absent, f"コード塊として書かれていない実機の操作: {absent}"
@@ -349,7 +206,7 @@ def test_every_block_that_touches_the_machines_is_preceded_by_the_ask_mark() -> 
 
 # --- 7. 変換の docker run -------------------------------------------------
 
-_DOCKER_RUN: Final[re.Pattern[str]] = _MACHINE_CALLS["docker run"]
+_DOCKER_RUN: Final[re.Pattern[str]] = MACHINE_CALLS["docker run"]
 
 _GPU_OPTIONS: Final[re.Pattern[str]] = re.compile(r"--gpus\b|--runtime[= ]+nvidia\b")
 """コンテナに GPU を渡す指定。変換は CPU だけで行うので、どの `docker run` にも付けない。"""
@@ -364,10 +221,10 @@ _ENTRYPOINT: Final[re.Pattern[str]] = re.compile(r"(?<![\w-])--entrypoint(?:=|\s
 """`docker run` の、イメージの既定の起動 (ENTRYPOINT) を差し替える指定。"""
 
 
-def _docker_run_blocks() -> list[_CodeBlock]:
+def _docker_run_blocks() -> list[CodeBlock]:
     """`docker run` を含むコード塊 (注釈の行だけに出てくるものは除く)。なければ、そこで落とす。"""
     blocks = [
-        block for block in _code_blocks(_read_text(DOC_PATH)) if _DOCKER_RUN.search(block.commands)
+        block for block in code_blocks(read_text(DOC_PATH)) if _DOCKER_RUN.search(block.commands)
     ]
     assert blocks, "`docker run` を含むコード塊が 1 つもない"
     return blocks
@@ -444,25 +301,11 @@ def test_the_conversion_docker_run_overrides_the_image_entrypoint() -> None:
 TOOL_MAIN_PATH: Final[Path] = SERVING_DIR / "payload" / "k2-quant" / "k2_quant" / "__main__.py"
 """変換の道具の写し (`serve push` が Spark へ配る)。実行せず、`ast` で読む。"""
 
-_CONTINUATION: Final[re.Pattern[str]] = re.compile(r"\\\n")
-"""シェルの、行を継ぐバックスラッシュと改行。"""
-
 _TOOL_MODULE: Final[tuple[str, str]] = ("-m", "k2_quant")
 """変換の道具の起動 (`python3 -m k2_quant`)。この後ろが、道具の引数。"""
 
 _PLACEHOLDER: Final[str] = "<変換の道具>"
 """道具ができる前に、手順書が仮に置いていた名前。"""
-
-
-def _command_lines(text: str) -> list[str]:
-    """文書のコード塊の命令行 (注釈の行を除き、バックスラッシュで継いだ行を 1 行にしたもの)。
-
-    コード塊の外 (段落) の字面は見ない。
-    """
-    lines: list[str] = []
-    for block in _code_blocks(text):
-        lines.extend(_CONTINUATION.sub(" ", block.commands).splitlines())
-    return lines
 
 
 def _split_words(line: str) -> list[str]:
@@ -478,7 +321,7 @@ def _conversion_commands(text: str) -> list[list[str]]:
 
     `ssh spark-153d` のような前置きも、語として残る。
     """
-    return [_split_words(line) for line in _command_lines(text) if _DOCKER_RUN.search(line)]
+    return [_split_words(line) for line in command_lines(text) if _DOCKER_RUN.search(line)]
 
 
 def _adjacent(words: list[str], first: str, second: str) -> int | None:
@@ -509,7 +352,7 @@ def _tool_words(words: list[str]) -> list[str]:
 
 def _doc_conversion_commands() -> list[list[str]]:
     """手順書のコード塊の `docker run` の命令。`-m k2_quant` の命令が 1 つもなければ、落とす。"""
-    commands = _conversion_commands(_read_text(DOC_PATH))
+    commands = _conversion_commands(read_text(DOC_PATH))
     assert any(_adjacent(words, *_TOOL_MODULE) is not None for words in commands), (
         f"手順書のコード塊に、変換の命令 (`docker run … -m k2_quant …`) が 1 つもない: {DOC_PATH}"
     )
@@ -629,7 +472,7 @@ def _link_problems(text: str) -> list[str]:
 def test_the_conversion_commands_do_not_use_link() -> None:
     """変換の命令に `--link` がない (別々の bind mount の間のハードリンクは `EXDEV` で失敗する)。"""
     _doc_conversion_commands()  # 前提: 変換の命令が 1 つもなければ、ここで落とす
-    problems = _link_problems(_read_text(DOC_PATH))
+    problems = _link_problems(read_text(DOC_PATH))
     assert not problems, "\n".join(problems)
 
 
@@ -776,7 +619,7 @@ def test_every_conversion_docker_run_binds_origin_readonly_and_derived_writable(
 def test_the_procedure_leaves_no_placeholder_for_the_conversion_tool() -> None:
     """仮置きの `<変換の道具>` が、手順書のどこにも残っていない (実際の道具の名前で書く)。"""
     _doc_conversion_commands()  # 前提: 変換の命令が 1 つもなければ、ここで落とす
-    text = _read_text(DOC_PATH)
+    text = read_text(DOC_PATH)
     lines = [
         str(number)
         for number, line in enumerate(text.splitlines(), start=1)
@@ -795,11 +638,11 @@ def test_the_derived_import_options_exist_in_the_real_cli() -> None:
 
     `derived-import` がまだなければ、その理由を示して落ちる。
     """
-    text = _read_text(DOC_PATH)
-    commands = [_split_words(line) for line in _command_lines(text) if _DERIVED_IMPORT.search(line)]
+    text = read_text(DOC_PATH)
+    commands = [_split_words(line) for line in command_lines(text) if _DERIVED_IMPORT.search(line)]
     assert commands, f"手順書のコード塊に `serve derived-import` の命令が 1 つもない: {DOC_PATH}"
 
-    parser = _subparser_map(cli.build_parser()).get("derived-import")
+    parser = subparser_map(cli.build_parser()).get("derived-import")
     if parser is None:
         pytest.fail("`cli.build_parser()` に `derived-import` のサブコマンドがない")
     options = {name for action in parser._actions for name in action.option_strings}
@@ -825,35 +668,8 @@ def test_the_derived_import_options_exist_in_the_real_cli() -> None:
 
 # --- 10. §1 の突き合わせの並べ替え ---------------------------------------
 
-_HASH_COMMAND: Final[re.Pattern[str]] = re.compile(r"\b(?:sha256sum|shasum\s+-a\s+256)\b")
-"""2 台の写しと Mac の写しの、ファイルごとの SHA-256 を出す命令。"""
-
-_SORTED_AFTER_HASH_COMMAND: Final[re.Pattern[str]] = re.compile(r"[^|)'\"]*\|\s*LC_ALL=C\s+sort\b")
-"""hash コマンドの直後 (引数のあと、同じ引用符と括弧の中) の `| LC_ALL=C sort`。
-
-`ssh` の引用符や `<( … )` の括弧を越えては探さない。片側の並べ替えを、もう片側のもので
-代用させないため。
-"""
-
 _MINIMUM_CHECKSUM_COMMANDS: Final[int] = 4
 """突き合わせの hash コマンドの数: 2 台 (`spark-153d`、`spark-5083`) × 2 側 (Spark と Mac)。"""
-
-
-def _checksum_sort_problems(text: str) -> tuple[int, list[str]]:
-    """文書のコード塊の命令行にある hash コマンドの数と、直後に並べ替えがないものの説明。
-
-    段落と、コード塊の中の注釈の行 (`#` で始まる行) は、見ない。
-    """
-    checked = 0
-    problems: list[str] = []
-    for line in _command_lines(text):
-        for found in _HASH_COMMAND.finditer(line):
-            checked += 1
-            if _SORTED_AFTER_HASH_COMMAND.match(line, found.end()) is None:
-                problems.append(
-                    f"`{found.group(0)}` の直後に `| LC_ALL=C sort` がない: {line.strip()[:100]}"
-                )
-    return checked, problems
 
 
 def test_the_checksum_comparison_sorts_every_side_by_file_name() -> None:
@@ -862,7 +678,7 @@ def test_the_checksum_comparison_sorts_every_side_by_file_name() -> None:
     `*.py` の展開順は、ロケールで違う (Spark と Mac で、中身が同じでも差分が出た)。
     片側だけを並べ替えても、もう片側の順は変わらない。
     """
-    checked, problems = _checksum_sort_problems(_read_text(DOC_PATH))
+    checked, problems = checksum_sort_problems(read_text(DOC_PATH))
 
     assert checked >= _MINIMUM_CHECKSUM_COMMANDS, (
         f"突き合わせの hash コマンドが {checked} 個しか読めない (2 台 × 2 側 = "
@@ -886,7 +702,7 @@ def test_a_checksum_comparison_that_sorts_every_side_has_no_problem() -> None:
     """2 台 × 2 側のすべての hash コマンドの直後に並べ替えがあれば、4 個数えられ、問題がない。"""
     text = _synthetic_document("突き合わせる。", list(_SYNTHETIC_CHECKSUM_COMPARISON))
 
-    checked, problems = _checksum_sort_problems(text)
+    checked, problems = checksum_sort_problems(text)
 
     assert checked == _MINIMUM_CHECKSUM_COMMANDS
     assert problems == []
@@ -910,7 +726,7 @@ def test_a_checksum_comparison_that_sorts_only_the_mac_side_is_a_problem(
     lines[1] = f"  <(ssh spark-153d 'cd /a && {ssh_side}') \\"
     text = _synthetic_document("突き合わせる。", lines)
 
-    checked, problems = _checksum_sort_problems(text)
+    checked, problems = checksum_sort_problems(text)
 
     assert checked == _MINIMUM_CHECKSUM_COMMANDS, label
     assert len(problems) == 1, label
@@ -928,7 +744,7 @@ def test_checksum_words_in_a_paragraph_or_a_comment_line_are_not_counted() -> No
         ["# sha256sum は並べ替えてから比べる", *_SYNTHETIC_CHECKSUM_COMPARISON],
     )
 
-    checked, problems = _checksum_sort_problems(text)
+    checked, problems = checksum_sort_problems(text)
 
     assert checked == _MINIMUM_CHECKSUM_COMMANDS
     assert problems == []
@@ -969,7 +785,7 @@ def _tool_default_pattern() -> str:
 def _json_sample(key: str) -> dict[str, object]:
     """手順書のコード塊のうち、JSON として読め、最上位に `key` を持つものの、唯一の 1 つ。"""
     samples: list[dict[str, object]] = []
-    for block in _code_blocks(_read_text(DOC_PATH)):
+    for block in code_blocks(read_text(DOC_PATH)):
         try:
             parsed = json.loads(block.text)
         except ValueError:
@@ -1068,7 +884,7 @@ def test_the_manifest_sample_modules_are_selected_by_the_sample_pattern() -> Non
 def _section_8(text: str) -> str:
     """`## 8.` の見出しから、次の `## ` の見出し (なければ末尾) の手前まで (コード塊の中は除く)。"""
     lines = text.splitlines()
-    inside = _lines_inside(_code_blocks(text))
+    inside = lines_inside(code_blocks(text))
     headings = [
         number
         for number, line in enumerate(lines, start=1)
@@ -1105,10 +921,10 @@ SECTION_8_KEPT_MARKERS: Final[tuple[str, ...]] = (
 @pytest.mark.parametrize("marker", SECTION_8_NEW_MARKERS)
 def test_section_8_records_what_was_learned_on_2026_09_26(marker: str) -> None:
     """§8 に、2026-09-26 に分かったこと (変換の時間と一致、`instanttensor` の失敗と回避) がある。"""
-    assert marker in _section_8(_read_text(DOC_PATH))
+    assert marker in _section_8(read_text(DOC_PATH))
 
 
 @pytest.mark.parametrize("marker", SECTION_8_KEPT_MARKERS)
 def test_section_8_keeps_the_existing_open_questions(marker: str) -> None:
     """§8 の既存の項目 (`numpy`、空き、起動の時間と GPU のメモリ、匿名) を、消していない。"""
-    assert marker in _section_8(_read_text(DOC_PATH))
+    assert marker in _section_8(read_text(DOC_PATH))

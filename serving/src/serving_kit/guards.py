@@ -452,7 +452,8 @@ def config_ports(config: ConfigDef, role: NodeRole) -> tuple[int, ...]:
 def mount_sources(argv: Sequence[str]) -> tuple[str, ...]:
     """組み立てた引数の列から、`--mount` の元 (Spark の側の置き場所) を取り出す。
 
-    置き換えの印は `plan` が埋めたあとなので、そのまま `test -d` に掛けられる。
+    置き換えの印は `plan` が埋めたあとなので、そのまま `test -e` に掛けられる。元は
+    ディレクトリのことも、ファイル (vLLM の直したファイルの bind mount) のこともある。
     """
     sources: list[str] = []
     pending = False
@@ -748,10 +749,14 @@ def gate_layout(
     *,
     timeout_s: float = READ_TIMEOUT_S,
 ) -> GateResult:
-    """構成が結び付ける置き場所が、この台にあるか (design.md 「関門」: `test -d`)。
+    """構成が結び付ける置き場所が、この台にあるか。
 
-    `--mount` は、元のディレクトリを自動では作らないので、これがないと最初の `docker run`
-    が失敗する。
+    design.md 「関門」の表は、この確認を `test -d <remote_root>/<置き場所>` と定めている。
+    `--mount` の元は、ディレクトリだけでなく、ファイル (vLLM の直したファイルの bind mount。
+    ADR 0007) のこともあるので、#73 の Q1 の承認で `test -e` に広げた。
+
+    `--mount` は、元のディレクトリやファイルを自動では作らないので、これがないと最初の
+    `docker run` が失敗する。
     """
     return _safely(GATE_LAYOUT, node.role, partial(_layout, runner, node, plan, timeout_s))
 
@@ -768,7 +773,7 @@ def _layout(
     missing = [
         source
         for source in sources
-        if runner.run(node, ("test", "-d", source), timeout_s=timeout_s, mutating=False).exit_code
+        if runner.run(node, ("test", "-e", source), timeout_s=timeout_s, mutating=False).exit_code
         != 0
     ]
     if missing:
@@ -777,8 +782,8 @@ def _layout(
             node.role,
             passed=False,
             detail=(
-                f"構成が結び付ける置き場所がない ({', '.join(missing)})。"
-                "`serve push` で、2 台に置き場所を作ってから起こす"
+                f"構成が結び付ける置き場所やファイルがない ({', '.join(missing)})。"
+                "`serve push` で、2 台に置き場所やファイルを配ってから起こす"
             ),
         )
     return _result(

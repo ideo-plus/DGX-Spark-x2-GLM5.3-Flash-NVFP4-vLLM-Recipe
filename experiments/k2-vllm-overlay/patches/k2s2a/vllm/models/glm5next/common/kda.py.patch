@@ -1,0 +1,30 @@
+--- a/vllm/models/glm5next/common/kda.py
++++ b/vllm/models/glm5next/common/kda.py
+@@ -185,13 +185,7 @@
+         vllm_config: VllmConfig,
+         prefix: str = "",
+     ) -> None:
+-        # KDA projections remain BF16 because fp8 checkpoints omit their scales.
+-        saved_quant_config = vllm_config.quant_config
+-        try:
+-            vllm_config.quant_config = None
+-            super().__init__(config, vllm_config, prefix)
+-        finally:
+-            vllm_config.quant_config = saved_quant_config
++        super().__init__(config, vllm_config, prefix)
+ 
+         self.head_dim = config.linear_head_dim
+         self.num_heads = config.linear_num_heads
+@@ -227,7 +221,11 @@
+             replicated_shard_ids=(4, 5),
+             tp_size=self.tp_size,
+             bias=False,
+-            quant_config=self.quant_config,
++            # Kept unquantized: the replicated f_a/g_a shards need their own
++            # scale loading, which a quantized merged layer does not handle
++            # yet. The unmerged f_b_proj, g_b_proj and o_proj below do take
++            # self.quant_config.
++            quant_config=None,
+             prefix=f"{prefix}.in_proj_qkvbfg_a",
+         )
+ 

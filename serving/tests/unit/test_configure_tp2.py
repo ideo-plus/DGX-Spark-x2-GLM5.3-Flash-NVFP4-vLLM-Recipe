@@ -16,11 +16,16 @@
   外した出力の SHA-256 は固定値で、既定つきの出力はその固定値から導出できる
 - 生成の前後で、実物の `configs.toml` のバイト列が同じである (生成器は読むだけで書かない)
 - 生成器は、ネットワークも `subprocess` も読み込まない
+- `--vllm-overlay k2s2a` は、固定した vLLM の直したファイルごとに、読み取り専用の bind mount を
+  根拠つきで足し、構成の名前に `-ov-k2s2a` を付ける (ADR 0007 の第 2a 段、#73)。付けない出力は
+  変わらない。基との差は、mount の組と、名前・説明・ラベルだけである。定義と写しが合わなければ、
+  出力を作らずに断る
 
 試験は、`tmp_path` に inspect の JSON の見本を作り、実物の `configs.toml` と `nodes.toml` を
-読み取りで使う。`serving/var/` (`.gitignore` 対象) には依存せず、実機・ネットワークには
-一切つながない。生成器の module は、パッケージでない `experiments/nope-mla/` の下にあるので
-`importlib` で読む。
+読み取りで使う。`serving/var/` (`.gitignore` 対象) には、1 本だけ (重ねる先の道筋を、固定した
+vLLM の `docker/Dockerfile` と突き合わせる試験) が、あれば読み、なければ飛ばす形で触れる。
+ほかは依存せず、実機・ネットワークには一切つながない。生成器の module は、パッケージでない
+`experiments/nope-mla/` の下にあるので `importlib` で読む。
 """
 
 from __future__ import annotations
@@ -29,6 +34,7 @@ import ast
 import hashlib
 import importlib.util
 import json
+import re
 import tomllib
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
@@ -40,8 +46,9 @@ import pytest
 
 from serving_kit import types as sk_types
 from serving_kit.config import load_configs, load_nodes, select_config
+from serving_kit.guards import mount_sources
 from serving_kit.plan import LABEL_CONFIG, LABEL_CONFIG_SHA256, build_plans
-from serving_kit.types import ContainerPlan
+from serving_kit.types import ConfigDef, ContainerPlan
 
 SERVING_DIR = Path(__file__).resolve().parents[2]
 """`serving/` (この試験から見て 2 つ上)。"""
@@ -2922,3 +2929,612 @@ def test_derived_weights_suffix_comes_before_the_profiler_suffix(
     assert set(loaded) == {name}
     assert isinstance(loaded[name].weights, sk_types.DerivedWeightsRef)
     assert PROFILER_ARG_KEY in loaded[name].args
+
+
+# --- 固定した vLLM の直したファイルの重ね (`--vllm-overlay`。ADR 0007 の第 2a 段、#73) -----
+
+OVERLAY_NAME = "k2s2a"
+"""`--vllm-overlay` に渡す名前 (`experiments/k2-vllm-overlay/k2s2a.json` が定義する)。"""
+
+OVERLAY_DEFINITION_PATH = REPO_ROOT / "experiments" / "k2-vllm-overlay" / f"{OVERLAY_NAME}.json"
+OVERLAY_COMMIT = "0961bbae2894d574be790d219651824eb199318e"
+"""重ねる vLLM の固定の commit (イメージの vLLM と同じ)。"""
+
+OVERLAY_TARGET_NAME = f"{FULL_TARGET_NAME}-ov-{OVERLAY_NAME}"
+"""`--variant full --vllm-overlay k2s2a` の構成の名前 (`-ov-` の接尾辞)。"""
+
+IMAGE_SITE_PACKAGES = "/usr/local/lib/python3.12/dist-packages"
+"""イメージの中の vLLM の導入先 (`uv pip install --system` が置く場所)。"""
+
+ARGS_COMMENT = "# --- vllm serve の引数 (この順で並ぶ)"
+"""p1 の節の、docker の設定の末尾を示すコメント (重ねる mount は、この直前に入る)。"""
+
+PINNED_DOCKERFILE = SERVING_DIR / "var" / "nope-build-0961bbae" / "source" / "docker" / "Dockerfile"
+"""固定した vLLM (0961bbae) の `docker/Dockerfile`。Git 対象外の木にあるので、CI にはない。"""
+
+PINNED_PYTHON_VERSION = re.compile(r"^ARG PYTHON_VERSION=(\d+\.\d+)$", re.MULTILINE)
+"""`docker/Dockerfile` の先頭の、Python の版の既定 (ビルドの引数で上書きしなければ使われる)。"""
+
+PINNED_VLLM_LOCATION = re.compile(
+    r"(/usr/local/lib/python\$\{PYTHON_VERSION\}/dist-packages)/vllm/"
+)
+"""`docker/Dockerfile` が、イメージの中の vLLM のパッケージを置く場所。"""
+
+
+def _overlay_files() -> list[str]:
+    """`k2s2a.json` の `files` の道筋 (mount の並び順)。"""
+    if not OVERLAY_DEFINITION_PATH.is_file():
+        pytest.fail(f"重ねる定義がない: {OVERLAY_DEFINITION_PATH}")
+    data = json.loads(OVERLAY_DEFINITION_PATH.read_text(encoding="utf-8"))
+    return [entry["path"] for entry in data["files"]]
+
+
+def _overlay_mount_value(path: str) -> str:
+    """ファイル 1 つの読み取り専用の bind mount の値 (`{remote_root}` の印は埋める前)。"""
+    return (
+        f"type=bind,source={{remote_root}}/payload/vllm-overlay/{OVERLAY_NAME}/{path},"
+        f"target={IMAGE_SITE_PACKAGES}/{path},readonly"
+    )
+
+
+def _generate_overlay(
+    generator: Any,
+    tmp_path: Path,
+    extra: tuple[str, ...] = ("--variant", "full"),
+    *,
+    stem: str = "overlay",
+) -> Path:
+    """`--vllm-overlay k2s2a` 付きの `main` で生成し、出力の道筋を返す。"""
+    source = _write_inspect_json(tmp_path, _inspect_item())
+    output = tmp_path / f"{stem}.toml"
+    generator.main([*extra, "--vllm-overlay", OVERLAY_NAME, str(source), str(output)])
+    return output
+
+
+def _generate_base(generator: Any, tmp_path: Path) -> Path:
+    """`--vllm-overlay` を付けない `--variant full` で生成し、出力の道筋を返す。"""
+    source = _write_inspect_json(tmp_path, _inspect_item())
+    output = tmp_path / "base.toml"
+    generator.main(["--variant", "full", str(source), str(output)])
+    return output
+
+
+def _plans_of(output: Path, name: str) -> tuple[ContainerPlan, ...]:
+    """生成した TOML から構成 `name` を選び、実物の `nodes.toml` で 2 台ぶんの計画を組む。"""
+    nodes = load_nodes(NODES_PATH, REPO_ROOT)
+    config = select_config(load_configs(output, REPO_ROOT), name, nodes)
+    return build_plans(config, nodes, STARTED_AT)
+
+
+def _mount_values(argv: tuple[str, ...]) -> list[str]:
+    """引数の列の `--mount` の直後の値 (現れた順)。"""
+    return [argv[at + 1] for at in range(len(argv) - 1) if argv[at] == "--mount"]
+
+
+def _insert_mount_decoy_table(text: str) -> str:
+    """p1 節の `env.vllm-host-ip` の直前に、`mount-logs` と同じ字面の `value` の囮の表を入れる。"""
+    decoy = (
+        "\n[configs.p1-nvfp4-tp2.args.decoy]\n"
+        'flag = "--decoy"\n'
+        'value = "type=bind,source={remote_root}/logs,target=/logs"\n'
+        'why = "mount-logs と同じ字面の value を持つ別のテーブル"\n'
+        'source = "https://example.invalid/"\n'
+        'quote = "decoy"\n\n'
+    )
+    start = text.index("[configs.p1-nvfp4-tp2]")
+    end = text.index("# ====", start)
+    block = text[start:end]
+    anchor = block.index("[configs.p1-nvfp4-tp2.env.vllm-host-ip]")
+    return text[:start] + block[:anchor] + decoy + block[anchor:] + text[end:]
+
+
+def test_overlay_mounts_are_inserted_before_the_args_comment_in_the_order_of_the_files(
+    generator: Any, tmp_path: Path
+) -> None:
+    """docker の節の末尾 (args のコメントの直前) に、`files` の順に mount が 3 つ並ぶ。
+
+    `build_plans` の引数の列では、3 つの `--mount` の組が `--device` の前に並ぶ。
+    """
+    # Given: 実物の `configs.toml` と `k2s2a.json` (3 ファイル)、`--vllm-overlay k2s2a`
+    files = _overlay_files()
+    assert len(files) == 3
+
+    # When: 生成する
+    output = _generate_overlay(generator, tmp_path)
+    text = output.read_text(encoding="utf-8")
+
+    # Then (TOML の本文): args のコメントの直前の 3 つの docker の表が、files の順の overlay の
+    # mount で、その前が `mount-logs`、後が `device-infiniband`
+    keys = [generator.overlay_mount_key(path) for path in files]
+    head_keys = re.findall(
+        r"^\[configs\.[^\]]+\.docker\.([A-Za-z0-9-]+)\]$",
+        text[: text.index(ARGS_COMMENT)],
+        flags=re.MULTILINE,
+    )
+    assert head_keys[-4:] == ["mount-logs", *keys]
+    docker = tomllib.loads(text)["configs"][OVERLAY_TARGET_NAME]["docker"]
+    docker_keys = list(docker)
+    assert docker_keys[docker_keys.index("mount-logs") + 1 :][:4] == [*keys, "device-infiniband"]
+    assert [docker[key]["flag"] for key in keys] == ["--mount"] * 3
+    assert [docker[key]["value"] for key in keys] == [_overlay_mount_value(p) for p in files]
+
+    # Then (起動計画): 2 台とも、3 つの `--mount` の組が、既存の 3 つの後、`--device` の前
+    nodes = load_nodes(NODES_PATH, REPO_ROOT)
+    for plan in _plans_of(output, OVERLAY_TARGET_NAME):
+        remote_root = nodes[plan.node].remote_root
+        mounts = _mount_values(plan.argv)
+        assert len(mounts) == 3 + 3
+        assert mounts[3:] == [
+            _overlay_mount_value(path).replace("{remote_root}", remote_root) for path in files
+        ]
+        last = max(at for at in range(len(plan.argv) - 1) if plan.argv[at] == "--mount")
+        assert last < plan.argv.index("--device")
+
+
+def test_overlay_render_leaves_a_decoy_with_the_same_value_alone(
+    generator: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """`mount-logs` と同じ字面の `value` を持つ別の表があっても、既存の mount も囮も増減しない。"""
+    # Given: `env.vllm-host-ip` の直前に囮の表 `args.decoy` を差し込んだ `configs.toml` の本文
+    decoyed = tmp_path / "configs-decoy.toml"
+    decoyed.write_text(
+        _insert_mount_decoy_table(CONFIGS_PATH.read_text(encoding="utf-8")), encoding="utf-8"
+    )
+    monkeypatch.setattr(generator, "CONFIGS_PATH", decoyed)
+    real = tomllib.loads(CONFIGS_PATH.read_text(encoding="utf-8"))["configs"]["p1-nvfp4-tp2"]
+
+    # When: `--vllm-overlay k2s2a` で生成する
+    output = _generate_overlay(generator, tmp_path)
+
+    # Then: 囮も、既存の 3 つの mount も元のまま、`--mount` の表は 3 + 3 = 6 個
+    text = output.read_text(encoding="utf-8")
+    generated = tomllib.loads(text)["configs"][OVERLAY_TARGET_NAME]
+    assert generated["args"]["decoy"]["value"] == "type=bind,source={remote_root}/logs,target=/logs"
+    for key in ("mount-weights", "mount-cache", "mount-logs"):
+        assert generated["docker"][key]["value"] == real["docker"][key]["value"], key
+    assert text.count('flag = "--mount"') == 3 + 3
+    assert text.count('value = "type=bind,source={remote_root}/logs,target=/logs"') == 2
+
+
+def test_overlay_mount_keys_are_derived_from_the_path_and_do_not_collide(generator: Any) -> None:
+    """鍵は道筋から一意に決まり、3 ファイルの鍵は互いに違い、既存の docker の鍵とも違う。"""
+    # Given / When: 直したファイルの 1 つの鍵と、3 ファイルの鍵
+    key = generator.overlay_mount_key("vllm/models/glm5next/common/model.py")
+    keys = [generator.overlay_mount_key(path) for path in _overlay_files()]
+
+    # Then: 鍵は道筋から決まり、3 つは互いに違い、p1 の docker の鍵のどれとも違う
+    assert key == "mount-vllm-overlay-models-glm5next-common-model-py"
+    assert len(keys) == 3
+    assert len(set(keys)) == 3
+    existing = set(load_configs(CONFIGS_PATH, REPO_ROOT)["p1-nvfp4-tp2"].docker)
+    assert {"mount-weights", "mount-cache", "mount-logs", "device-infiniband"} <= existing
+    assert not set(keys) & existing
+
+
+def test_overlay_suffix_comes_after_the_weights_suffix_and_before_the_tool_flags(
+    generator: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """名前の接尾辞は、`--weights` の直後で、道具のフラグ (`-prof`) より前に付く。"""
+    # Given / When: `--variant full --weights k2s1 --vllm-overlay k2s2a --torch-profiler` で生成する
+    root, output = _generate_derived(
+        generator,
+        monkeypatch,
+        tmp_path,
+        extra=("--variant", "full", "--vllm-overlay", OVERLAY_NAME, "--torch-profiler"),
+    )
+    loaded = load_configs(output, root)
+
+    # Then: 名前は `<基>-k2s1-ov-k2s2a-prof` だけで、道具のフラグの後ろに付いた名前はない
+    assert set(loaded) == {f"{FULL_TARGET_NAME}-{DERIVED_NAME}-ov-{OVERLAY_NAME}-prof"}
+    assert f"{FULL_TARGET_NAME}-{DERIVED_NAME}-prof-ov-{OVERLAY_NAME}" not in loaded
+
+
+@pytest.mark.parametrize(
+    ("extra", "expected_name"),
+    [
+        pytest.param((), f"{TARGET_NAME}-ov-{OVERLAY_NAME}", id="smoke"),
+        pytest.param(("--variant", "full"), OVERLAY_TARGET_NAME, id="full"),
+        pytest.param(
+            ("--variant", "full-mtp", "--spec-tokens", "2"),
+            f"{mtp_target_name(2)}-ov-{OVERLAY_NAME}",
+            id="full-mtp",
+        ),
+    ],
+)
+def test_overlay_suffix_follows_each_variant(
+    generator: Any, tmp_path: Path, extra: tuple[str, ...], expected_name: str
+) -> None:
+    """`--vllm-overlay k2s2a` は、どの `--variant` でも、名前の末尾を `-ov-k2s2a` にする。"""
+    # Given / When: 各変種に `--vllm-overlay k2s2a` を付けて生成し、`load_configs` で読む
+    loaded = load_configs(_generate_overlay(generator, tmp_path, extra), REPO_ROOT)
+
+    # Then: 基の変種名の直後に `-ov-k2s2a` が付いた構成だけができ、3 ファイルの mount がある
+    assert set(loaded) == {expected_name}
+    values = [setting.value for setting in loaded[expected_name].docker.values()]
+    assert [value for value in values if value and "/payload/vllm-overlay/" in value] == [
+        _overlay_mount_value(path) for path in _overlay_files()
+    ]
+
+
+def test_overlay_description_names_the_overlay_and_every_file(
+    generator: Any, tmp_path: Path
+) -> None:
+    """説明に、重ねる定義の名前と、重ねる 3 ファイルの道筋が入る。"""
+    # Given / When: overlay 付きの構成を読む
+    loaded = load_configs(_generate_overlay(generator, tmp_path), REPO_ROOT)
+
+    # Then: 説明が、名前と 3 つの道筋を含む
+    description = loaded[OVERLAY_TARGET_NAME].description
+    assert OVERLAY_NAME in description
+    for path in _overlay_files():
+        assert path in description
+
+
+def test_overlay_mount_settings_carry_their_provenance(generator: Any, tmp_path: Path) -> None:
+    """足した mount のそれぞれが、理由と、固定の commit の出典と、導入先の原文 (引用) を持つ。"""
+    # Given / When: overlay 付きの構成の docker の設定のうち、重ねる 3 つ
+    docker = load_configs(_generate_overlay(generator, tmp_path), REPO_ROOT)[
+        OVERLAY_TARGET_NAME
+    ].docker
+    expected = {_overlay_mount_value(path) for path in _overlay_files()}
+    added = [setting for setting in docker.values() if setting.value in expected]
+
+    # Then: 3 つとも `--mount` で、理由があり、出典は固定の commit、引用は導入先 (dist-packages)
+    assert len(added) == 3
+    for setting in added:
+        assert setting.flag == "--mount"
+        assert setting.why.strip()
+        assert setting.source is not None
+        assert OVERLAY_COMMIT in str(setting.source)
+        assert setting.quote is not None
+        assert "dist-packages" in setting.quote
+
+
+def test_overlay_mounts_are_read_only_bind_mounts_from_below_remote_root(
+    generator: Any, tmp_path: Path
+) -> None:
+    """重ねる mount は、`{remote_root}` の下だけを元にした、読み取り専用の bind である。"""
+    # Given / When: 重ねる 3 つの mount の値
+    docker = load_configs(_generate_overlay(generator, tmp_path), REPO_ROOT)[
+        OVERLAY_TARGET_NAME
+    ].docker
+    values = [
+        setting.value
+        for setting in docker.values()
+        if setting.value and "/payload/vllm-overlay/" in setting.value
+    ]
+
+    # Then: bind で、元は `{remote_root}/` の下 (`..` なし)、末尾が `readonly`
+    assert len(values) == 3
+    for value in values:
+        parts = value.split(",")
+        source = next(part for part in parts if part.startswith("source="))
+        assert parts[0] == "type=bind"
+        assert source.startswith("source={remote_root}/")
+        assert ".." not in source
+        assert parts[-1] == "readonly"
+
+
+def test_overlay_mount_targets_are_where_the_pinned_dockerfile_installs_vllm(
+    generator: Any, tmp_path: Path
+) -> None:
+    """重ねる先 (ファイルごとの `target=`) は、固定した `docker/Dockerfile` が vLLM を置く場所。
+
+    `--mount type=bind` は、重ねる先がなくても、空のファイルを作って成功する。道筋が違うと、
+    直したファイルが効かないまま起動するので、導入先を、生成器の定数の複製ではなく、固定した
+    Dockerfile の原文から導いて突き合わせる。固定のソースがなければ (CI) 飛ばす。
+
+    イメージの中の実物 (`vllm.__file__`) は、Mac では確かめられない。手順書 §4 の読み取り確認で
+    確かめる。
+    """
+    # Given: 固定のソースの Dockerfile から導いた、vLLM の導入先 (Python の版の既定を当てはめる)
+    if not PINNED_DOCKERFILE.is_file():
+        pytest.skip("固定のソースが手元にない (CI)。導入先の道筋は、手順書 §4 の読み取りで確かめる")
+    dockerfile = PINNED_DOCKERFILE.read_text(encoding="utf-8")
+    version = PINNED_PYTHON_VERSION.search(dockerfile)
+    location = PINNED_VLLM_LOCATION.search(dockerfile)
+    assert version is not None, (
+        f"Python の版の既定 (ARG PYTHON_VERSION=…) が読めない: {PINNED_DOCKERFILE}"
+    )
+    assert location is not None, f"vLLM の導入先が読めない: {PINNED_DOCKERFILE}"
+    site_packages = location.group(1).replace("${PYTHON_VERSION}", version.group(1))
+
+    # When: 重ねる構成を生成し、重ねる 3 つの mount の `target=` を取り出す
+    docker = load_configs(_generate_overlay(generator, tmp_path), REPO_ROOT)[
+        OVERLAY_TARGET_NAME
+    ].docker
+    targets = [
+        next(part for part in setting.value.split(",") if part.startswith("target="))
+        for setting in docker.values()
+        if setting.value and "/payload/vllm-overlay/" in setting.value
+    ]
+
+    # Then: どれも、その導入先の下の、固定のソースの木と同じ相対の道筋である
+    assert targets == [f"target={site_packages}/{path}" for path in _overlay_files()]
+
+
+def test_overlay_mount_sources_are_seen_by_the_layout_gate_of_each_node(
+    generator: Any, tmp_path: Path
+) -> None:
+    """組み立てた引数の列から、関門が見る元の道筋 (`mount_sources`) に、3 ファイルが入る。"""
+    # Given: overlay 付きの構成の 2 台ぶんの計画
+    plans = _plans_of(_generate_overlay(generator, tmp_path), OVERLAY_TARGET_NAME)
+    nodes = load_nodes(NODES_PATH, REPO_ROOT)
+
+    # When / Then: 元の道筋に、それぞれの台の `remote_root` の下の 3 つの写しの道筋が入る
+    for plan in plans:
+        remote_root = nodes[plan.node].remote_root
+        sources = mount_sources(plan.argv)
+        for path in _overlay_files():
+            assert f"{remote_root}/payload/vllm-overlay/{OVERLAY_NAME}/{path}" in sources
+
+
+# --- 重ねた構成と基の構成の差 ------------------------------------------------
+
+
+def _base_and_overlay(generator: Any, tmp_path: Path) -> tuple[ConfigDef, ConfigDef]:
+    """基の `full` の構成と、`--vllm-overlay k2s2a` を付けた構成 (`load_configs` で読む)。"""
+    base = load_configs(_generate_base(generator, tmp_path), REPO_ROOT)[FULL_TARGET_NAME]
+    overlaid = load_configs(_generate_overlay(generator, tmp_path), REPO_ROOT)[OVERLAY_TARGET_NAME]
+    return base, overlaid
+
+
+def test_overlay_config_differs_by_the_mounts_the_name_the_description_and_the_label(
+    generator: Any, tmp_path: Path
+) -> None:
+    """基との差は、docker に足した 3 つの mount と、名前、説明、`config-sha256` のラベルである。"""
+    # Given: 基の構成と、overlay 付きの構成
+    base, overlaid = _base_and_overlay(generator, tmp_path)
+
+    # When: docker の設定のうち、基に無い鍵と、2 つの計画のラベルを取り出す
+    added = {key: item for key, item in overlaid.docker.items() if key not in base.docker}
+    base_plan = _plans_of(tmp_path / "base.toml", FULL_TARGET_NAME)[0]
+    overlaid_plan = _plans_of(tmp_path / "overlay.toml", OVERLAY_TARGET_NAME)[0]
+
+    # Then: 足したのは、`files` の順の 3 つの `--mount` だけで、名前・説明・ラベルが変わる
+    assert [item.value for item in added.values()] == [
+        _overlay_mount_value(path) for path in _overlay_files()
+    ]
+    assert {item.flag for item in added.values()} == {"--mount"}
+    assert overlaid.name == OVERLAY_TARGET_NAME
+    assert overlaid.description != base.description
+    assert base_plan.labels[LABEL_CONFIG_SHA256] != overlaid_plan.labels[LABEL_CONFIG_SHA256]
+
+
+def test_overlay_config_keeps_everything_else_of_the_base_config(
+    generator: Any, tmp_path: Path
+) -> None:
+    """mount の組・名前・説明以外は、基のままである (env に何かを足さず、既存の表を替えない)。"""
+    # Given: 基の構成と、overlay 付きの構成
+    base, overlaid = _base_and_overlay(generator, tmp_path)
+
+    # When / Then: 項目ごとに比べると、docker の既存の設定を含め、基と等しい
+    for field in (
+        "image",
+        "weights",
+        "args",
+        "env",
+        "kind",
+        "nodes",
+        "ready_timeout_s",
+        "served_model_name",
+        "allow_speculative",
+    ):
+        assert getattr(overlaid, field) == getattr(base, field), field
+    kept = {key: item for key, item in overlaid.docker.items() if key in base.docker}
+    assert kept == base.docker
+    assert list(kept) == list(base.docker)
+
+
+def test_overlay_argv_matches_the_base_argv_plus_the_mount_pairs(
+    generator: Any, tmp_path: Path
+) -> None:
+    """overlay 付きの 2 台の列は、基の列に `--mount` の組を 3 つ、`--device` の前に足したもの。
+
+    コンテナの名前と `config` のラベルだけ置き換え、`config-sha256` のラベルは中身が変わるので
+    比較から除く。
+    """
+    # Given: 基と overlay 付きの 2 台ぶんの計画
+    _generate_base(generator, tmp_path)
+    base_plans = _plans_of(tmp_path / "base.toml", FULL_TARGET_NAME)
+    overlaid_plans = _plans_of(_generate_overlay(generator, tmp_path), OVERLAY_TARGET_NAME)
+    nodes = load_nodes(NODES_PATH, REPO_ROOT)
+
+    for base_plan, overlaid_plan in zip(base_plans, overlaid_plans, strict=True):
+        # When: 基の列に、意図した置換と挿入を当てる
+        expected = list(base_plan.argv)
+        expected[expected.index(f"vb-{FULL_TARGET_NAME}-{base_plan.node}")] = (
+            overlaid_plan.container_name
+        )
+        expected[expected.index(f"vllm-baseline.config={FULL_TARGET_NAME}")] = (
+            f"vllm-baseline.config={OVERLAY_TARGET_NAME}"
+        )
+        inserted: list[str] = []
+        for path in _overlay_files():
+            mount = _overlay_mount_value(path).replace(
+                "{remote_root}", nodes[base_plan.node].remote_root
+            )
+            inserted.extend(("--mount", mount))
+        at = expected.index("--device")
+        expected[at:at] = inserted
+
+        # Then: `config-sha256` を除いて一致する
+        kept = [arg for arg in expected if not arg.startswith(f"{LABEL_CONFIG_SHA256}=")]
+        actual = [
+            arg for arg in overlaid_plan.argv if not arg.startswith(f"{LABEL_CONFIG_SHA256}=")
+        ]
+        assert kept == actual
+
+
+# --- 付けないときの出力 ------------------------------------------------------
+
+
+def test_output_without_the_overlay_option_is_unchanged(generator: Any, tmp_path: Path) -> None:
+    """`--vllm-overlay` を付けない `--variant full` の出力は、固定値と 1 バイトも変わらない。"""
+    # Given / When: `--vllm-overlay` を付けない `--variant full` で生成する
+    output = _generate_base(generator, tmp_path)
+
+    # Then: SHA-256 が固定値と一致し、重ねる印が本文に現れない
+    body = output.read_bytes()
+    assert hashlib.sha256(body).hexdigest() == FULL_RENDER_SHA256
+    text = body.decode("utf-8")
+    assert "vllm-overlay" not in text
+    assert IMAGE_SITE_PACKAGES not in text
+
+
+# --- 定義と写しの検査 --------------------------------------------------------
+
+
+def test_main_generates_the_overlay_config_from_the_committed_definition_and_copies(
+    generator: Any, tmp_path: Path
+) -> None:
+    """実物の定義と写しがそろっていれば、生成でき、`load_configs` で読める。"""
+    # Given / When: 実物の `k2s2a.json` と `serving/payload/vllm-overlay/k2s2a/` で生成する
+    output = _generate_overlay(generator, tmp_path)
+
+    # Then: 出力ができ、`p2-nope-tp2-full-ov-k2s2a` が読める
+    assert output.is_file()
+    assert set(load_configs(output, REPO_ROOT)) == {OVERLAY_TARGET_NAME}
+
+
+def _use_synthetic_overlay(
+    generator: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    root: Path,
+    paths: list[str],
+    *,
+    name_in_file: str = OVERLAY_NAME,
+    commit: str = OVERLAY_COMMIT,
+    with_copies: bool = True,
+) -> None:
+    """`root` の下に、`paths` の定義 (と写し) を作り、生成器の参照先をそこへ替える。
+
+    定義の各項目は実物の最初の項目を写す (`path` と `patch` だけ替える)。写しは、`path` の
+    とおりの場所に置く (`..` を含む道筋も、実在する場所に置き、「写しがない」で断られない)。
+    """
+    real = json.loads(OVERLAY_DEFINITION_PATH.read_text(encoding="utf-8"))
+    template = real["files"][0]
+    definitions = root / "definitions"
+    payload = root / "payload"
+    definitions.mkdir(parents=True)
+    entries = [
+        {**template, "path": path, "patch": f"patches/{OVERLAY_NAME}/{path}.patch"}
+        for path in paths
+    ]
+    body = {"name": name_in_file, "vllm_commit": commit, "files": entries}
+    (definitions / f"{OVERLAY_NAME}.json").write_text(json.dumps(body), encoding="utf-8")
+    for path in paths:
+        patch = definitions / "patches" / OVERLAY_NAME / f"{path}.patch"
+        patch.parent.mkdir(parents=True, exist_ok=True)
+        patch.write_text("", encoding="utf-8")
+        if with_copies:
+            copy = payload / OVERLAY_NAME / path
+            copy.parent.mkdir(parents=True, exist_ok=True)
+            copy.write_text("# synthetic\n", encoding="utf-8")
+    monkeypatch.setattr(generator, "OVERLAY_DIR", definitions)
+    monkeypatch.setattr(generator, "OVERLAY_PAYLOAD_DIR", payload)
+
+
+def _generate_or_refuse(generator: Any, tmp_path: Path, stem: str) -> Path:
+    """`--variant full --vllm-overlay k2s2a` で `main` を流し、出力先を返す (断られれば例外)。"""
+    source = _write_inspect_json(tmp_path, _inspect_item())
+    output = tmp_path / f"{stem}.toml"
+    generator.main(["--variant", "full", "--vllm-overlay", OVERLAY_NAME, str(source), str(output)])
+    return output
+
+
+def _assert_refused_on_a_working_scaffold(
+    generator: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    paths: list[str],
+    **misfit: Any,
+) -> None:
+    """一時ディレクトリの定義 (`paths`、`misfit`) は、終了コード 2 で断られ、出力を作らない。
+
+    先に、同じ足場で、正しい 1 ファイルの定義が生成できることを確かめる (足場の不備や、
+    `--vllm-overlay` が未対応で断られているだけの試験にしない)。
+    """
+    # Given: 足場が正しいことの対照 (正しい道筋 1 つの定義と写しなら生成できる)
+    _use_synthetic_overlay(generator, monkeypatch, tmp_path / "control", ["vllm/a/b.py"])
+    assert _generate_or_refuse(generator, tmp_path, "control").is_file()
+
+    # When: 同じ足場に、合わない定義を置いて生成する
+    _use_synthetic_overlay(generator, monkeypatch, tmp_path / "synthetic", paths, **misfit)
+    output = tmp_path / "refused.toml"
+    with pytest.raises(SystemExit) as caught:
+        _generate_or_refuse(generator, tmp_path, "refused")
+
+    # Then: 終了コード 2 で断り、出力ファイルは作られない
+    assert caught.value.code == 2
+    assert not output.exists()
+
+
+def test_a_definition_whose_paths_collide_in_the_mount_key_is_refused_without_an_output(
+    generator: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """道筋は違うが、鍵が同じになる 2 ファイルの定義は、出力を作らずに断る。
+
+    `vllm/a/b.py` と `vllm/a-b.py` は、どちらも同じ鍵になる (同じ docker の表を 2 度書けない)。
+    写しは両方ある。
+    """
+    _assert_refused_on_a_working_scaffold(
+        generator, monkeypatch, tmp_path, ["vllm/a/b.py", "vllm/a-b.py"]
+    )
+
+
+@pytest.mark.parametrize(
+    "bad_path",
+    [
+        pytest.param("../vllm/models/x.py", id="parent-first"),
+        pytest.param("vllm/../etc/passwd", id="parent-in-the-middle"),
+        pytest.param("other/models/x.py", id="not-under-vllm"),
+        pytest.param("vllm-x/models/y.py", id="vllm-lookalike"),
+    ],
+)
+def test_a_definition_with_a_path_outside_vllm_is_refused_without_an_output(
+    generator: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, bad_path: str
+) -> None:
+    """`vllm/` で始まらない、または `..` を含む道筋は、写しがあっても、出力を作らずに断る。
+
+    その道筋の写しは、実在する場所にある (道筋の形だけが、断る理由になる)。
+    """
+    _assert_refused_on_a_working_scaffold(generator, monkeypatch, tmp_path, [bad_path])
+
+
+@pytest.mark.parametrize(
+    "misfit",
+    [
+        pytest.param({"name_in_file": "another"}, id="name-differs"),
+        pytest.param({"commit": "0" * 40}, id="commit-differs"),
+        pytest.param({"with_copies": False}, id="copy-is-missing"),
+    ],
+)
+def test_a_definition_that_does_not_fit_is_refused_without_an_output(
+    generator: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, misfit: dict[str, Any]
+) -> None:
+    """名前が違う、固定の commit と違う、写しがない定義は、出力を作らずに断る。
+
+    道筋は正しく、上のどれか 1 つだけが合わない。
+    """
+    _assert_refused_on_a_working_scaffold(
+        generator, monkeypatch, tmp_path, ["vllm/a/b.py"], **misfit
+    )
+
+
+def test_a_missing_overlay_definition_is_refused_without_an_output(
+    generator: Any, tmp_path: Path
+) -> None:
+    """定義がない名前は、空の mount で生成せず、出力を作らずに断る。"""
+    # Given: 実物の定義なら生成できる (`--vllm-overlay` が使える) 足場と、定義のない名前
+    assert _generate_or_refuse(generator, tmp_path, "control").is_file()
+    source = _write_inspect_json(tmp_path, _inspect_item())
+    output = tmp_path / "missing.toml"
+
+    # When: `--vllm-overlay nosuch` で `main` を流す
+    with pytest.raises(SystemExit) as caught:
+        generator.main(["--variant", "full", "--vllm-overlay", "nosuch", str(source), str(output)])
+
+    # Then: 終了コード 2 で断り、出力ファイルは作られない
+    assert caught.value.code == 2
+    assert not output.exists()

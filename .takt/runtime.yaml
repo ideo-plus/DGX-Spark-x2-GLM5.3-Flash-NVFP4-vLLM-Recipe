@@ -36,8 +36,8 @@ provider:
       peer-review/review-adjudication:           { profile: t3-judge }
       peer-review/final-gate:                    { profile: t3-judge }
       # Tiers
-      development-core/write_tests:              { ladder: [t0-test-code, t1, t2] }
-      flash-implement-dynamic/implement:         { profile: t0-production-code }
+      development-core/write_tests:              { ladder: [t1, t2] }  # 一時的 (#73。コミットしない)
+      flash-implement-dynamic/implement:         { profile: t2 }  # 一時的 (#73 は危険の高い実装なので Opus。ADR 0007。コミットしない)
       flash-implement-dynamic/reimplement:       { profile: t1 }
       flash-implement-dynamic/reimplement_final: { profile: t2 }
       flash-remediation-dynamic/fix:             { ladder: [t1, t2] }

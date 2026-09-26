@@ -141,7 +141,7 @@ def _fetch_script(plans: PlanMap, *, mismatch: bool) -> tuple[Rule, ...]:
         (
             Rule(prefix=("uname",), replies=(Reply(stdout="e2e-host\n"),)),
             Rule(prefix=("nvidia-smi",), replies=(Reply(stdout=""),)),
-            Rule(prefix=("test", "-d"), replies=(Reply(),)),
+            Rule(prefix=("test", "-e"), replies=(Reply(),)),
             Rule(
                 prefix=("docker", "image", "inspect"),
                 replies=(Reply(stdout=json.dumps([k.IMAGE_REF]) + "\n"),),
@@ -173,7 +173,7 @@ def _verify_script(plans: PlanMap) -> tuple[Rule, ...]:
     rules.extend(
         (
             Rule(prefix=("uname",), replies=(Reply(stdout="e2e-host\n"),)),
-            Rule(prefix=("test", "-d"), replies=(Reply(),)),
+            Rule(prefix=("test", "-e"), replies=(Reply(),)),
             Rule(kind="push", replies=(Reply(),)),
         )
     )
@@ -390,7 +390,7 @@ def _job_rounds_script(rounds: Sequence[JobRound]) -> tuple[Rule, ...]:
         (
             Rule(prefix=("uname",), replies=(Reply(stdout="e2e-host\n"),)),
             Rule(prefix=("nvidia-smi",), replies=(Reply(stdout=""),)),
-            Rule(prefix=("test", "-d"), replies=(Reply(),)),
+            Rule(prefix=("test", "-e"), replies=(Reply(),)),
             Rule(
                 prefix=("docker", "image", "inspect"),
                 replies=(Reply(stdout=json.dumps([k.IMAGE_REF]) + "\n"),),
@@ -516,7 +516,7 @@ def _probe_script(plan: Any, *, states: tuple[Reply, ...], tails: str) -> tuple[
         ),
         Rule(prefix=("uname",), replies=(Reply(stdout="e2e-host\n"),)),
         Rule(prefix=("nvidia-smi",), replies=(Reply(stdout=""),)),
-        Rule(prefix=("test", "-d"), replies=(Reply(),)),
+        Rule(prefix=("test", "-e"), replies=(Reply(),)),
         Rule(
             prefix=("docker", "image", "inspect"),
             replies=(Reply(stdout=json.dumps([k.IMAGE_REF]) + "\n"),),
