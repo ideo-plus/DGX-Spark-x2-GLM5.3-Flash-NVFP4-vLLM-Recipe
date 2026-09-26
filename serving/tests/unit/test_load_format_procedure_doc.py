@@ -1,12 +1,16 @@
-"""重みの読み込み方を選ぶ構成の手順書 (`docs/vllm-baseline/full-context-procedure.md`) の試験。
+"""重みの読み込み方の既定と比較の手順書 (`docs/vllm-baseline/full-context-procedure.md`) の試験。
 
-文書のタスクなので、振る舞いの試験の代わりに、計画の完了契約 C7 を固定する。確かめること:
+文書のタスクなので、振る舞いの試験の代わりに、計画の完了契約 C6 を固定する。確かめること:
 
-1. §1 に、読み込み方を選ぶ生成・読み取り検査のコマンド (`--load-format`、
-   `--safetensors-load-strategy`、`p2-nope-tp2-full-lf-instanttensor`、
-   `tp2-full-lf-instanttensor.toml`、`serve check`) がある (C7)
-2. §1 に、比べる起動ログの行 (`Loading weights took`、`Model loading took`) がある (C7)
-3. §1 に、ページキャッシュをそろえる必要と、捨てる操作に「了承を得てから」と ⚠ がある (C7)
+1. §1 に、既定の読み込み方 (`instanttensor`) と比較用の生成・読み取り検査のコマンド
+   (`--load-format`、`--safetensors-load-strategy`、`--load-format auto`、
+   `tp2-full-auto.toml`、`serve check`) と、#50・#37 の実測 (`約 3 分`) がある (C6)
+2. §1 に、比べる起動ログの行 (`Loading weights took`、`Model loading took`) がある (C6)
+3. §1 に、ページキャッシュをそろえる必要と、捨てる操作に「了承を得てから」と ⚠ がある (C6)
+
+#50 より前は比較用の構成の名前が `p2-nope-tp2-full-lf-instanttensor` だったが、既定が
+`instanttensor` になったので、明示の `instanttensor` は比較の対照でなくなった。比較用は
+`--load-format auto` で作る `tp2-full-auto.toml` に替えた。
 
 RED: 文書がなければ、`_read_text` で `pytest.fail` する。
 """
@@ -26,22 +30,22 @@ REPO_ROOT: Final[Path] = SERVING_DIR.parent
 
 DOC_PATH: Final[Path] = REPO_ROOT / "docs" / "vllm-baseline" / "full-context-procedure.md"
 
-LOAD_FORMAT_CONFIG: Final[str] = "p2-nope-tp2-full-lf-instanttensor"
-"""`--load-format instanttensor` の構成の名前 (C7)。"""
-
 REQUIRED_MARKERS: Final[tuple[str, ...]] = (
     "--load-format",
     "--safetensors-load-strategy",
-    LOAD_FORMAT_CONFIG,
-    "tp2-full-lf-instanttensor.toml",
+    "instanttensor",
+    "--load-format auto",
+    "tp2-full-auto.toml",
     "serve check",
+    "#50",
+    "約 3 分",
     "Loading weights took",
     "Model loading took",
     "drop_caches",
     "了承",
     "⚠",
 )
-"""§1 の本文に要る印 (C7)。"""
+"""§1 の本文に要る印 (C6)。"""
 
 _SECTION_ONE_HEADING: Final[re.Pattern[str]] = re.compile(r"^## 1\.", re.MULTILINE)
 """§1 の見出しの行。"""

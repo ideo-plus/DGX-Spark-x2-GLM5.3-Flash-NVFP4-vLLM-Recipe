@@ -10,11 +10,21 @@
 `/logs/torch-profile`、スタックの記録と `key_averages` の表の書き出しは切る) を根拠つきで
 args に足し、構成の名前を `-prof` 付きにする (どの `--variant` にも付けられる)。
 
+`full` と `full-mtp` は、重みの読み込み方を `--load-format instanttensor` にするのを既定とし、
+根拠つきで args に足す (構成の名前は変えない。`#50`)。`--load-format auto` を付けると既定を
+外し、出力は `#50` より前の既定と同じになる。`smoke` には既定を付けない。
+
 `--load-format` (`instanttensor` / `fastsafetensors` / `runai_streamer`) と
-`--safetensors-load-strategy` (`eager` / `prefetch`) を付けると、重みの読み込み方を根拠つきで
-args に足し、構成の名前を `-lf-<値>` / `-sls-<値>` 付きにする。`runai_streamer` は `_` を `-`
-に替えて `-lf-runai-streamer` になる。どちらもどの `--variant` にも付けられる (付けないときの
-出力は変わらない)。
+`--safetensors-load-strategy` (`eager` / `prefetch`) を明示すると、重みの読み込み方を根拠つきで
+args に足し、構成の名前を `-lf-<値>` / `-sls-<値>` 付きにする。明示した値は既定を置き換える
+(`runai_streamer` は `_` を `-` に替えて `-lf-runai-streamer`)。`--load-format` はどの
+`--variant` にも付けられる。
+
+`--safetensors-load-strategy` が効くのは `--load-format` を付けない読み方だけなので、既定で
+`instanttensor` を持つ `full` と `full-mtp` で strategy が効く構成は、`--load-format auto` と
+組にしたものだけになる。`--load-format` を付けずに指定すると、生成の前に断る (明示の
+`--load-format` と重ねた構成は作れるが、strategy は効かない)。既定を持たない `smoke` には、
+単独で付けられる。
 """
 
 from __future__ import annotations
@@ -113,6 +123,19 @@ LOAD_FORMAT_PROVENANCE: Mapping[str, tuple[str, str]] = {
         '"runai_streamer" will load the Safetensors weights using Run:ai Model Streamer.',
     ),
 }
+# opt-out の値は、vLLM 固定 commit (0961bbae) の `LoadConfig.load_format` の既定値 "auto" に
+# 合わせる (「既定の読み方 = vLLM の既定に任せる」と読みが一致する)。
+LOAD_FORMAT_OPT_OUT = "auto"
+DEFAULT_LOAD_FORMAT_VALUE = "instanttensor"
+# #50 の既定の根拠。source と quote は #46 の `LOAD_FORMAT_PROVENANCE["instanttensor"]` を使う。
+DEFAULT_LOAD_FORMAT_WHY = (
+    "#50 (#37 の実測、2026-09-26)。--load-format instanttensor で、重みの読み込みが "
+    "363 秒 (head) から 32 秒に、起動全体が約 11 分から約 3 分になった。同じ構成の probe で、"
+    "decode の tok/s (code/en 14.06、code/ja 13.99、prose/en 14.07、prose/ja 13.88) は"
+    "既定の読み方 (14.13、14.01、14.12、13.98) と同じ範囲、toolcall は 5/5 で正解・不正解が"
+    "投機なしの回と同じ、needle 8k は正解、壊れの印は 0 件。計測のたびに起動するので、"
+    "full と full-mtp の既定にする。外すときは --load-format auto (出力は #50 より前の既定と同じ)"
+)
 LOAD_STRATEGY_SUFFIX = "-sls-"
 LOAD_STRATEGY_ARG_KEY = "safetensors-load-strategy"
 LOAD_STRATEGY_FLAG = "--safetensors-load-strategy"
@@ -132,6 +155,16 @@ LOAD_STRATEGY_PROVENANCE: Mapping[str, tuple[str, str]] = {
 }
 
 
+class LoadFormat(NamedTuple):
+    """args に書く `--load-format` の値と、その理由。"""
+
+    value: str
+    why: str
+
+
+DEFAULT_LOAD_FORMAT = LoadFormat(DEFAULT_LOAD_FORMAT_VALUE, DEFAULT_LOAD_FORMAT_WHY)
+
+
 class Variant(NamedTuple):
     """生成する構成の違いをまとめたもの。
 
@@ -148,8 +181,12 @@ class Variant(NamedTuple):
     `torch_profiler` が真なら、`render` は args に `--profiler-config` を根拠つきで足し、
     名前は `-prof` 付きになる (`with_torch_profiler` が作る)。
 
-    `load_format` / `safetensors_load_strategy` は、重みの読み込み方の値 (`None` なら足さない)。
-    `with_load_format` / `with_load_strategy` が作る。名前は `-lf-<値>` / `-sls-<値>` 付きになる。
+    `load_format` は、重みの読み込み方の値と理由 (`None` なら足さない)。`full` / `full-mtp` は
+    `DEFAULT_LOAD_FORMAT` を持ち、`with_load_format` が置き換え、`without_load_format` が外す。
+    明示 `--load-format` の名前は `-lf-<値>` 付きになる。
+
+    `safetensors_load_strategy` は、safetensors の読み方の値 (`None` なら足さない)。
+    `with_load_strategy` が作り、名前は `-sls-<値>` 付きになる。
     """
 
     name: str
@@ -160,7 +197,7 @@ class Variant(NamedTuple):
     spec_tokens: int | None = None
     nccl_thread_names: bool = False
     torch_profiler: bool = False
-    load_format: str | None = None
+    load_format: LoadFormat | None = None
     safetensors_load_strategy: str | None = None
 
 
@@ -220,6 +257,7 @@ FULL = Variant(
         "2 台とも IB であることを、この記録から毎回確かめる"
     ),
     arg_overrides=(),
+    load_format=DEFAULT_LOAD_FORMAT,
 )
 
 VARIANTS: Mapping[str, Variant] = {"smoke": SMOKE, "full": FULL}
@@ -243,6 +281,7 @@ def mtp_variant(spec_tokens: int) -> Variant:
         env_comment=FULL.env_comment,
         nccl_debug_why=FULL.nccl_debug_why,
         arg_overrides=(),
+        load_format=DEFAULT_LOAD_FORMAT,
         spec_tokens=spec_tokens,
     )
 
@@ -281,8 +320,16 @@ def with_load_format(variant: Variant, load_format: str) -> Variant:
             f"{variant.description}。重みの読み込みを --load-format {load_format} にし、"
             "起動の時間を比べる (#46)"
         ),
-        load_format=load_format,
+        load_format=LoadFormat(load_format, _load_option_why(LOAD_FORMAT_FLAG, load_format)),
     )
+
+
+def without_load_format(variant: Variant) -> Variant:
+    """`--load-format auto` の構成 (既定の読み込み方を外し、vLLM の既定に任せる)。
+
+    args に `--load-format` を書かず、名前と説明も変えない。#50 より前の出力とバイト単位で同じ。
+    """
+    return variant._replace(load_format=None)
 
 
 def with_load_strategy(variant: Variant, strategy: str) -> Variant:
@@ -454,14 +501,15 @@ def render(configs_text: str, image: Mapping[str, Any], variant: Variant = SMOKE
             quote=PROFILER_QUOTE,
         )
     if variant.load_format is not None:
-        source, quote = LOAD_FORMAT_PROVENANCE[variant.load_format]
+        load_format = variant.load_format
+        source, quote = LOAD_FORMAT_PROVENANCE[load_format.value]
         block = _insert_arg_table(
             block,
             variant,
             key=LOAD_FORMAT_ARG_KEY,
             flag=LOAD_FORMAT_FLAG,
-            value=variant.load_format,
-            why=_load_option_why(LOAD_FORMAT_FLAG, variant.load_format),
+            value=load_format.value,
+            why=load_format.why,
             source=source,
             quote=quote,
         )
@@ -545,7 +593,8 @@ def main(argv: Sequence[str] | None = None) -> None:
         default="smoke",
         help=(
             "生成する構成 (smoke: 初回確認用 4096/1、full: 計測用 163840/16、"
-            "full-mtp: full と同じ構成 + MTP (`--spec-tokens N`))"
+            "full-mtp: full と同じ構成 + MTP (`--spec-tokens N`))。"
+            "full と full-mtp は --load-format instanttensor が既定 (#50)"
         ),
     )
     parser.add_argument(
@@ -572,11 +621,13 @@ def main(argv: Sequence[str] | None = None) -> None:
     )
     parser.add_argument(
         "--load-format",
-        choices=tuple(LOAD_FORMAT_PROVENANCE),
+        choices=(*LOAD_FORMAT_PROVENANCE, LOAD_FORMAT_OPT_OUT),
         default=None,
         help=(
-            "重みの読み込み方 (--load-format) を足し、構成の名前に -lf-<値> を付ける"
-            " (どの --variant にも付けられる。runai_streamer は -lf-runai-streamer)"
+            "重みの読み込み方 (--load-format)。full と full-mtp は instanttensor が既定 (#50)。"
+            " 3 値を明示すると既定を置き換え、構成の名前に -lf-<値> を付ける"
+            " (runai_streamer は -lf-runai-streamer)。auto は既定を外し、args に書かない"
+            " (smoke では何も変わらない)"
         ),
     )
     parser.add_argument(
@@ -585,7 +636,8 @@ def main(argv: Sequence[str] | None = None) -> None:
         default=None,
         help=(
             "safetensors の読み方 (--safetensors-load-strategy) を足し、構成の名前に -sls-<値> を"
-            "付ける (どの --variant にも付けられる)"
+            "付ける。効くのは --load-format を付けない読み方だけなので、full と full-mtp では"
+            " --load-format auto と組で使う (付けないと断る。smoke は単独で付けられる)"
         ),
     )
     parser.add_argument("inspect_json", type=Path)
@@ -607,9 +659,19 @@ def main(argv: Sequence[str] | None = None) -> None:
         variant = with_thread_names(variant)
     if args.torch_profiler:
         variant = with_torch_profiler(variant)
-    if args.load_format is not None:
+    if args.load_format == LOAD_FORMAT_OPT_OUT:
+        variant = without_load_format(variant)
+    elif args.load_format is not None:
         variant = with_load_format(variant, args.load_format)
     if args.safetensors_load_strategy is not None:
+        # strategy が効くのは --load-format を付けない読み方だけ (手順書 §1)。既定の
+        # instanttensor を黙って外さず、strategy が効かない構成も作らないよう、生成の前に断る。
+        if args.load_format is None and variant.load_format is not None:
+            parser.error(
+                "--safetensors-load-strategy が効くのは --load-format を付けない読み方だけ。"
+                f"--variant {args.variant} は既定で --load-format {DEFAULT_LOAD_FORMAT_VALUE} を"
+                f"持つので、--load-format {LOAD_FORMAT_OPT_OUT} と組で使う"
+            )
         variant = with_load_strategy(variant, args.safetensors_load_strategy)
     generate(args.inspect_json, args.output, variant)
 
