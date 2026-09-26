@@ -30,7 +30,7 @@ import hashlib
 import importlib.util
 import json
 import tomllib
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
 from importlib.machinery import SourceFileLoader
 from pathlib import Path
@@ -38,6 +38,7 @@ from typing import Any
 
 import pytest
 
+from serving_kit import types as sk_types
 from serving_kit.config import load_configs, load_nodes, select_config
 from serving_kit.plan import LABEL_CONFIG, LABEL_CONFIG_SHA256, build_plans
 from serving_kit.types import ContainerPlan
@@ -2567,3 +2568,357 @@ def test_load_option_render_leaves_a_decoy_alone(
     assert rendered.count(f'flag = "{flag}"') == 1
     assert "[configs.p1-nvfp4-tp2" not in rendered
     assert "p1-fetch-nvfp4" not in rendered
+
+
+# --- 手元で変換した重み (`--weights`) の構成の生成 ------------------------
+
+DERIVED_NAME = "k2s1"
+"""`--weights` に渡す、派生の重みの名前。"""
+
+DERIVED_TOOL = "experiments/k2-quant/convert.py"
+DERIVED_COMMIT = "a" * 40
+DERIVED_TARGET_PATTERN = r'^model\.layers\.\d+\.self_attn\..*"$'
+"""バックスラッシュと二重引用符を含む正規表現 (TOML の文字列に書き出すときに壊れやすい)。"""
+
+DERIVED_ARGS: tuple[str, ...] = ("--dtype", "fp8", "--note", "日本語")
+"""ASCII でない語を含む引数の並び。"""
+
+FOREIGN_REVISION = "c" * 40
+"""p1 の重みの revision と食い違う、40 桁の 16 進。"""
+
+DERIVED_MEASURED_RECORDS: tuple[str, ...] = (
+    "docs/results/2026-09-22-nope-build.md",
+    "docs/results/2026-09-22-netcheck-bandwidth.md",
+)
+"""生成した構成が `measured` で指す記録 (`load_configs` は実在だけを見る)。"""
+
+P1_WEIGHTS_MANIFEST = "RedHatAI__GLM-5.3-Flash-NVFP4.manifest.json"
+
+
+def _p1_weights() -> dict[str, Any]:
+    """実物の `configs.toml` の `p1-nvfp4-tp2` の weights の節 (元の参照の基準)。"""
+    data = tomllib.loads(CONFIGS_PATH.read_text(encoding="utf-8"))
+    weights: dict[str, Any] = data["configs"]["p1-nvfp4-tp2"]["weights"]
+    return weights
+
+
+def _derived_manifest(
+    *,
+    name: str = DERIVED_NAME,
+    origin_repo: str | None = None,
+    origin_revision: str | None = None,
+) -> dict[str, Any]:
+    """合成の派生マニフェスト (変換の道具が書く JSON の形)。元の参照の既定は p1 の重み。"""
+    p1 = _p1_weights()
+    return {
+        "kind": "derived",
+        "derivation": {
+            "name": name,
+            "origin": {
+                "repo": origin_repo if origin_repo is not None else p1["repo"],
+                "revision": origin_revision if origin_revision is not None else p1["revision"],
+            },
+            "conversion": {
+                "tool": DERIVED_TOOL,
+                "commit": DERIVED_COMMIT,
+                "args": list(DERIVED_ARGS),
+                "target_pattern": DERIVED_TARGET_PATTERN,
+            },
+        },
+        "generated_at": "2026-09-25T00:00:00Z",
+        "total_bytes": 4,
+        "files": [{"path": "model-00001-of-00001.safetensors", "sha256": "b" * 64, "size": 4}],
+    }
+
+
+def _derived_repo_root(tmp_path: Path, manifest: Mapping[str, Any] | None) -> Path:
+    """`load_configs` に渡す、リポジトリ根の最小の形を作る。
+
+    実測の記録と p1 の元のマニフェスト (実物のバイト列。`load_configs` が、元のマニフェストの
+    中身が `origin` と同じ重みのものかを見るため) を置く。`manifest` が `None` でなければ
+    `serving/weights/<名前>.manifest.json` に書く。
+    """
+    root = tmp_path / "repo"
+    for record in DERIVED_MEASURED_RECORDS:
+        (root / record).parent.mkdir(parents=True, exist_ok=True)
+        (root / record).write_text("", encoding="utf-8")
+    weights_dir = root / "serving" / "weights"
+    weights_dir.mkdir(parents=True, exist_ok=True)
+    committed = REPO_ROOT / "serving" / "weights" / P1_WEIGHTS_MANIFEST
+    (weights_dir / P1_WEIGHTS_MANIFEST).write_bytes(committed.read_bytes())
+    if manifest is not None:
+        body = json.dumps(manifest, ensure_ascii=False, indent=2) + "\n"
+        (weights_dir / f"{DERIVED_NAME}.manifest.json").write_text(body, encoding="utf-8")
+    return root
+
+
+def _derived_argv(
+    generator: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    root: Path,
+    extra: tuple[str, ...] = (),
+) -> tuple[list[str], Path]:
+    """`--weights k2s1` 付きの `main` の引数と出力先を返す。マニフェストの置き場は `root` の下。"""
+    monkeypatch.setattr(generator, "WEIGHTS_DIR", root / "serving" / "weights")
+    source = _write_inspect_json(tmp_path, _inspect_item())
+    output = tmp_path / "derived.toml"
+    return [*extra, "--weights", DERIVED_NAME, str(source), str(output)], output
+
+
+def _generate_derived(
+    generator: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    *,
+    extra: tuple[str, ...] = (),
+    manifest: Mapping[str, Any] | None = None,
+) -> tuple[Path, Path]:
+    """合成の派生マニフェストで `main` を流し、(リポジトリ根, 出力先) を返す。"""
+    root = _derived_repo_root(tmp_path, manifest if manifest is not None else _derived_manifest())
+    argv, output = _derived_argv(generator, monkeypatch, tmp_path, root, extra)
+
+    generator.main(argv)
+
+    return root, output
+
+
+def test_derived_conversion_survives_the_generated_toml(
+    generator: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """バックスラッシュと二重引用符を含む正規表現と日本語の引数が、読み直しても入力のままである。
+
+    読み直した重みの `derivation` は、マニフェストの `derivation` と等しい。
+    """
+    # Given: バックスラッシュと二重引用符を含む正規表現と、日本語の引数を持つ派生マニフェスト
+    manifest = _derived_manifest()
+
+    # When: `--variant full --weights k2s1` で生成した TOML を `load_configs` で読む
+    root, output = _generate_derived(
+        generator, monkeypatch, tmp_path, extra=("--variant", "full"), manifest=manifest
+    )
+    weights = load_configs(output, root)[f"{FULL_TARGET_NAME}-{DERIVED_NAME}"].weights
+
+    # Then: 変換の条件が入力と完全に一致し、`derivation` がマニフェストと等しい
+    assert isinstance(weights, sk_types.DerivedWeightsRef)
+    assert weights.conversion.target_pattern == DERIVED_TARGET_PATTERN
+    assert weights.conversion.args == DERIVED_ARGS
+    assert weights.derivation == sk_types.Derivation.model_validate(manifest["derivation"])
+
+
+def test_derived_config_builds_plans_that_mount_only_the_derived_weights(
+    generator: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """生成した構成は `select_config` と `build_plans` を通り、派生の重みだけを読み取り専用で結ぶ。
+
+    p1 の重みの置き場所は、どの引数にも現れない。
+    """
+    # Given: `--variant full --weights k2s1` で生成した構成
+    root, output = _generate_derived(generator, monkeypatch, tmp_path, extra=("--variant", "full"))
+    name = f"{FULL_TARGET_NAME}-{DERIVED_NAME}"
+    nodes = load_nodes(NODES_PATH, REPO_ROOT)
+    p1_mount_at = _p1_weights()["mount_at"]
+
+    # When: 実物の `nodes.toml` で構成を選び、2 台ぶんの計画を組み立てる
+    config = select_config(load_configs(output, root), name, nodes)
+    plans = build_plans(config, nodes, STARTED_AT)
+
+    # Then: 構成の名前が `-k2s1` で終わり、重みの結びつけが派生の置き場所になる
+    assert [plan.node for plan in plans] == ["head", "worker"]
+    for plan in plans:
+        argv = plan.argv
+        assert plan.labels[LABEL_CONFIG] == name
+        assert plan.labels[LABEL_CONFIG].endswith(f"-{DERIVED_NAME}")
+        mounts = [argv[at + 1] for at in range(len(argv) - 1) if argv[at] == "--mount"]
+        weights_mounts = [mount for mount in mounts if "target=/models/" in mount]
+        assert len(weights_mounts) == 1
+        entries = weights_mounts[0].split(",")
+        remote_root = nodes[plan.node].remote_root
+        assert f"source={remote_root}/models/{DERIVED_NAME}" in entries
+        assert f"target=/models/{DERIVED_NAME}" in entries
+        assert "readonly" in entries
+        assert not any(p1_mount_at in arg for arg in argv)
+
+
+def test_output_without_the_weights_option_is_unchanged(generator: Any, tmp_path: Path) -> None:
+    """`--weights` を付けない `--variant full` の出力は、固定値と 1 バイトも変わらない。"""
+    # Given: `--weights` を付けない `--variant full`
+    source = _write_inspect_json(tmp_path, _inspect_item())
+    output = tmp_path / "tp2-full.toml"
+
+    # When: `main` で生成する
+    generator.main(["--variant", "full", str(source), str(output)])
+
+    # Then: SHA-256 が固定値と一致し、派生の重みの印が本文に現れない
+    body = output.read_bytes()
+    assert hashlib.sha256(body).hexdigest() == FULL_RENDER_SHA256
+    text = body.decode("utf-8")
+    assert 'kind = "derived"' not in text
+    assert f"/models/{DERIVED_NAME}" not in text
+
+
+def test_derived_weights_mount_keeps_readonly(
+    generator: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """派生の構成の `mount-weights` は、置き場所を差し替えても `readonly` で終わる。"""
+    # Given: `--variant full --weights k2s1` で生成した TOML の本文
+    _, output = _generate_derived(generator, monkeypatch, tmp_path, extra=("--variant", "full"))
+    generated = tomllib.loads(output.read_text(encoding="utf-8"))
+
+    # When: `mount-weights` の値を読む
+    value = generated["configs"][f"{FULL_TARGET_NAME}-{DERIVED_NAME}"]["docker"]["mount-weights"][
+        "value"
+    ]
+
+    # Then: 派生の置き場所を、`readonly` の付いた bind として結ぶ
+    assert value.endswith(",readonly")
+
+
+def test_missing_derived_manifest_is_refused_without_an_output(
+    generator: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """マニフェストのファイルが無い `--weights k2s1` は、`parser.error` で断り、出力を作らない。"""
+    # Given: `serving/weights/` に `k2s1.manifest.json` が無いリポジトリ根
+    root = _derived_repo_root(tmp_path, None)
+    argv, output = _derived_argv(generator, monkeypatch, tmp_path, root, ("--variant", "full"))
+
+    # When: `main` を流す
+    with pytest.raises(SystemExit) as caught:
+        generator.main(argv)
+
+    # Then: 終了コード 2 で断り、出力ファイルは作られない
+    assert caught.value.code == 2
+    assert not output.exists()
+
+
+def test_derived_manifest_with_another_name_is_refused_without_an_output(
+    generator: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """`derivation.name` が `--weights` の値と違うマニフェストは、断り、出力を作らない。"""
+    # Given: `derivation.name` が `k2s2` の、`k2s1.manifest.json`
+    root = _derived_repo_root(tmp_path, _derived_manifest(name="k2s2"))
+    argv, output = _derived_argv(generator, monkeypatch, tmp_path, root, ("--variant", "full"))
+
+    # When: `--weights k2s1` で `main` を流す
+    with pytest.raises(SystemExit) as caught:
+        generator.main(argv)
+
+    # Then: 終了コード 2 で断り、出力ファイルは作られない
+    assert caught.value.code == 2
+    assert not output.exists()
+
+
+def _hub_shaped_manifest() -> dict[str, Any]:
+    """`kind` を持たない、Hub の重みのマニフェストの形 (`repo` と `revision` が最上位)。"""
+    p1 = _p1_weights()
+    return {
+        "repo": p1["repo"],
+        "revision": p1["revision"],
+        "generated_at": "2026-09-25T00:00:00Z",
+        "total_bytes": 4,
+        "files": [{"path": "config.json", "sha256": "b" * 64, "size": 4}],
+    }
+
+
+def _derived_manifest_without_kind() -> dict[str, Any]:
+    """`derivation` は正しいが、`kind` を書いていない派生マニフェスト。"""
+    manifest = _derived_manifest()
+    del manifest["kind"]
+    return manifest
+
+
+@pytest.mark.parametrize(
+    "build_manifest",
+    [
+        pytest.param(_hub_shaped_manifest, id="hub-shaped"),
+        pytest.param(_derived_manifest_without_kind, id="without-kind"),
+    ],
+)
+def test_manifest_that_is_not_marked_derived_is_refused_without_an_output(
+    generator: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    build_manifest: Callable[[], dict[str, Any]],
+) -> None:
+    """`kind = "derived"` の無いマニフェストは、項目の形から派生と読まず、断り、出力を作らない。"""
+    # Given: `k2s1.manifest.json` が、Hub の形、または `kind` を欠いた派生の形である
+    root = _derived_repo_root(tmp_path, build_manifest())
+    argv, output = _derived_argv(generator, monkeypatch, tmp_path, root, ("--variant", "full"))
+
+    # When: `--weights k2s1` で `main` を流す
+    with pytest.raises(SystemExit) as caught:
+        generator.main(argv)
+
+    # Then: 終了コード 2 で断り、出力ファイルは作られない
+    assert caught.value.code == 2
+    assert not output.exists()
+
+
+@pytest.mark.parametrize(
+    "origin",
+    [
+        pytest.param({"origin_revision": FOREIGN_REVISION}, id="revision"),
+        pytest.param({"origin_repo": "example/another-model"}, id="repo"),
+    ],
+)
+def test_derived_manifest_of_another_origin_is_refused_without_an_output(
+    generator: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, origin: dict[str, str]
+) -> None:
+    """元の参照 (repo と revision) が p1 の重みと違うマニフェストは、断り、出力を作らない。"""
+    # Given: `derivation.origin` が `p1-nvfp4-tp2` の weights と食い違うマニフェスト
+    root = _derived_repo_root(tmp_path, _derived_manifest(**origin))
+    argv, output = _derived_argv(generator, monkeypatch, tmp_path, root, ("--variant", "full"))
+
+    # When: `--weights k2s1` で `main` を流す
+    with pytest.raises(SystemExit) as caught:
+        generator.main(argv)
+
+    # Then: 終了コード 2 で断り、出力ファイルは作られない
+    assert caught.value.code == 2
+    assert not output.exists()
+
+
+@pytest.mark.parametrize(
+    ("extra", "expected_name"),
+    [
+        pytest.param((), f"{TARGET_NAME}-{DERIVED_NAME}", id="smoke"),
+        pytest.param(("--variant", "full"), f"{FULL_TARGET_NAME}-{DERIVED_NAME}", id="full"),
+        pytest.param(
+            ("--variant", "full-mtp", "--spec-tokens", "2"),
+            f"{mtp_target_name(2)}-{DERIVED_NAME}",
+            id="full-mtp",
+        ),
+    ],
+)
+def test_derived_weights_suffix_follows_each_variant(
+    generator: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    extra: tuple[str, ...],
+    expected_name: str,
+) -> None:
+    """`--weights k2s1` は、どの `--variant` でも構成の名前の末尾を `-k2s1` にする。"""
+    # Given / When: 各変種に `--weights k2s1` を付けて生成し、`load_configs` で読む
+    root, output = _generate_derived(generator, monkeypatch, tmp_path, extra=extra)
+    loaded = load_configs(output, root)
+
+    # Then: 基の変種名の直後に `-k2s1` が付いた構成だけができる
+    assert set(loaded) == {expected_name}
+    assert expected_name.endswith(f"-{DERIVED_NAME}")
+
+
+def test_derived_weights_suffix_comes_before_the_profiler_suffix(
+    generator: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """`--torch-profiler` と併用すると、名前は `-k2s1` が `-prof` より前になる。"""
+    # Given / When: `--variant full --weights k2s1 --torch-profiler` で生成して読む
+    root, output = _generate_derived(
+        generator, monkeypatch, tmp_path, extra=("--variant", "full", "--torch-profiler")
+    )
+    loaded = load_configs(output, root)
+
+    # Then: 名前は `<基の変種名>-k2s1-prof` で、派生の重みとプロファイラーの指定が両方入る
+    name = f"{FULL_TARGET_NAME}-{DERIVED_NAME}{PROFILER_SUFFIX}"
+    assert set(loaded) == {name}
+    assert isinstance(loaded[name].weights, sk_types.DerivedWeightsRef)
+    assert PROFILER_ARG_KEY in loaded[name].args

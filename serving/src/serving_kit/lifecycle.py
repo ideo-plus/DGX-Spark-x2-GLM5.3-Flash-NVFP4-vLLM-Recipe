@@ -297,6 +297,7 @@ from serving_kit.plan import (
 )
 from serving_kit.remote import RemoteError, RemoteRunner
 from serving_kit.types import (
+    AnyWeightsManifest,
     CommandResult,
     ConfigDef,
     ConfigKind,
@@ -318,7 +319,6 @@ from serving_kit.types import (
     SmokeReply,
     StartOutcome,
     StopOutcome,
-    WeightsManifest,
 )
 
 __all__ = [
@@ -997,7 +997,7 @@ def launch_record(
     return LaunchRecord(
         config_name=config.name,
         image_digest=labels[LABEL_IMAGE],
-        weights=None if weights is None else f"{weights.repo}@{weights.revision}",
+        weights=None if weights is None else weights.identity,
         started_at=started_at,
         plans=tuple(plans),
         config_sha256=labels[LABEL_CONFIG_SHA256],
@@ -1558,7 +1558,7 @@ def start(
     record_dir: Path,
     repo_commit: str,
     repo_dirty: bool,
-    manifest: WeightsManifest | None = None,
+    manifest: AnyWeightsManifest | None = None,
     timeout_s: float | None = None,
     poll_interval_s: float = READY_POLL_INTERVAL_S,
     sleep: Callable[[float], None] | None = None,

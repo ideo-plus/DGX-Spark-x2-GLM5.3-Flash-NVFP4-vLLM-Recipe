@@ -41,6 +41,7 @@ from pydantic import HttpUrl
 
 from fake_runner import FakeRunner, Reply, Rule
 from serving_kit import guards as g
+from serving_kit import types as kit_types
 from serving_kit.plan import (
     LABEL_CONFIG_SHA256,
     LABEL_IMAGE,
@@ -848,6 +849,348 @@ def test_the_probe_layout_gate_looks_at_the_probe_directory(tmp_path: Path) -> N
     config = probe_config()
     runner, _ = gates_for(tmp_path, config, Script(records=_probe_records()))
     assert [argv[2] for argv in runner.argvs if argv[:2] == ("test", "-d")] == [PROBE_DIR]
+
+
+# --- 派生の重み (手元で変換した重み) -------------------------------------
+
+DERIVED_NAME = "k2s1"
+DERIVED_DIR = f"{REMOTE_ROOT}/models/{DERIVED_NAME}"
+DERIVED_ALL_RECORD = f"{REMOTE_ROOT}/state/{DERIVED_NAME}.derived.verified.json"
+DERIVED_PROBE_RECORD = f"{REMOTE_ROOT}/state/{DERIVED_NAME}.derived.probe.verified.json"
+
+
+def derivation(*, origin_revision: str = REVISION, commit: str = "a" * 40) -> kit_types.Derivation:
+    """派生の同一性 (元の重み、変換の条件)。構成、マニフェスト、記録が同じものを持つ。"""
+    return kit_types.Derivation(
+        name=DERIVED_NAME,
+        origin=kit_types.WeightsOrigin(repo=REPO, revision=origin_revision),
+        conversion=kit_types.ConversionSpec(
+            tool="experiments/k2-quant/convert.py",
+            commit=commit,
+            args=("--dtype", "fp8"),
+            target_pattern=r"^model\.layers\.\d+\.self_attn\..*$",
+        ),
+    )
+
+
+def derived_weights(
+    *, origin_revision: str = REVISION, commit: str = "a" * 40
+) -> kit_types.DerivedWeightsRef:
+    return kit_types.DerivedWeightsRef(
+        kind="derived",
+        name=DERIVED_NAME,
+        origin=kit_types.OriginWeightsRef(
+            repo=REPO, revision=origin_revision, manifest=f"{SLUG}.manifest.json"
+        ),
+        conversion=derivation(commit=commit).conversion,
+        manifest=f"{DERIVED_NAME}.manifest.json",
+        mount_at=f"/models/{DERIVED_NAME}",
+    )
+
+
+def derived_serve_config(*, origin_revision: str = REVISION, kind: str = "serve") -> ConfigDef:
+    """派生の重みを、読み取り専用で結び付ける推論サーバーの構成 (`serve_config` に沿う)。"""
+    base = serve_config() if kind == "serve" else probe_config()
+    docker = dict(base.docker)
+    if kind == "serve":
+        docker["mount-weights"] = _setting(
+            "--mount",
+            f"type=bind,source={{remote_root}}/models/{DERIVED_NAME},"
+            f"target=/models/{DERIVED_NAME},readonly",
+        )
+    else:
+        docker["mount-probe"] = _setting(
+            "--mount",
+            f"type=bind,source={{remote_root}}/probe/{DERIVED_NAME},target=/probe,readonly",
+        )
+    return base.model_copy(
+        update={
+            "name": f"p2-nope-tp2-full-{DERIVED_NAME}",
+            "weights": derived_weights(origin_revision=origin_revision),
+            "docker": docker,
+        }
+    )
+
+
+def derived_manifest(
+    *, derived: kit_types.Derivation | None = None
+) -> kit_types.DerivedWeightsManifest:
+    return kit_types.DerivedWeightsManifest(
+        kind="derived",
+        derivation=derivation() if derived is None else derived,
+        generated_at=datetime(2026, 9, 21, 1, 0, 0, tzinfo=UTC),
+        total_bytes=MANIFEST.total_bytes,
+        files=MANIFEST_FILES,
+    )
+
+
+def derived_record_json(
+    role: NodeRole,
+    *,
+    derived: kit_types.Derivation | None = None,
+    scope: str = "all",
+    file_count: int | None = None,
+    mismatched: Sequence[str] = (),
+) -> str:
+    """派生の照合の結果の記録の中身 (`record_json` の派生版)。"""
+    files = MANIFEST.probe_files if scope == "probe_files" else MANIFEST.files
+    record = kit_types.DerivedVerificationRecord(
+        kind="derived",
+        derivation=derivation() if derived is None else derived,
+        scope="probe_files" if scope == "probe_files" else "all",
+        node=role,
+        verified_at=VERIFIED_AT,
+        file_count=len(files) if file_count is None else file_count,
+        total_bytes=sum(entry.size for entry in files),
+        mismatched=tuple(mismatched),
+    )
+    return record.model_dump_json()
+
+
+def _derived_records(
+    *, derived: kit_types.Derivation | None = None
+) -> dict[NodeRole, dict[str, str]]:
+    """2 台とも、派生の全体の照合の記録がある (Hub の記録も、別の道筋にある)。"""
+    return {
+        role: {
+            DERIVED_ALL_RECORD: derived_record_json(role, derived=derived),
+            ALL_RECORD: record_json(role),
+        }
+        for role in ROLES
+    }
+
+
+def derived_gates_for(
+    tmp_path: Path,
+    config: ConfigDef,
+    *,
+    manifest: kit_types.DerivedWeightsManifest | WeightsManifest | None,
+    script: Script | None = None,
+) -> tuple[FakeRunner, tuple[GateResult, ...]]:
+    """派生の構成で、関門を全部流して、偽の実行役と結果を返す。"""
+    runner = runner_of(tmp_path, script or Script(records=_derived_records()))
+    results = g.run_gates(runner, config, NODES, plans_of(config), manifest=manifest)
+    return runner, results
+
+
+def cat_paths(runner: FakeRunner) -> list[str]:
+    """`cat` に渡った道筋の全部 (照合の記録を、どこから読んだか)。"""
+    return [argv[1] for argv in runner.argvs if argv[0] == "cat"]
+
+
+def test_a_derived_config_passes_the_weights_gate_and_reads_only_the_derived_record(
+    tmp_path: Path,
+) -> None:
+    runner, results = derived_gates_for(
+        tmp_path, derived_serve_config(), manifest=derived_manifest()
+    )
+
+    assert passed_of(results, "weights_verified", "head")
+    assert passed_of(results, "weights_verified", "worker")
+    assert set(cat_paths(runner)) == {DERIVED_ALL_RECORD}
+
+
+def test_a_derived_config_is_refused_without_the_hub_record_being_read(tmp_path: Path) -> None:
+    # Hub の記録 (`<slug>.verified.json`) だけがあっても、派生の記録の代わりにしない
+    hub_only: Records = {role: {ALL_RECORD: record_json(role)} for role in ROLES}
+    runner, results = derived_gates_for(
+        tmp_path,
+        derived_serve_config(),
+        manifest=derived_manifest(),
+        script=Script(records=hub_only),
+    )
+
+    assert not passed_of(results, "weights_verified", "head")
+    assert DERIVED_ALL_RECORD in detail_of(results, "weights_verified", "head")
+    assert ALL_RECORD not in cat_paths(runner)
+
+
+def test_a_derived_config_without_a_manifest_is_refused_before_any_record_is_read(
+    tmp_path: Path,
+) -> None:
+    runner, results = derived_gates_for(tmp_path, derived_serve_config(), manifest=None)
+
+    assert not passed_of(results, "weights_verified", "head")
+    assert cat_paths(runner) == []
+
+
+def test_a_manifest_of_another_origin_revision_is_refused_before_any_record_is_read(
+    tmp_path: Path,
+) -> None:
+    other = derivation(origin_revision="c" * 40)
+    config = derived_serve_config()
+    manifest = derived_manifest(derived=other)
+    runner, results = derived_gates_for(tmp_path, config, manifest=manifest)
+
+    detail = detail_of(results, "weights_verified", "head")
+    assert not passed_of(results, "weights_verified", "head")
+    assert config.weights is not None
+    assert config.weights.identity in detail
+    assert manifest.identity in detail
+    assert cat_paths(runner) == []
+
+
+def test_a_manifest_converted_with_another_tool_commit_is_refused_before_any_record_is_read(
+    tmp_path: Path,
+) -> None:
+    # 元の重みが同じでも、変換の条件が違うマニフェストは、この構成の重みではない
+    manifest = derived_manifest(derived=derivation(commit="b" * 40))
+    runner, results = derived_gates_for(tmp_path, derived_serve_config(), manifest=manifest)
+
+    assert not passed_of(results, "weights_verified", "head")
+    assert cat_paths(runner) == []
+
+
+def test_a_hub_manifest_is_refused_for_a_derived_config(tmp_path: Path) -> None:
+    runner, results = derived_gates_for(tmp_path, derived_serve_config(), manifest=MANIFEST)
+
+    assert not passed_of(results, "weights_verified", "head")
+    assert "派生のマニフェストでない" in detail_of(results, "weights_verified", "head")
+    assert cat_paths(runner) == []
+
+
+def test_a_derived_manifest_is_refused_for_a_hub_config(tmp_path: Path) -> None:
+    """Hub の構成に派生のマニフェストを渡しても、記録を読む前に断る。"""
+    config = serve_config()
+    runner = runner_of(tmp_path, Script(records=_derived_records()))
+
+    results = g.run_gates(runner, config, NODES, plans_of(config), manifest=derived_manifest())
+
+    assert not passed_of(results, "weights_verified", "head")
+    assert "Hub のマニフェストでない" in detail_of(results, "weights_verified", "head")
+    assert cat_paths(runner) == []
+
+
+def test_a_missing_derived_record_is_refused(tmp_path: Path) -> None:
+    records: Records = {
+        "head": {DERIVED_ALL_RECORD: derived_record_json("head")},
+        "worker": {},
+    }
+    _, results = derived_gates_for(
+        tmp_path,
+        derived_serve_config(),
+        manifest=derived_manifest(),
+        script=Script(records=records),
+    )
+
+    assert passed_of(results, "weights_verified", "head")
+    assert not passed_of(results, "weights_verified", "worker")
+    assert DERIVED_ALL_RECORD in detail_of(results, "weights_verified", "worker")
+
+
+@pytest.mark.parametrize("difference", ["origin-revision", "conversion-commit"])
+def test_a_derived_record_of_another_derivation_is_refused(tmp_path: Path, difference: str) -> None:
+    recorded = (
+        derivation(origin_revision="0" * 40)
+        if difference == "origin-revision"
+        else derivation(commit="b" * 40)
+    )
+    records: Records = {
+        "head": {DERIVED_ALL_RECORD: derived_record_json("head", derived=recorded)},
+        "worker": {DERIVED_ALL_RECORD: derived_record_json("worker")},
+    }
+    _, results = derived_gates_for(
+        tmp_path,
+        derived_serve_config(),
+        manifest=derived_manifest(),
+        script=Script(records=records),
+    )
+
+    assert not passed_of(results, "weights_verified", "head")
+    assert passed_of(results, "weights_verified", "worker")
+    assert DERIVED_ALL_RECORD in detail_of(results, "weights_verified", "head")
+
+
+def test_a_derived_record_difference_is_labelled_as_the_record(tmp_path: Path) -> None:
+    """記録と比べる文では、記録の値の見出しが「記録」になる (構成の値と取り違えない)。"""
+    recorded = derivation(commit="b" * 40)
+    records: Records = {
+        "head": {DERIVED_ALL_RECORD: derived_record_json("head", derived=recorded)},
+        "worker": {DERIVED_ALL_RECORD: derived_record_json("worker")},
+    }
+    _, results = derived_gates_for(
+        tmp_path,
+        derived_serve_config(),
+        manifest=derived_manifest(),
+        script=Script(records=records),
+    )
+
+    assert not passed_of(results, "weights_verified", "head")
+    assert passed_of(results, "weights_verified", "worker")
+    detail = detail_of(results, "weights_verified", "head")
+    assert f"変換の道具のコミット (記録: {'b' * 40}、マニフェスト: {'a' * 40})" in detail
+
+
+def test_a_derived_record_with_a_mismatched_file_is_refused(tmp_path: Path) -> None:
+    broken = derived_record_json("head", mismatched=("model-00002-of-00002.safetensors",))
+    records: Records = {
+        "head": {DERIVED_ALL_RECORD: broken},
+        "worker": {DERIVED_ALL_RECORD: derived_record_json("worker")},
+    }
+    _, results = derived_gates_for(
+        tmp_path,
+        derived_serve_config(),
+        manifest=derived_manifest(),
+        script=Script(records=records),
+    )
+
+    assert not passed_of(results, "weights_verified", "head")
+    assert "model-00002-of-00002.safetensors" in detail_of(results, "weights_verified", "head")
+
+
+def test_a_derived_record_with_a_different_file_count_is_refused(tmp_path: Path) -> None:
+    records: Records = {
+        "head": {DERIVED_ALL_RECORD: derived_record_json("head", file_count=3)},
+        "worker": {DERIVED_ALL_RECORD: derived_record_json("worker")},
+    }
+    _, results = derived_gates_for(
+        tmp_path,
+        derived_serve_config(),
+        manifest=derived_manifest(),
+        script=Script(records=records),
+    )
+
+    detail = detail_of(results, "weights_verified", "head")
+    assert not passed_of(results, "weights_verified", "head")
+    assert "3" in detail and str(len(MANIFEST.files)) in detail
+
+
+def test_the_derived_record_paths_are_separate_from_the_hub_record_paths(tmp_path: Path) -> None:
+    weights = derived_weights()
+    assert g.weights_record_path(HEAD, weights, "all") == DERIVED_ALL_RECORD
+    assert g.weights_record_path(HEAD, weights, "probe_files") == DERIVED_PROBE_RECORD
+    assert len({DERIVED_ALL_RECORD, DERIVED_PROBE_RECORD, ALL_RECORD, PROBE_RECORD}) == 4
+    # `cat` で読めるのは `<remote_root>/` の下だけ。使える文字も絞られている
+    guard = CallGuard(var_root=tmp_path)
+    for path in (DERIVED_ALL_RECORD, DERIVED_PROBE_RECORD):
+        guard.check_run(HEAD, ("cat", path), mutating=False)
+
+
+def test_the_hub_record_path_is_unchanged(tmp_path: Path) -> None:
+    # Hub の重みは、いまと同じ道筋 (`<slug>.verified.json`) で読み書きする
+    assert g.weights_record_path(HEAD, WEIGHTS, "all") == ALL_RECORD
+    assert g.weights_record_path(HEAD, WEIGHTS, "probe_files") == PROBE_RECORD
+
+
+def test_a_derived_probe_config_reads_the_derived_probe_record(tmp_path: Path) -> None:
+    config = derived_serve_config(kind="probe")
+    records: Records = {
+        "head": {
+            DERIVED_PROBE_RECORD: derived_record_json("head", scope="probe_files"),
+            DERIVED_ALL_RECORD: derived_record_json("head"),
+        },
+        "worker": {},
+    }
+    runner = runner_of(tmp_path, Script(records=records))
+    results = g.run_gates(runner, config, NODES, plans_of(config), manifest=derived_manifest())
+
+    assert passed_of(results, "weights_verified", "head")
+    assert set(cat_paths(runner)) == {DERIVED_PROBE_RECORD}
+
+
+def test_the_required_space_of_a_derived_config_is_the_derived_manifest_total() -> None:
+    manifest = derived_manifest()
+    assert g.required_free_bytes(derived_serve_config(), manifest) == manifest.total_bytes
 
 
 # --- すでに動いているかの判定 --------------------------------------------

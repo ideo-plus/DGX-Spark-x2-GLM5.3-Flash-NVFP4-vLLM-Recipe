@@ -46,6 +46,7 @@ from pydantic import HttpUrl
 from fake_runner import FakeRunner, RecordedCall, Reply, Rule
 from fake_vllm import FakeVllm, Fault, MetricsSample
 from serving_kit import lifecycle as lc
+from serving_kit import types as kt
 from serving_kit.config import ConfigError
 from serving_kit.guards import ApprovalError, build_approved_plan, remove_argv, stop_argv
 from serving_kit.logs import DEFAULT_TAIL_LINES
@@ -667,6 +668,117 @@ def test_launch_record_is_pushed_to_state_on_both_nodes(
         assert record.started_at == STARTED_AT
         assert record.config_sha256 == plans_of(config)[0].labels[LABEL_CONFIG_SHA256]
         assert len(record.plans) == len(ROLES)
+
+
+# --- 派生の重み (手元で変換した重み) の構成 ----------------------------------
+
+DERIVED_NAME = "k2s1"
+DERIVED_CONFIG_NAME = "p2-nope-tp2-full-k2s1"
+DERIVED_MOUNT_AT = f"/models/{DERIVED_NAME}"
+DERIVED_RECORD_PATH = f"{REMOTE_ROOT}/state/{DERIVED_NAME}.derived.verified.json"
+"""派生の重みの照合の記録の置き場所 (Hub の `state/<slug>.verified.json` とは別の名前)。"""
+
+
+def derived_serve_config(port: int) -> tuple[ConfigDef, kt.DerivedWeightsManifest]:
+    """`serve_config` の重みを派生の重みに差し替えた構成と、それと一致する派生のマニフェスト。"""
+    conversion = kt.ConversionSpec(
+        tool="experiments/k2-quant/convert.py",
+        commit="a" * 40,
+        args=("--dtype", "fp8"),
+        target_pattern=r"^model\.layers\.\d+\.self_attn\..*$",
+    )
+    weights = kt.DerivedWeightsRef(
+        kind="derived",
+        name=DERIVED_NAME,
+        origin=kt.OriginWeightsRef(repo=REPO, revision=REVISION, manifest=WEIGHTS.manifest),
+        conversion=conversion,
+        manifest=f"{DERIVED_NAME}.manifest.json",
+        mount_at=DERIVED_MOUNT_AT,
+    )
+    mount = (
+        f"type=bind,source={{remote_root}}/models/{DERIVED_NAME}"
+        ",target={weights.mount_at},readonly"
+    )
+    config = serve_config(port).model_copy(
+        update={
+            "name": DERIVED_CONFIG_NAME,
+            "weights": weights,
+            "docker": {"models": _setting("--mount", mount)},
+        }
+    )
+    manifest = kt.DerivedWeightsManifest(
+        kind="derived",
+        derivation=weights.derivation,
+        generated_at=GENERATED_AT,
+        total_bytes=MANIFEST.total_bytes,
+        files=MANIFEST.files,
+    )
+    return config, manifest
+
+
+def derived_verified_record(role: NodeRole, manifest: kt.DerivedWeightsManifest) -> str:
+    """派生の重みの `gate_weights_verified` が読む、照合の結果の記録。"""
+    return kt.DerivedVerificationRecord(
+        kind="derived",
+        derivation=manifest.derivation,
+        scope="all",
+        node=role,
+        verified_at=VERIFIED_AT,
+        file_count=len(manifest.files),
+        total_bytes=manifest.total_bytes,
+    ).model_dump_json()
+
+
+def run_derived_start(
+    runner: FakeRunner, config: ConfigDef, manifest: kt.DerivedWeightsManifest, tmp_path: Path
+) -> StartOutcome:
+    """派生の重みの構成を、その派生のマニフェストを渡して `lifecycle.start` に流す助け。"""
+    used_clock = FakeClock()
+    return lc.start(
+        runner,
+        config,
+        NODES,
+        STARTED_AT,
+        confirmer=SpyConfirmer(),
+        var_root=var_root(tmp_path),
+        record_dir=record_dir(tmp_path),
+        repo_commit=REPO_COMMIT,
+        repo_dirty=False,
+        manifest=manifest,
+        poll_interval_s=10.0,
+        sleep=used_clock.sleep,
+        clock=used_clock.monotonic,
+        report=io.StringIO(),
+    )
+
+
+def test_a_derived_weights_start_records_the_derived_identity(
+    tmp_path: Path, fake_vllm: FakeVllm
+) -> None:
+    """派生の重みの構成を起動すると、起動の記録の `weights` が派生の同一性になる。"""
+    config, manifest = derived_serve_config(port_of(fake_vllm))
+    script = StartScript(
+        plans=plans_of(config),
+        extra=tuple(
+            Rule(
+                prefix=("cat", DERIVED_RECORD_PATH),
+                node=role,
+                replies=(Reply(stdout=derived_verified_record(role, manifest)),),
+            )
+            for role in ROLES
+        ),
+    )
+    runner = runner_of(tmp_path, script)
+
+    outcome = run_derived_start(runner, config, manifest, tmp_path)
+
+    assert outcome.status == "ready", outcome.detail
+    assert [call.node for call in runner.pushes] == ["head", "worker"]
+    for call in runner.pushes:
+        assert call.local_dir is not None
+        written = call.local_dir / f"{DERIVED_CONFIG_NAME}.launch.json"
+        record = LaunchRecord.model_validate_json(written.read_text(encoding="utf-8"))
+        assert record.weights == f"derived:{DERIVED_NAME}:{REPO}@{REVISION}"
 
 
 def test_launch_record_source_is_emptied_before_the_push(

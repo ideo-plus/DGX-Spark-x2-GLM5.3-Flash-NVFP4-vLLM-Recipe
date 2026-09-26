@@ -52,9 +52,12 @@
    `<remote_root>/state/<slug>.verified.json`、縮小の確認用 (`scope = "probe_files"`。
    `serve fetch --probe-files`) は `<remote_root>/state/<slug>.probe.verified.json` に
    する。1 つの名前を共有すると、`serve verify` と `serve fetch --probe-files` が、互いの
-   記録を上書きし、もう一方の構成の関門が (中身は正しいのに) 断られる。道筋は
-   `verification_record_path(node, repo, scope)` が決めるので、**記録を書く側 (task 3.3)
-   も、この関数を使って道筋を決めること**
+   記録を上書きし、もう一方の構成の関門が (中身は正しいのに) 断られる。手元で変換した
+   派生の重みの記録は、Hub の記録と別の名前 (`state/<名前>.derived.verified.json`、縮小の
+   確認用は `state/<名前>.derived.probe.verified.json`) に置く。道筋は
+   `weights_record_path(node, weights, scope)` が決める (Hub の重みは、
+   `verification_record_path` と同じ道筋)。**記録を書く側 (`weights._push_record`) も、
+   読む側 (`gate_weights_verified`) も、この関数を使って道筋を決めること**
 7. **構成の `kind` で、要る範囲を決めて、その道筋だけを読む**。縮小の確認 (`probe`) は
    `probe_files`、ほかの重みを持つ構成は `all` である。読んだ記録の中の `scope` が、その
    道筋の範囲と違えば断る (置き間違いを、黙って通さない)。`scope = "all"` の記録は、
@@ -127,9 +130,16 @@ from serving_kit.plan import (
 )
 from serving_kit.remote import RemoteError, RemoteRunner
 from serving_kit.types import (
+    AnyVerificationRecord,
+    AnyWeightsManifest,
+    AnyWeightsRef,
     ApprovedPlan,
     ConfigDef,
     ContainerPlan,
+    Derivation,
+    DerivedVerificationRecord,
+    DerivedWeightsManifest,
+    DerivedWeightsRef,
     GateResult,
     GpuApp,
     ManifestFile,
@@ -189,6 +199,8 @@ __all__ = [
     "run_gates",
     "stop_argv",
     "verification_record_path",
+    "weights_record_path",
+    "weights_ref_mismatch",
     "weights_slug",
 ]
 
@@ -388,12 +400,30 @@ def verification_record_path(node: NodeDef, repo: str, scope: VerificationScope)
       `<remote_root>/state/<slug>.probe.verified.json`
 
     分ける理由は、module の docstring の「意図した違い」の 6 にある (互いの記録を上書き
-    しないため)。**記録を書く側 (task 3.3) も、この関数で道筋を決めること。**
+    しないため)。これは Hub の重みの道筋だけを決める。**記録を書く側も読む側も、重みの種類
+    (Hub か派生か) に合う `weights_record_path` を使うこと** (派生の重みの道筋は、ここでは
+    決まらない)。
     """
     return f"{node.remote_root}/state/{weights_slug(repo)}.{_RECORD_SUFFIX[scope]}"
 
 
-def required_free_bytes(config: ConfigDef, manifest: WeightsManifest | None) -> int:
+def weights_record_path(node: NodeDef, weights: AnyWeightsRef, scope: VerificationScope) -> str:
+    """重みの種類に合った、照合の結果の記録の置き場所。
+
+    - Hub の重み: `verification_record_path` と同じく
+      `<remote_root>/state/<slug>.verified.json` (現行の道筋を変えない)
+    - 派生の重み: `<remote_root>/state/<名前>.derived.verified.json`
+      (`<名前>` の文字集合は Hub の slug と重ならない。`.derived.` でも分ける)
+
+    `probe_files` の範囲は、どちらも `<後ろ>` が `probe.verified.json` になる。**記録を書く側
+    (`weights.py`) と、読む側 (`gate_weights_verified`) が、同じこの関数で道筋を決めること。**
+    """
+    if isinstance(weights, DerivedWeightsRef):
+        return f"{node.remote_root}/state/{weights.name}.derived.{_RECORD_SUFFIX[scope]}"
+    return verification_record_path(node, weights.repo, scope)
+
+
+def required_free_bytes(config: ConfigDef, manifest: AnyWeightsManifest | None) -> int:
     """この構成を置くのに要るディスクの量 (余裕を足す前)。
 
     重みを持つ構成はマニフェストの合計、持たない構成はイメージの大きさである
@@ -551,7 +581,7 @@ def parse_listening_ports(text: str) -> frozenset[int]:
     return frozenset(ports)
 
 
-def _scoped_files(config: ConfigDef, manifest: WeightsManifest) -> tuple[ManifestFile, ...]:
+def _scoped_files(config: ConfigDef, manifest: AnyWeightsManifest) -> tuple[ManifestFile, ...]:
     """この構成が見るマニフェストのファイル (縮小の確認は、safetensors を除いたもの)。"""
     if config.kind == _KIND_PROBE:
         return manifest.probe_files
@@ -849,7 +879,7 @@ def gate_weights_verified(
     runner: RemoteRunner,
     node: NodeDef,
     config: ConfigDef,
-    manifest: WeightsManifest | None,
+    manifest: AnyWeightsManifest | None,
     *,
     timeout_s: float = READ_TIMEOUT_S,
 ) -> GateResult:
@@ -871,7 +901,7 @@ def _weights_verified(
     runner: RemoteRunner,
     node: NodeDef,
     config: ConfigDef,
-    manifest: WeightsManifest | None,
+    manifest: AnyWeightsManifest | None,
     timeout_s: float,
 ) -> GateResult:
     """gate_weights_verified の中身。読めなかったことは、`gate_weights_verified` が断りに変える。"""
@@ -893,25 +923,14 @@ def _weights_verified(
                 f" (serving/weights/{weights.manifest}) が渡されていない"
             ),
         )
-    if manifest.repo != weights.repo or manifest.revision != weights.revision:
-        return _result(
-            GATE_WEIGHTS_VERIFIED,
-            node.role,
-            passed=False,
-            detail=(
-                "渡されたマニフェストが、構成の重みと違う。マニフェスト:"
-                f" {manifest.repo}@{manifest.revision}、構成: {weights.repo}@{weights.revision}"
-            ),
-        )
+    mismatch = weights_ref_mismatch(weights, manifest)
+    if mismatch is not None:
+        return _result(GATE_WEIGHTS_VERIFIED, node.role, passed=False, detail=mismatch)
     scope = _required_scope(config)
-    path = verification_record_path(node, weights.repo, scope)
+    path = weights_record_path(node, weights, scope)
     result = runner.run(node, ("cat", path), timeout_s=timeout_s, mutating=False)
     if result.exit_code != 0:
-        how_to_verify = (
-            "`serve fetch --probe-files` で、設定とトークナイザを取得して照合する"
-            if scope == _SCOPE_PROBE_FILES
-            else "`serve fetch` で取得してから、`serve verify` で 2 台を照合する"
-        )
+        how_to_verify = _how_to_verify(config, scope)
         return _result(
             GATE_WEIGHTS_VERIFIED,
             node.role,
@@ -920,8 +939,11 @@ def _weights_verified(
                 f"この構成に要る、重みの照合の記録がない (対象 {scope}、{path})。{how_to_verify}"
             ),
         )
+    record_model: type[AnyVerificationRecord] = (
+        DerivedVerificationRecord if isinstance(weights, DerivedWeightsRef) else VerificationRecord
+    )
     try:
-        record = VerificationRecord.model_validate_json(result.stdout)
+        record = record_model.model_validate_json(result.stdout)
     except ValidationError as exc:
         return _result(
             GATE_WEIGHTS_VERIFIED,
@@ -942,17 +964,116 @@ def _weights_verified(
         node.role,
         passed=True,
         detail=(
-            f"{record.repo}@{record.revision} を照合済み (対象 {record.scope}、"
+            f"{record.identity} を照合済み (対象 {record.scope}、"
             f"{record.file_count} ファイル、{_bytes_text(record.total_bytes)}、"
             f"{record.verified_at.isoformat()})"
         ),
     )
 
 
+def weights_ref_mismatch(weights: AnyWeightsRef, manifest: AnyWeightsManifest) -> str | None:
+    """構成の重みと、渡されたマニフェストの食い違い (合えば `None`)。
+
+    Hub は `repo` と版を、派生は `derivation` (名前・元の重み・**変換の条件**) の全体を
+    比べる。`Derivation.identity` は変換の条件を含まないので、`identity` だけで比べると、
+    変換の条件だけが違うマニフェストを見逃す。`serve verify` の入口 (`weights._weights_of`)
+    と、関門 (`_weights_verified`) が、同じこの関数を使う。
+    """
+    if isinstance(weights, DerivedWeightsRef):
+        if not isinstance(manifest, DerivedWeightsManifest):
+            return (
+                "渡されたマニフェストが、派生のマニフェストでない"
+                f" (この構成は、手元で変換した重み {weights.identity} を使う)"
+            )
+        if manifest.derivation != weights.derivation:
+            return _derivation_mismatch_text(weights.derivation, manifest.derivation)
+        return None
+    if not isinstance(manifest, WeightsManifest):
+        return (
+            "渡されたマニフェストが、Hub のマニフェストでない"
+            f" (この構成は、Hub の重み {weights.identity} を使う)"
+        )
+    if manifest.repo != weights.repo or manifest.revision != weights.revision:
+        return (
+            "渡されたマニフェストが、構成の重みと違う。マニフェスト:"
+            f" {manifest.identity}、構成: {weights.identity}"
+        )
+    return None
+
+
+def _derivation_mismatch_text(weights: Derivation, manifest: Derivation) -> str:
+    """派生の同一性が違うときの文。名前・元の重み・変換の条件のどこが違うかを挙げる。
+
+    `identity` は変換の条件を含まないので、変換だけが違うと、両側が同じ `identity` の
+    文字列になる。何が違うのかが読めるように、違う項目を並べる。
+    """
+    differences = _derivation_difference(weights, manifest, compared_label="構成")
+    body = (
+        "渡されたマニフェストが、構成の重みと違う。マニフェスト:"
+        f" {manifest.identity}、構成: {weights.identity}"
+    )
+    if not differences:
+        return body
+    return body + " (違うところ: " + " / ".join(differences) + ")"
+
+
+def _derivation_difference(
+    compared: Derivation, manifest: Derivation, *, compared_label: str
+) -> tuple[str, ...]:
+    """派生の同一性のうち、値が違う項目を並べる (元の重みと、変換の条件)。
+
+    `manifest` (コミットしたマニフェストの側) と比べる相手を、`compared` で受ける。相手が
+    構成の重みか、照合の記録かで、文の見出しが変わる (`compared_label`。「構成」か「記録」)。
+    """
+    parts: list[str] = []
+    if compared.name != manifest.name:
+        parts.append(f"名前 ({compared_label}: {compared.name}、マニフェスト: {manifest.name})")
+    if compared.origin.repo != manifest.origin.repo:
+        parts.append(
+            f"元の入手先 ({compared_label}: {compared.origin.repo}、"
+            f"マニフェスト: {manifest.origin.repo})"
+        )
+    if compared.origin.revision != manifest.origin.revision:
+        parts.append(
+            f"元の版 ({compared_label}: {compared.origin.revision}、"
+            f"マニフェスト: {manifest.origin.revision})"
+        )
+    if compared.conversion.tool != manifest.conversion.tool:
+        parts.append(
+            f"変換の道具 ({compared_label}: {compared.conversion.tool}、"
+            f"マニフェスト: {manifest.conversion.tool})"
+        )
+    if compared.conversion.commit != manifest.conversion.commit:
+        parts.append(
+            f"変換の道具のコミット ({compared_label}: {compared.conversion.commit}、"
+            f"マニフェスト: {manifest.conversion.commit})"
+        )
+    if compared.conversion.args != manifest.conversion.args:
+        parts.append(
+            f"変換の引数 ({compared_label}: {list(compared.conversion.args)}、"
+            f"マニフェスト: {list(manifest.conversion.args)})"
+        )
+    if compared.conversion.target_pattern != manifest.conversion.target_pattern:
+        parts.append(
+            f"変換の対象の正規表現 ({compared_label}: {compared.conversion.target_pattern}、"
+            f"マニフェスト: {manifest.conversion.target_pattern})"
+        )
+    return tuple(parts)
+
+
+def _how_to_verify(config: ConfigDef, scope: VerificationScope) -> str:
+    """照合の記録が無いときに、どう作るかを言う (Hub と派生で、打つコマンドが違う)。"""
+    if isinstance(config.weights, DerivedWeightsRef):
+        return "`serve verify` で、2 台の重みを照合する (Hub からは取得できない)"
+    if scope == _SCOPE_PROBE_FILES:
+        return "`serve fetch --probe-files` で、設定とトークナイザを取得して照合する"
+    return "`serve fetch` で取得してから、`serve verify` で 2 台を照合する"
+
+
 def _record_problems(
-    record: VerificationRecord,
+    record: AnyVerificationRecord,
     config: ConfigDef,
-    manifest: WeightsManifest,
+    manifest: AnyWeightsManifest,
     role: NodeRole,
 ) -> tuple[str, ...]:
     """照合の記録と、マニフェストの食い違いを、すべて並べる。"""
@@ -960,10 +1081,28 @@ def _record_problems(
     files = _scoped_files(config, manifest)
     expected_bytes = sum(entry.size for entry in files)
     problems: list[str] = []
-    if record.repo != manifest.repo:
-        problems.append(f"入手先が違う (記録: {record.repo}、マニフェスト: {manifest.repo})")
-    if record.revision != manifest.revision:
-        problems.append(f"版が違う (記録: {record.revision}、マニフェスト: {manifest.revision})")
+    if isinstance(record, DerivedVerificationRecord):
+        if not isinstance(manifest, DerivedWeightsManifest):
+            problems.append("マニフェストが、派生のマニフェストでない")
+        elif record.derivation != manifest.derivation:
+            differences = _derivation_difference(
+                record.derivation, manifest.derivation, compared_label="記録"
+            )
+            detail = (
+                f"派生の重みが違う (記録: {record.identity}、マニフェスト: {manifest.identity})"
+            )
+            if differences:
+                detail += " (違うところ: " + " / ".join(differences) + ")"
+            problems.append(detail)
+    elif not isinstance(manifest, WeightsManifest):
+        problems.append("マニフェストが、Hub のマニフェストでない")
+    else:
+        if record.repo != manifest.repo:
+            problems.append(f"入手先が違う (記録: {record.repo}、マニフェスト: {manifest.repo})")
+        if record.revision != manifest.revision:
+            problems.append(
+                f"版が違う (記録: {record.revision}、マニフェスト: {manifest.revision})"
+            )
     if record.node != role:
         problems.append(f"ほかの台の記録である (記録: {record.node}、この台: {role})")
     if record.scope != scope:
@@ -1125,7 +1264,7 @@ def run_gates(
     nodes: Mapping[NodeRole, NodeDef],
     plans: Sequence[ContainerPlan],
     *,
-    manifest: WeightsManifest | None = None,
+    manifest: AnyWeightsManifest | None = None,
     containers: Mapping[NodeRole, Sequence[OwnContainer]] | None = None,
     timeout_s: float = READ_TIMEOUT_S,
 ) -> tuple[GateResult, ...]:

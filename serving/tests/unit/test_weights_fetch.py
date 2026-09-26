@@ -44,6 +44,7 @@ import pytest
 from pydantic import HttpUrl
 
 from fake_runner import FakeRunner, RecordedCall, Reply, Rule
+from serving_kit import types as kit_types
 from serving_kit import weights as w
 from serving_kit.config import ConfigError
 from serving_kit.guards import ApprovalError, gate_weights_verified, verification_record_path
@@ -1109,6 +1110,8 @@ def test_one_wrong_sha256_line_names_the_file_and_refetches_nothing(tmp_path: Pa
     message = str(caught.value)
     assert "model-00002-of-00002.safetensors" in message
     assert "worker" in message
+    # Hub の重みは、`serve fetch` を打ち直して取り直せる (この案内は変えない)
+    assert "黙って取り直さない。取り直すときは、計測者が `serve fetch` を打ち直す" in message
     # 黙って取り直さない: 取り直しの呼び出しが 1 つも出ない
     assert argv_of(runner, "docker", "run") == ()
     assert argv_of(runner, "docker", "pull") == ()
@@ -1547,6 +1550,235 @@ def test_a_manifest_that_does_not_match_the_config_is_refused(tmp_path: Path) ->
             fetch_config(),
             NODES,
             other,
+            STARTED_AT,
+            confirmer=SpyConfirmer(),
+            scope="all",
+            record_dir=tmp_path / "records",
+            verified_at=VERIFIED_AT,
+        )
+
+    assert runner.calls == ()
+
+
+# --- 派生の重み (手元で変換した重み) --------------------------------------
+
+DERIVED_NAME = "k2s1"
+DERIVED_MOUNT_AT = f"/models/{DERIVED_NAME}"
+DERIVED_DIR = f"{REMOTE_ROOT}/models/{DERIVED_NAME}"
+DERIVED_RECORD_NAME = f"{DERIVED_NAME}.derived.verified.json"
+
+
+def derivation(*, origin_revision: str = REVISION) -> kit_types.Derivation:
+    """派生の同一性 (元の重み、変換の条件)。構成、マニフェスト、記録が同じものを持つ。"""
+    return kit_types.Derivation(
+        name=DERIVED_NAME,
+        origin=kit_types.WeightsOrigin(repo=REPO, revision=origin_revision),
+        conversion=kit_types.ConversionSpec(
+            tool="experiments/k2-quant/convert.py",
+            commit="a" * 40,
+            args=("--dtype", "fp8"),
+            target_pattern=r"^model\.layers\.\d+\.self_attn\..*$",
+        ),
+    )
+
+
+def derived_manifest(*, origin_revision: str = REVISION) -> kit_types.DerivedWeightsManifest:
+    """変換の結果の照合の正解 (#56 の道具が書き、Mac でコミットしたもの)。"""
+    return kit_types.DerivedWeightsManifest(
+        kind="derived",
+        derivation=derivation(origin_revision=origin_revision),
+        generated_at=GENERATED_AT,
+        total_bytes=MANIFEST.total_bytes,
+        files=MANIFEST.files,
+    )
+
+
+def derived_weights() -> kit_types.DerivedWeightsRef:
+    return kit_types.DerivedWeightsRef(
+        kind="derived",
+        name=DERIVED_NAME,
+        origin=kit_types.OriginWeightsRef(
+            repo=REPO, revision=REVISION, manifest=f"{SLUG}.manifest.json"
+        ),
+        conversion=derivation().conversion,
+        manifest=f"{DERIVED_NAME}.manifest.json",
+        mount_at=DERIVED_MOUNT_AT,
+    )
+
+
+def derived_serve_config() -> ConfigDef:
+    """派生の重みを、読み取り専用で結び付ける推論サーバーの構成。"""
+    return serve_config().model_copy(
+        update={
+            "name": "p2-nope-tp2-full-k2s1",
+            "weights": derived_weights(),
+            "docker": {
+                "models": _setting(
+                    "--mount",
+                    f"type=bind,source={{remote_root}}/models/{DERIVED_NAME},"
+                    "target={weights.mount_at},readonly",
+                ),
+            },
+        }
+    )
+
+
+def derived_fetch_config() -> ConfigDef:
+    """派生の重みを持つ `fetch` の構成 (`kind` の検査は通るので、派生であることで断られる)。"""
+    return fetch_config().model_copy(update={"weights": derived_weights()})
+
+
+def derived_verify_runner(
+    tmp_path: Path, *, wrong: Mapping[NodeRole, Mapping[str, str]] | None = None
+) -> FakeRunner:
+    """派生の置き場所 (`models/k2s1`) を読み取る `serve verify` の台本。"""
+    wrong = wrong or {}
+    return verify_runner(
+        tmp_path,
+        sha={
+            role: (Reply(stdout=sha_output(ALL_PATHS, DERIVED_DIR, wrong=wrong.get(role, {}))),)
+            for role in ROLES
+        },
+    )
+
+
+def verify_derived(
+    runner: FakeRunner,
+    tmp_path: Path,
+    *,
+    config: ConfigDef | None = None,
+    manifest: kit_types.DerivedWeightsManifest | WeightsManifest | None = None,
+) -> Any:
+    """`w.verify_weights` を、派生の構成と派生のマニフェストで呼ぶ。"""
+    return w.verify_weights(
+        runner,
+        derived_serve_config() if config is None else config,
+        NODES,
+        derived_manifest() if manifest is None else manifest,
+        STARTED_AT,
+        confirmer=SpyConfirmer(),
+        scope="all",
+        record_dir=tmp_path / "records",
+        verified_at=VERIFIED_AT,
+        batch_files=100,
+    )
+
+
+def test_a_derived_verification_reads_its_own_directory_and_writes_a_derived_record(
+    tmp_path: Path,
+) -> None:
+    runner = derived_verify_runner(tmp_path)
+    outcome = verify_derived(runner, tmp_path)
+
+    assert outcome.status == "verified"
+    assert set(sha_paths(runner)) == {f"{DERIVED_DIR}/{path}" for path in ALL_PATHS}
+    # 配る記録は、派生の名前のものが 1 つだけ (Hub の `<slug>.verified.json` ではない)
+    for role in ROLES:
+        names = sorted(item.name for item in record_source(tmp_path, role).iterdir())
+        assert names == [DERIVED_RECORD_NAME]
+    for push in runner.pushes:
+        assert push.remote == "state"
+        assert push.delete is False
+    record = json.loads(
+        (record_source(tmp_path, "head") / DERIVED_RECORD_NAME).read_text(encoding="utf-8")
+    )
+    assert record["kind"] == "derived"
+    assert record["derivation"] == derivation().model_dump(mode="json")
+    assert record["scope"] == "all"
+    assert record["node"] == "head"
+    assert record["file_count"] == len(ALL_PATHS)
+    assert record["total_bytes"] == MANIFEST.total_bytes
+    assert record["mismatched"] == []
+
+
+def test_the_derived_record_this_module_writes_is_read_back_by_the_gate(tmp_path: Path) -> None:
+    # 派生の記録は、この module と guards の継ぎ目で、同じ道筋・同じ形で読める
+    verify_derived(derived_verify_runner(tmp_path), tmp_path)
+    text = (record_source(tmp_path, "head") / DERIVED_RECORD_NAME).read_text(encoding="utf-8")
+    reader = FakeRunner(
+        var_root=tmp_path,
+        script=(Rule(prefix=("cat",), replies=(Reply(stdout=text),)),),
+    )
+
+    gate = gate_weights_verified(reader, HEAD, derived_serve_config(), derived_manifest())
+
+    assert gate.passed, gate.detail
+
+
+def test_a_derived_mismatch_names_the_file_records_it_and_refetches_nothing(
+    tmp_path: Path,
+) -> None:
+    wrong: dict[NodeRole, Mapping[str, str]] = {
+        "worker": {"model-00002-of-00002.safetensors": "f" * 64}
+    }
+    runner = derived_verify_runner(tmp_path, wrong=wrong)
+    with pytest.raises(w.WeightsMismatchError) as caught:
+        verify_derived(runner, tmp_path)
+
+    message = str(caught.value)
+    assert "model-00002-of-00002.safetensors" in message
+    assert "worker" in message
+    # 取り直しの案内は、`serve fetch` が断る派生の重みでは、変換の道具での作り直しになる
+    assert "変換の道具で変換し直す" in message
+    assert argv_of(runner, "docker", "run") == ()
+    assert argv_of(runner, "docker", "pull") == ()
+    assert argv_of(runner, "docker", "rm") == ()
+    # 合わなかったことは、派生の記録に残る (関門が、この記録で断れるように)
+    record = json.loads(
+        (record_source(tmp_path, "worker") / DERIVED_RECORD_NAME).read_text(encoding="utf-8")
+    )
+    assert record["kind"] == "derived"
+    assert record["mismatched"] == ["model-00002-of-00002.safetensors"]
+
+
+def test_a_derived_manifest_of_another_origin_revision_is_refused_before_touching_spark(
+    tmp_path: Path,
+) -> None:
+    runner = derived_verify_runner(tmp_path)
+    with pytest.raises(w.WeightsRefError):
+        verify_derived(runner, tmp_path, manifest=derived_manifest(origin_revision="c" * 40))
+
+    assert runner.calls == ()
+
+
+def test_a_derived_manifest_with_another_conversion_is_refused_before_touching_spark(
+    tmp_path: Path,
+) -> None:
+    # 元の重みが同じでも、変換の条件 (道具のコミット) が違えば、別の重みである。
+    # `Derivation.identity` は変換の条件を含まないので、identity だけでは見逃す。
+    base = derived_manifest()
+    conversion = base.derivation.conversion.model_copy(update={"commit": "b" * 40})
+    manifest = base.model_copy(
+        update={"derivation": base.derivation.model_copy(update={"conversion": conversion})}
+    )
+    runner = derived_verify_runner(tmp_path)
+
+    with pytest.raises(w.WeightsRefError) as caught:
+        verify_derived(runner, tmp_path, manifest=manifest)
+
+    assert "変換の道具のコミット" in str(caught.value)
+    assert runner.calls == ()
+
+
+def test_a_hub_manifest_for_a_derived_config_is_refused_before_touching_spark(
+    tmp_path: Path,
+) -> None:
+    runner = derived_verify_runner(tmp_path)
+    with pytest.raises(w.WeightsRefError):
+        verify_derived(runner, tmp_path, manifest=MANIFEST)
+
+    assert runner.calls == ()
+
+
+def test_the_fetch_refuses_a_derived_config_without_touching_spark(tmp_path: Path) -> None:
+    # 派生の重みには、Hub の取得元がない。取得の経路に乗せず、Spark に触る前に断る
+    runner = fetch_runner(tmp_path)
+    with pytest.raises(ConfigError):
+        w.fetch_weights(
+            runner,
+            derived_fetch_config(),
+            NODES,
+            derived_manifest(),
             STARTED_AT,
             confirmer=SpyConfirmer(),
             scope="all",

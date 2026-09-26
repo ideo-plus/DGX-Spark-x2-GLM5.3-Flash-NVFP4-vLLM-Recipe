@@ -35,11 +35,14 @@ from pydantic import BaseModel, HttpUrl, ValidationError
 from serving_kit.types import (
     CONFIG_SCHEMA_VERSION,
     ConfigDef,
+    DerivedWeightsRef,
     ImageRef,
     NodeDef,
     NodeRole,
+    OriginWeightsRef,
     Provenance,
     Setting,
+    WeightsManifest,
     WeightsRef,
 )
 
@@ -213,6 +216,8 @@ _PATTERN_MESSAGES: Final[Mapping[str, str]] = {
     "sha256:<64 桁の 16 進> にする (タグだけの参照は、"
     "あとから中身が変わるので使えない)",
     "revision": "版は 40 桁の 16 進の commit にする",
+    "commit": "変換に使った道具のコミットは、40 桁の 16 進にする",
+    "name": "派生の重みの名前は、英数字とハイフンだけにする",
     "sha256": "sha256 は 64 桁の 16 進にする",
     "container_name": "コンテナの名前は、英数字とハイフンだけにする",
 }
@@ -375,19 +380,79 @@ def _check_measured(item: str, evidence: Provenance, repo_root: Path, errors: li
         errors.append(f"{item}.measured: 実測の記録のファイルがない: {evidence.measured}")
 
 
-def _check_weights(item: str, weights: WeightsRef, repo_root: Path, errors: list[str]) -> None:
-    """重みの参照を確かめる (検査 3。版の 40 桁は型が見ている)。"""
-    _check_measured(item, weights, repo_root, errors)
-    manifest = weights.manifest
+def _check_manifest_name(
+    item: str, manifest: str, repo_root: Path, errors: list[str]
+) -> Path | None:
+    """マニフェストの名前が、`serving/weights/` の下の実在するファイルを指すか確かめる (検査 3)。
+
+    実在するファイルなら、その道筋を返す。誤りなら `errors` に足して `None` を返す。
+    """
     if manifest != Path(manifest).name:
         errors.append(
-            f"{item}.manifest: {'/'.join(_WEIGHTS_DIR)}/ の下のファイルの名前だけを書く: {manifest}"
+            f"{item}: {'/'.join(_WEIGHTS_DIR)}/ の下のファイルの名前だけを書く: {manifest}"
+        )
+        return None
+    path = repo_root.joinpath(*_WEIGHTS_DIR, manifest)
+    if not path.is_file():
+        errors.append(
+            f"{item}: 重みのマニフェストのファイルがない: {'/'.join(_WEIGHTS_DIR)}/{manifest}"
+        )
+        return None
+    return path
+
+
+def _check_weights(item: str, weights: WeightsRef, repo_root: Path, errors: list[str]) -> None:
+    """Hub の重みの参照を確かめる (検査 3。版の 40 桁は型が見ている)。"""
+    _check_measured(item, weights, repo_root, errors)
+    _check_manifest_name(f"{item}.manifest", weights.manifest, repo_root, errors)
+
+
+def _check_derived_weights(
+    item: str, weights: DerivedWeightsRef, repo_root: Path, errors: list[str]
+) -> None:
+    """派生の重みの参照を確かめる (検査 3)。
+
+    変換の結果のマニフェストの実在と、元の重みのマニフェストの実在と中身を見る。元の
+    重みのマニフェストの中身を見るのは、`origin` (構成に書いた元の参照) が、実際に
+    コミットした元の重みのマニフェストと同じ重みを指すことを、読み込みの時点で保証する
+    ため。関門が見るのは変換の結果のマニフェストの `derivation` だけで、元の重みの
+    マニフェストは読まないので、ここで見なければ、どの入口でも確かめられない。
+    """
+    _check_manifest_name(f"{item}.manifest", weights.manifest, repo_root, errors)
+    origin_path = _check_manifest_name(
+        f"{item}.origin.manifest", weights.origin.manifest, repo_root, errors
+    )
+    if origin_path is not None:
+        _check_origin_manifest(f"{item}.origin.manifest", weights.origin, origin_path, errors)
+
+
+def _check_origin_manifest(
+    item: str, origin: OriginWeightsRef, path: Path, errors: list[str]
+) -> None:
+    """元の重みのマニフェストの中身が、`origin` と同じ Hub の重みのものか確かめる。
+
+    Hub の重みのマニフェストとして読めること、その `repo` と `revision` が `origin` と
+    一致することを見る。派生のマニフェストや `{}` を元のマニフェストとして指す誤りを、
+    読み込みで断る。
+    """
+    shown = f"{'/'.join(_WEIGHTS_DIR)}/{origin.manifest}"
+    try:
+        content = path.read_bytes()
+    except OSError as exc:
+        errors.append(f"{item}: 元の重みのマニフェストを読めない: {shown} ({exc})")
+        return
+    try:
+        manifest = WeightsManifest.model_validate_json(content)
+    except ValidationError as exc:
+        errors.append(
+            f"{item}: 元の重みのマニフェストが、Hub の重みのマニフェストの形でない: {shown}"
+            f" ({exc.error_count()} 件の誤り)"
         )
         return
-    if not repo_root.joinpath(*_WEIGHTS_DIR, manifest).is_file():
+    if manifest.repo != origin.repo or manifest.revision != origin.revision:
         errors.append(
-            f"{item}.manifest: 重みのマニフェストのファイルがない:"
-            f" {'/'.join(_WEIGHTS_DIR)}/{manifest}"
+            f"{item}: 元の重みのマニフェストの中身が、origin と違う。マニフェスト:"
+            f" {manifest.identity}、origin: {origin.repo}@{origin.revision}"
         )
 
 
@@ -628,12 +693,22 @@ def _build_config(
             _check_measured(f"{prefix}.image", image, repo_root, errors)
 
     if candidate.get("weights") is not None:
-        weights = _build(WeightsRef, candidate["weights"], f"{prefix}.weights", errors)
-        if weights is None:
-            candidate["weights"] = _SUBSTITUTE_WEIGHTS
+        raw_weights = candidate["weights"]
+        derived = isinstance(raw_weights, dict) and raw_weights.get("kind") == "derived"
+        if derived:
+            built_derived = _build(DerivedWeightsRef, raw_weights, f"{prefix}.weights", errors)
+            if built_derived is None:
+                candidate["weights"] = _SUBSTITUTE_WEIGHTS
+            else:
+                candidate["weights"] = built_derived
+                _check_derived_weights(f"{prefix}.weights", built_derived, repo_root, errors)
         else:
-            candidate["weights"] = weights
-            _check_weights(f"{prefix}.weights", weights, repo_root, errors)
+            weights = _build(WeightsRef, raw_weights, f"{prefix}.weights", errors)
+            if weights is None:
+                candidate["weights"] = _SUBSTITUTE_WEIGHTS
+            else:
+                candidate["weights"] = weights
+                _check_weights(f"{prefix}.weights", weights, repo_root, errors)
 
     has_speculative_setting = False
     every_setting_built = True

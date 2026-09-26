@@ -222,6 +222,54 @@ VERIFIED = t.VerificationRecord(
     total_bytes=1234 + 5678 + 90,
 )
 
+# --- 派生の重み (手元で変換した重み) --------------------------------------
+
+ORIGIN_REPO = "RedHatAI/GLM-5.3-Flash-NVFP4"
+ORIGIN_MANIFEST = "RedHatAI__GLM-5.3-Flash-NVFP4.manifest.json"
+DERIVED_NAME = "k2s1"
+DERIVED_MANIFEST_NAME = f"{DERIVED_NAME}.manifest.json"
+DERIVED_MOUNT_AT = f"/models/{DERIVED_NAME}"
+DERIVED_TOOL = "experiments/k2-quant/convert.py"
+DERIVED_COMMIT = "a" * 40
+DERIVED_ARGS = ("--dtype", "fp8", "--note", "日本語")
+DERIVED_TARGET = r"^model\.layers\.\d+\.self_attn\..*$"
+DERIVED_IDENTITY = f"derived:{DERIVED_NAME}:{ORIGIN_REPO}@{REVISION}"
+
+CONVERSION = t.ConversionSpec(
+    tool=DERIVED_TOOL,
+    commit=DERIVED_COMMIT,
+    args=DERIVED_ARGS,
+    target_pattern=DERIVED_TARGET,
+)
+WEIGHTS_ORIGIN = t.WeightsOrigin(repo=ORIGIN_REPO, revision=REVISION)
+ORIGIN_WEIGHTS = t.OriginWeightsRef(repo=ORIGIN_REPO, revision=REVISION, manifest=ORIGIN_MANIFEST)
+DERIVATION = t.Derivation(name=DERIVED_NAME, origin=WEIGHTS_ORIGIN, conversion=CONVERSION)
+DERIVED_WEIGHTS = t.DerivedWeightsRef(
+    kind="derived",
+    name=DERIVED_NAME,
+    origin=ORIGIN_WEIGHTS,
+    conversion=CONVERSION,
+    manifest=DERIVED_MANIFEST_NAME,
+    mount_at=DERIVED_MOUNT_AT,
+)
+MANIFEST_FILES_MODEL = t.ManifestFiles(total_bytes=1234 + 5678 + 90, files=MANIFEST_FILES)
+DERIVED_MANIFEST = t.DerivedWeightsManifest(
+    kind="derived",
+    derivation=DERIVATION,
+    generated_at=AT,
+    total_bytes=1234 + 5678 + 90,
+    files=MANIFEST_FILES,
+)
+DERIVED_VERIFIED = t.DerivedVerificationRecord(
+    kind="derived",
+    derivation=DERIVATION,
+    scope="all",
+    node="head",
+    verified_at=AT,
+    file_count=3,
+    total_bytes=1234 + 5678 + 90,
+)
+
 GPU_APP = t.GpuApp(pid=12345, process_name="python3", used_memory_mib=1024)
 NODE_STATUS = t.NodeStatus(
     node="head",
@@ -368,6 +416,14 @@ EXAMPLES: dict[str, BaseModel] = {
     "ManifestFile": MANIFEST_FILES[0],
     "WeightsManifest": MANIFEST,
     "VerificationRecord": VERIFIED,
+    "WeightsOrigin": WEIGHTS_ORIGIN,
+    "OriginWeightsRef": ORIGIN_WEIGHTS,
+    "ConversionSpec": CONVERSION,
+    "Derivation": DERIVATION,
+    "DerivedWeightsRef": DERIVED_WEIGHTS,
+    "ManifestFiles": MANIFEST_FILES_MODEL,
+    "DerivedWeightsManifest": DERIVED_MANIFEST,
+    "DerivedVerificationRecord": DERIVED_VERIFIED,
     "GpuApp": GPU_APP,
     "NodeStatus": NODE_STATUS,
     "ServiceStatus": SERVICE_STATUS,
@@ -581,6 +637,151 @@ def test_weights_ref_requires_a_forty_digit_revision(bad: str) -> None:
             source=SOURCE,
             quote=QUOTE,
         )
+
+
+# --- 派生の重み ---------------------------------------------------------
+
+
+def test_derived_weights_ref_derivation_and_identity() -> None:
+    """構成に書く派生の参照が、元の参照と変換の条件から同一性を導ける。"""
+    assert DERIVED_WEIGHTS.derivation == DERIVATION
+    assert DERIVED_WEIGHTS.derivation.origin == WEIGHTS_ORIGIN
+    assert DERIVED_WEIGHTS.identity == DERIVED_IDENTITY
+
+
+def test_hub_weights_ref_manifest_and_record_identity_are_repo_at_revision() -> None:
+    """Hub の重みの同一性は、いまと同じ `repo@revision` の文字列である。"""
+    assert WEIGHTS.identity == f"{ORIGIN_REPO}@{REVISION}"
+    assert MANIFEST.identity == f"{ORIGIN_REPO}@{REVISION}"
+    assert VERIFIED.identity == f"{ORIGIN_REPO}@{REVISION}"
+
+
+def test_derived_manifest_and_record_expose_the_same_derivation() -> None:
+    """変換の結果のマニフェストと照合の記録が、構成と同じ派生の同一性を持つ。"""
+    assert DERIVED_MANIFEST.derivation == DERIVATION
+    assert DERIVED_MANIFEST.identity == DERIVED_IDENTITY
+    assert DERIVED_VERIFIED.derivation == DERIVATION
+    assert DERIVED_VERIFIED.identity == DERIVED_IDENTITY
+
+
+def test_hub_weights_manifest_json_keys_are_unchanged() -> None:
+    """Hub のマニフェストの外形 (JSON の鍵) を変えない。"""
+    assert set(MANIFEST.model_dump()) == {
+        "repo",
+        "revision",
+        "generated_at",
+        "total_bytes",
+        "files",
+    }
+
+
+def test_hub_weights_ref_and_record_json_keys_are_unchanged() -> None:
+    """Hub の重みの参照と照合の記録にも、派生のための項目 (`kind` など) を足さない。"""
+    assert set(WEIGHTS.model_dump()) == {
+        "repo",
+        "revision",
+        "manifest",
+        "mount_at",
+        "source",
+        "quote",
+        "measured",
+    }
+    assert set(VERIFIED.model_dump()) == {
+        "repo",
+        "revision",
+        "scope",
+        "node",
+        "verified_at",
+        "file_count",
+        "total_bytes",
+        "mismatched",
+    }
+
+
+def test_derived_manifest_keeps_the_same_file_checks_as_the_hub_manifest() -> None:
+    """派生のマニフェストも、並び、合計、probe_files の決まりを同じように受ける。"""
+    assert [entry.path for entry in DERIVED_MANIFEST.probe_files] == [
+        "config.json",
+        "tokenizer.json",
+    ]
+    payload = DERIVED_MANIFEST.model_dump()
+    payload["total_bytes"] = 1
+    with pytest.raises(ValidationError, match="total_bytes"):
+        t.DerivedWeightsManifest.model_validate(payload)
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "RedHatAI__GLM-5.3-Flash-NVFP4",
+        "k2/s1",
+        "-k2",
+        "",
+        "k2 s1",
+        "K2.S1",
+        "k2s1_",
+    ],
+)
+def test_derived_name_is_a_bare_alphanumeric_hyphen_name(bad: str) -> None:
+    """派生の名前は、英数字とハイフンだけにする (Hub の slug と衝突する名前を作らない)。"""
+    payload = DERIVED_WEIGHTS.model_dump()
+    payload["name"] = bad
+    with pytest.raises(ValidationError, match="name"):
+        t.DerivedWeightsRef.model_validate(payload)
+
+
+@pytest.mark.parametrize("bad", ["k2s1", "0" * 39, "0" * 41, "g" * 40, ""])
+def test_derived_conversion_commit_is_forty_hex_digits(bad: str) -> None:
+    """変換に使った道具のコミットは、40 桁の 16 進にする。"""
+    payload = DERIVED_WEIGHTS.model_dump()
+    payload["conversion"]["commit"] = bad
+    with pytest.raises(ValidationError, match="commit"):
+        t.DerivedWeightsRef.model_validate(payload)
+
+
+@pytest.mark.parametrize("bad", ["18d55bfd", "0" * 39, "0" * 41])
+def test_derived_origin_revision_is_forty_hex_digits(bad: str) -> None:
+    """元の重みの版も、40 桁の 16 進にする。"""
+    payload = DERIVED_WEIGHTS.model_dump()
+    payload["origin"]["revision"] = bad
+    with pytest.raises(ValidationError, match="revision"):
+        t.DerivedWeightsRef.model_validate(payload)
+
+
+@pytest.mark.parametrize("bad", ["/abs/convert.py", "../convert.py", "a/../b.py", "a/..", ""])
+def test_derived_conversion_tool_is_a_repo_relative_path(bad: str) -> None:
+    """変換の道具の道筋は、先頭 `/` も `..` も受けない。"""
+    payload = DERIVED_WEIGHTS.model_dump()
+    payload["conversion"]["tool"] = bad
+    with pytest.raises(ValidationError, match="tool"):
+        t.DerivedWeightsRef.model_validate(payload)
+
+
+def test_derived_target_pattern_is_compiled_at_the_boundary() -> None:
+    """対象の正規表現は、読んだ時点でコンパイルできるものだけを通す。"""
+    payload = DERIVED_WEIGHTS.model_dump()
+    payload["conversion"]["target_pattern"] = "("
+    with pytest.raises(ValidationError, match="target_pattern"):
+        t.DerivedWeightsRef.model_validate(payload)
+
+
+@pytest.mark.parametrize("bad_kind", [None, "hub", "", "Derived"])
+def test_derived_ref_kind_must_be_the_explicit_derived_literal(bad_kind: str | None) -> None:
+    """派生の参照は、`kind = "derived"` を明示したものだけを受ける。"""
+    payload = DERIVED_WEIGHTS.model_dump()
+    if bad_kind is None:
+        payload.pop("kind")
+    else:
+        payload["kind"] = bad_kind
+    with pytest.raises(ValidationError, match="kind"):
+        t.DerivedWeightsRef.model_validate(payload)
+
+
+def test_derived_manifest_kind_must_be_the_explicit_derived_literal() -> None:
+    payload = DERIVED_MANIFEST.model_dump()
+    payload["kind"] = None
+    with pytest.raises(ValidationError, match="kind"):
+        t.DerivedWeightsManifest.model_validate(payload)
 
 
 # --- 3.1 構成 -----------------------------------------------------------

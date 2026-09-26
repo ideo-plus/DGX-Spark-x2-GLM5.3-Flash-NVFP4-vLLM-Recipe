@@ -26,6 +26,7 @@
 
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from enum import StrEnum
 from ipaddress import IPv4Address
@@ -41,6 +42,7 @@ from pydantic import (
     NonNegativeInt,
     PositiveInt,
     StrictBool,
+    field_validator,
     model_validator,
 )
 
@@ -241,6 +243,112 @@ class WeightsRef(Provenance):
     manifest: str = Field(min_length=1)
     mount_at: str = Field(min_length=1)
 
+    @property
+    def identity(self) -> str:
+        """Hub の重みの同一性 (入手先と版。現行の `repo@revision` と同じ文字列)。"""
+        return f"{self.repo}@{self.revision}"
+
+
+class WeightsOrigin(_Frozen):
+    """元の重みの同一性 (派生の根拠。requirements 3.4、issue #57 やること 1)。
+
+    「手元で変換した重み」の根拠は、出典 URL ではなく、どの重みを、どの版から取ったかで
+    ある。それを `repo` と 40 桁の `revision` の組で持つ。
+    """
+
+    repo: str = Field(min_length=1)
+    revision: str = Field(pattern=r"^[0-9a-f]{40}$")
+
+
+class OriginWeightsRef(WeightsOrigin):
+    """構成に書く、元の重みの参照 (issue #57 やること 1)。
+
+    `manifest` は元の重みのマニフェストの名前で、`WeightsRef` と同じく
+    `serving/weights/` の下のファイルの名前である。実在するかどうかは `config` が確かめる。
+    """
+
+    manifest: str = Field(min_length=1)
+
+
+class ConversionSpec(_Frozen):
+    """手元で重みを変換したときの条件 (issue #57 やること 1)。
+
+    `tool` はリポジトリの中の相対の道筋、`commit` はその道具の版 (40 桁の 16 進)、
+    `args` は渡した引数、`target_pattern` は変換の対象を選ぶ正規表現である。`tool` の
+    実在は確かめない (コミットで固定した道具は、HEAD に同じ道筋で残るとは限らない)。
+    """
+
+    tool: str = Field(min_length=1)
+    commit: str = Field(pattern=r"^[0-9a-f]{40}$")
+    args: tuple[str, ...] = ()
+    target_pattern: str = Field(min_length=1)
+
+    @field_validator("tool")
+    @classmethod
+    def _check_tool(cls, value: str) -> str:
+        if value.startswith("/") or ".." in Path(value).parts:
+            raise ValueError(f"変換の道具の道筋は、リポジトリの中の相対のパスにする: {value}")
+        return value
+
+    @field_validator("target_pattern")
+    @classmethod
+    def _check_target_pattern(cls, value: str) -> str:
+        try:
+            re.compile(value)
+        except re.error as exc:
+            raise ValueError(f"対象の正規表現をコンパイルできない: {value} ({exc})") from exc
+        return value
+
+
+class Derivation(_Frozen):
+    """派生の重みの同一性 (参照・マニフェスト・照合の記録が共有する。issue #57)。
+
+    名前・元の重み・変換の条件の組で決まる。どれか 1 つでも違えば、別の重みである。
+    """
+
+    name: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9-]*$")
+    origin: WeightsOrigin
+    conversion: ConversionSpec
+
+    @property
+    def identity(self) -> str:
+        return f"derived:{self.name}:{self.origin.repo}@{self.origin.revision}"
+
+
+class DerivedWeightsRef(_Frozen):
+    """手元で変換した重みの参照 (issue #57 やること 1)。
+
+    Hub の `WeightsRef` は入手先と版の組で重みを指すが、手元で作った重みにはそれがない。
+    代わりに、元の重みの参照 (`origin`)、変換の条件 (`conversion`)、変換の結果の
+    マニフェストの名前 (`manifest`)、置き場所 (`mount_at`) を持つ。根拠は元の参照と
+    変換の条件そのものなので、`Provenance` は継承しない。`kind = "derived"` を必須の
+    明示の項目にして、TOML と JSON を自己記述にする (値の有無からは推測しない)。
+    """
+
+    kind: Literal["derived"]
+    name: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9-]*$")
+    origin: OriginWeightsRef
+    conversion: ConversionSpec
+    manifest: str = Field(min_length=1)
+    mount_at: str = Field(min_length=1)
+
+    @property
+    def derivation(self) -> Derivation:
+        """この参照の同一性 (元の参照から `WeightsOrigin` を作って組にする)。"""
+        return Derivation(
+            name=self.name,
+            origin=WeightsOrigin(repo=self.origin.repo, revision=self.origin.revision),
+            conversion=self.conversion,
+        )
+
+    @property
+    def identity(self) -> str:
+        return self.derivation.identity
+
+
+AnyWeightsRef = WeightsRef | DerivedWeightsRef
+"""構成が指せる重みの参照 (Hub か、手元で変換したものか)。"""
+
 
 class ConfigDef(_Frozen):
     """名前の付いた構成の定義 (requirements 3.1)。
@@ -256,7 +364,7 @@ class ConfigDef(_Frozen):
     description: str = Field(min_length=1)
     nodes: tuple[NodeRole, ...] = Field(min_length=1)
     image: ImageRef
-    weights: WeightsRef | None = None
+    weights: AnyWeightsRef | None = None
     docker: dict[str, Setting]
     args: dict[str, Setting]
     env: dict[str, Setting] = Field(default_factory=dict)
@@ -473,16 +581,13 @@ class ManifestFile(_Frozen):
     sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
-class WeightsManifest(_Frozen):
-    """重みのマニフェスト (requirements 3.4、design.md Data Models)。
+class ManifestFiles(_Frozen):
+    """マニフェストのファイルの一覧と合計 (Hub と派生で共有する。issue #57)。
 
-    Mac で作ってコミットしたものが、照合の正解である。`files` は `path` の順に並べ、
-    モデルカード (`README.md`) と `.gitattributes` は載せない。
+    `files` は `path` の順に並べ、モデルカード (`README.md`) と `.gitattributes` は
+    載せない。並びと合計の検証は、派生のマニフェストにも同じように掛かる。
     """
 
-    repo: str = Field(min_length=1)
-    revision: str = Field(pattern=r"^[0-9a-f]{40}$")
-    generated_at: datetime
     total_bytes: NonNegativeInt
     files: tuple[ManifestFile, ...] = Field(min_length=1)
 
@@ -514,6 +619,41 @@ class WeightsManifest(_Frozen):
         return tuple(entry for entry in self.files if not entry.path.endswith(".safetensors"))
 
 
+class WeightsManifest(ManifestFiles):
+    """Hub の重みのマニフェスト (requirements 3.4、design.md Data Models)。
+
+    Mac で作ってコミットしたものが、照合の正解である。
+    """
+
+    repo: str = Field(min_length=1)
+    revision: str = Field(pattern=r"^[0-9a-f]{40}$")
+    generated_at: datetime
+
+    @property
+    def identity(self) -> str:
+        return f"{self.repo}@{self.revision}"
+
+
+class DerivedWeightsManifest(ManifestFiles):
+    """手元で変換した重みのマニフェスト (issue #57 やること 1・2)。
+
+    #56 の道具が書いたものを Mac に写し、`serving/weights/` の下にコミットしたものが、
+    照合の正解である。`kind = "derived"` と、元の重みと変換の条件 (`derivation`) を持つ。
+    """
+
+    kind: Literal["derived"]
+    derivation: Derivation
+    generated_at: datetime
+
+    @property
+    def identity(self) -> str:
+        return self.derivation.identity
+
+
+AnyWeightsManifest = WeightsManifest | DerivedWeightsManifest
+"""読み込んだ重みのマニフェスト (Hub か、手元で変換したものか)。"""
+
+
 class VerificationRecord(_Frozen):
     """2 台での照合の結果の記録 (design.md 「weights」「guards」)。
 
@@ -535,6 +675,40 @@ class VerificationRecord(_Frozen):
     def ok(self) -> bool:
         """合わないファイルが 1 つもなかったかどうか。"""
         return not self.mismatched
+
+    @property
+    def identity(self) -> str:
+        return f"{self.repo}@{self.revision}"
+
+
+class DerivedVerificationRecord(_Frozen):
+    """手元で変換した重みの、2 台での照合の結果の記録 (issue #57 やること 2)。
+
+    `serve verify` が `state/<名前>.derived.verified.json` に書く。Hub の記録とは
+    別の道筋・別の型にして、別の種類の記録を読まないことを構造で保証する。
+    """
+
+    kind: Literal["derived"]
+    derivation: Derivation
+    scope: VerificationScope
+    node: NodeRole
+    verified_at: datetime
+    file_count: NonNegativeInt
+    total_bytes: NonNegativeInt
+    mismatched: tuple[str, ...] = ()
+
+    @property
+    def ok(self) -> bool:
+        """合わないファイルが 1 つもなかったかどうか。"""
+        return not self.mismatched
+
+    @property
+    def identity(self) -> str:
+        return self.derivation.identity
+
+
+AnyVerificationRecord = VerificationRecord | DerivedVerificationRecord
+"""照合の結果の記録 (Hub か、手元で変換したものか)。"""
 
 
 # --- 運転 ---------------------------------------------------------------

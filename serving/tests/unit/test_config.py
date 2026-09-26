@@ -23,13 +23,22 @@ from __future__ import annotations
 import ast
 import inspect
 from collections.abc import Sequence
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import get_args
+from typing import Any, get_args
 
 import pytest
 
 from serving_kit import config as c
-from serving_kit.types import CONFIG_SCHEMA_VERSION, ConfigDef, ConfigKind, NodeDef, NodeRole
+from serving_kit import types as kit_types
+from serving_kit.types import (
+    CONFIG_SCHEMA_VERSION,
+    ConfigDef,
+    ConfigKind,
+    NodeDef,
+    NodeRole,
+    WeightsRef,
+)
 
 # --- 見本の値 (design.md Data Models から) ------------------------------
 
@@ -290,7 +299,7 @@ def test_the_minimal_config_loads(repo: Path) -> None:
     assert config.name == SERVE
     assert config.kind == "serve"
     assert config.nodes == ("head", "worker")
-    assert config.weights is not None
+    assert isinstance(config.weights, WeightsRef)
     assert config.weights.revision == REVISION
     assert config.args["model-path"].flag is None
     assert config.args["port"].is_port is True
@@ -1552,6 +1561,273 @@ def test_a_config_whose_node_has_no_definition_is_refused(repo: Path) -> None:
         c.select_config(configs, SERVE, nodes)
 
     assert "nodes.worker" in str(caught.value)
+
+
+# --- 派生の重みの参照 ---------------------------------------------------
+
+DERIVED = "p2-nope-tp2-full-k2s1"
+DERIVED_NAME = "k2s1"
+DERIVED_MANIFEST = f"{DERIVED_NAME}.manifest.json"
+DERIVED_MOUNT_AT = f"/models/{DERIVED_NAME}"
+ORIGIN_MANIFEST = MANIFEST
+ORIGIN_REPO = "RedHatAI/GLM-5.3-Flash-NVFP4"
+DERIVED_TOOL = "experiments/k2-quant/convert.py"
+DERIVED_COMMIT = "a" * 40
+DERIVED_TARGET = r"^model\.layers\.\d+\.self_attn\..*$"
+
+_ABSENT: object = object()
+"""項目を書かないことを示す印 (`None` は「値を書かない」の意味で使う)。"""
+
+
+def _write_derived_manifest(repo: Path, name: str = DERIVED_NAME) -> None:
+    (repo / "serving" / "weights" / f"{name}.manifest.json").write_text("{}\n", encoding="utf-8")
+
+
+_MANIFEST_FILES = (kit_types.ManifestFile(path="config.json", size=4, sha256="1" * 64),)
+
+
+def _write_origin_manifest(
+    repo: Path, *, origin_repo: str = ORIGIN_REPO, revision: str = REVISION
+) -> None:
+    """元の重み (Hub) のマニフェストを、Hub の重みのマニフェストの中身で置く。
+
+    派生の構成の `origin.manifest` が指すファイルで、`repo` fixture が置く `{}` を上書きする
+    (Hub の構成の試験は `{}` のまま。Hub の構成は、マニフェストの中身を読み込みで見ない)。
+    """
+    manifest = kit_types.WeightsManifest(
+        repo=origin_repo,
+        revision=revision,
+        generated_at=datetime(2026, 9, 22, tzinfo=UTC),
+        total_bytes=4,
+        files=_MANIFEST_FILES,
+    )
+    (repo / "serving" / "weights" / ORIGIN_MANIFEST).write_text(
+        manifest.model_dump_json() + "\n", encoding="utf-8"
+    )
+
+
+def _write_origin_manifest_text(repo: Path, text: str) -> None:
+    """元の重みのマニフェストの中身を、そのままの文字列で置く (形の誤りを作るため)。"""
+    (repo / "serving" / "weights" / ORIGIN_MANIFEST).write_text(text + "\n", encoding="utf-8")
+
+
+def _derived_manifest_text() -> str:
+    """元の参照が `origin` と一致する、派生のマニフェストの JSON。"""
+    derivation = kit_types.Derivation(
+        name=DERIVED_NAME,
+        origin=kit_types.WeightsOrigin(repo=ORIGIN_REPO, revision=REVISION),
+        conversion=kit_types.ConversionSpec(
+            tool=DERIVED_TOOL, commit=DERIVED_COMMIT, target_pattern=DERIVED_TARGET
+        ),
+    )
+    return kit_types.DerivedWeightsManifest(
+        kind="derived",
+        derivation=derivation,
+        generated_at=datetime(2026, 9, 25, tzinfo=UTC),
+        total_bytes=4,
+        files=_MANIFEST_FILES,
+    ).model_dump_json()
+
+
+def _derived_weights(
+    name: str = DERIVED_NAME,
+    *,
+    kind: object = "derived",
+    manifest: object = DERIVED_MANIFEST,
+    origin_manifest: object = ORIGIN_MANIFEST,
+    target_pattern: str = DERIVED_TARGET,
+) -> str:
+    """派生の重みの節を TOML で書く。印 `_ABSENT` の項目は書かない。"""
+    lines = [f"[configs.{DERIVED}.weights]"]
+    if kind is not _ABSENT:
+        lines.append(f'kind = "{kind}"')
+    lines.append(f'name = "{name}"')
+    if manifest is not _ABSENT:
+        lines.append(f'manifest = "{manifest}"')
+    lines.append(f'mount_at = "{DERIVED_MOUNT_AT}"')
+    lines.append("")
+    lines.append(f"[configs.{DERIVED}.weights.origin]")
+    lines.append(f'repo = "{ORIGIN_REPO}"')
+    lines.append(f'revision = "{REVISION}"')
+    if origin_manifest is not _ABSENT:
+        lines.append(f'manifest = "{origin_manifest}"')
+    lines.append("")
+    lines.append(f"[configs.{DERIVED}.weights.conversion]")
+    lines.append(f'tool = "{DERIVED_TOOL}"')
+    lines.append(f'commit = "{DERIVED_COMMIT}"')
+    lines.append('args = ["--dtype", "fp8"]')
+    lines.append(f"target_pattern = {_toml_string(target_pattern)}")
+    return "\n".join(lines) + "\n\n"
+
+
+def _derived_toml(repo: Path, **overrides: Any) -> str:
+    _write_derived_manifest(repo)
+    _write_origin_manifest(repo)
+    return _toml(_config(DERIVED, kind="serve", weights=False), _derived_weights(**overrides))
+
+
+def test_a_derived_weights_config_loads(repo: Path) -> None:
+    """`kind = "derived"` の重みの節が、元の参照と変換の条件ごと読める。"""
+    configs = _load(repo, _derived_toml(repo))
+    weights = configs[DERIVED].weights
+
+    assert isinstance(weights, kit_types.DerivedWeightsRef)
+    assert weights.name == DERIVED_NAME
+    assert weights.manifest == DERIVED_MANIFEST
+    assert weights.mount_at == DERIVED_MOUNT_AT
+    assert weights.origin.repo == ORIGIN_REPO
+    assert weights.origin.revision == REVISION
+    assert weights.origin.manifest == ORIGIN_MANIFEST
+    assert weights.conversion.tool == DERIVED_TOOL
+    assert weights.conversion.commit == DERIVED_COMMIT
+    assert weights.conversion.args == ("--dtype", "fp8")
+    assert weights.conversion.target_pattern == DERIVED_TARGET
+    assert weights.identity == f"derived:{DERIVED_NAME}:{ORIGIN_REPO}@{REVISION}"
+
+
+def test_a_hub_weights_config_still_loads_as_a_hub_ref(repo: Path) -> None:
+    """Hub の重みの節は、いまと同じ経路で `WeightsRef` として読める。"""
+    configs = _load(repo, _toml(_config(SERVE)))
+    weights = configs[SERVE].weights
+
+    assert isinstance(weights, WeightsRef)
+    assert weights.identity == f"RedHatAI/GLM-5.3-Flash-NVFP4@{REVISION}"
+
+
+def test_a_derived_manifest_that_does_not_exist_is_refused(repo: Path) -> None:
+    """変換の結果のマニフェストが無ければ断る (マニフェストの実在の検査)。"""
+    _write_origin_manifest(repo)
+    message = _refuse(
+        repo, _toml(_config(DERIVED, kind="serve", weights=False), _derived_weights())
+    )
+
+    assert f"configs.{DERIVED}.weights.manifest" in message
+
+
+def test_a_derived_origin_manifest_that_does_not_exist_is_refused(repo: Path) -> None:
+    """元の重みのマニフェストが無ければ断る (元の参照の整合)。"""
+    _write_derived_manifest(repo)
+    message = _refuse(
+        repo,
+        _toml(
+            _config(DERIVED, kind="serve", weights=False),
+            _derived_weights(origin_manifest="absent-origin.manifest.json"),
+        ),
+    )
+
+    assert f"configs.{DERIVED}.weights.origin.manifest" in message
+
+
+def test_a_derived_config_whose_origin_manifest_matches_the_origin_loads(repo: Path) -> None:
+    """元の重みのマニフェストが、`origin` と同じ repo・revision の Hub のものなら読める。"""
+    weights = _load(repo, _derived_toml(repo))[DERIVED].weights
+
+    assert isinstance(weights, kit_types.DerivedWeightsRef)
+    assert (weights.origin.repo, weights.origin.revision, weights.origin.manifest) == (
+        ORIGIN_REPO,
+        REVISION,
+        ORIGIN_MANIFEST,
+    )
+
+
+def _origin_manifest_lines(message: str) -> list[str]:
+    """誤りの文のうち、元の重みのマニフェストの項目の行。"""
+    return [
+        line
+        for line in message.splitlines()
+        if line.startswith(f"configs.{DERIVED}.weights.origin.manifest:")
+    ]
+
+
+@pytest.mark.parametrize(
+    ("origin_repo", "revision"),
+    [(ORIGIN_REPO, "c" * 40), ("other-org/Other-Model", REVISION)],
+    ids=["another-revision", "another-repo"],
+)
+def test_a_derived_config_whose_origin_manifest_is_another_weights_is_refused(
+    repo: Path, origin_repo: str, revision: str
+) -> None:
+    """元の重みのマニフェストの repo か revision が `origin` と違えば、両方を示して断る。"""
+    text = _derived_toml(repo)
+    _write_origin_manifest(repo, origin_repo=origin_repo, revision=revision)
+
+    message = _refuse(repo, text)
+
+    lines = _origin_manifest_lines(message)
+    assert len(lines) == 1, message
+    assert f"{origin_repo}@{revision}" in lines[0]
+    assert f"{ORIGIN_REPO}@{REVISION}" in lines[0]
+    assert not any(prose in message for prose in ENGLISH_PROSE)
+
+
+@pytest.mark.parametrize("shape", ["derived-manifest", "empty-object"])
+def test_a_derived_config_whose_origin_manifest_is_not_a_hub_manifest_is_refused(
+    repo: Path, shape: str
+) -> None:
+    """元の重みのマニフェストが、Hub の重みのマニフェストの形でなければ断る。"""
+    text = _derived_toml(repo)
+    _write_origin_manifest_text(
+        repo, _derived_manifest_text() if shape == "derived-manifest" else "{}"
+    )
+
+    message = _refuse(repo, text)
+
+    lines = _origin_manifest_lines(message)
+    assert len(lines) == 1, message
+    assert "Hub の重みのマニフェストの形でない" in lines[0]
+    assert not any(prose in message for prose in ENGLISH_PROSE)
+
+
+def test_a_derived_manifest_without_a_name_is_refused(repo: Path) -> None:
+    """マニフェストの名前を書かなければ断る。"""
+    _write_derived_manifest(repo)
+    _write_origin_manifest(repo)
+    message = _refuse(
+        repo,
+        _toml(
+            _config(DERIVED, kind="serve", weights=False),
+            _derived_weights(manifest=_ABSENT),
+        ),
+    )
+
+    assert f"configs.{DERIVED}.weights.manifest" in message
+
+
+def test_a_derived_manifest_with_a_path_is_refused(repo: Path) -> None:
+    """マニフェストは、`serving/weights/` の下のファイルの名前だけを受ける。"""
+    _write_derived_manifest(repo)
+    _write_origin_manifest(repo)
+    message = _refuse(
+        repo,
+        _toml(
+            _config(DERIVED, kind="serve", weights=False),
+            _derived_weights(manifest="sub/k2s1.manifest.json"),
+        ),
+    )
+
+    assert f"configs.{DERIVED}.weights.manifest" in message
+
+
+@pytest.mark.parametrize("name", ["RedHatAI__GLM-5.3-Flash-NVFP4", "k2/s1", "-k2"])
+def test_a_derived_name_that_is_not_a_bare_name_is_refused(repo: Path, name: str) -> None:
+    """Hub の slug や道筋と衝突する名前 (`_`、`.`、`/`、先頭の `-`) は断る。"""
+    message = _refuse(repo, _derived_toml(repo, name=name))
+
+    assert f"configs.{DERIVED}.weights.name" in message
+
+
+def test_a_derived_target_pattern_that_does_not_compile_is_refused(repo: Path) -> None:
+    """コンパイルできない正規表現は、読んだ時点で断る。"""
+    message = _refuse(repo, _derived_toml(repo, target_pattern="("))
+
+    assert f"configs.{DERIVED}.weights.conversion.target_pattern" in message
+
+
+def test_a_derived_weights_config_without_the_kind_is_refused(repo: Path) -> None:
+    """`kind` がなければ、派生として読めないので断る。"""
+    message = _refuse(repo, _derived_toml(repo, kind=_ABSENT))
+
+    assert f"configs.{DERIVED}.weights" in message
 
 
 # --- 依存の向き ---------------------------------------------------------
