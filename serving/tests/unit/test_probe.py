@@ -393,7 +393,7 @@ class ProbeScript:
             (
                 Rule(prefix=("uname",), replies=(Reply(stdout="spark-153d\n"),)),
                 Rule(prefix=("nvidia-smi",), replies=(Reply(stdout=self.gpu_apps),)),
-                Rule(prefix=("test", "-d"), replies=(Reply(exit_code=0 if self.layout_ok else 1),)),
+                Rule(prefix=("test", "-e"), replies=(Reply(exit_code=0 if self.layout_ok else 1),)),
                 Rule(prefix=("docker", "image", "inspect"), replies=(Reply(stdout=self.digests),)),
                 Rule(prefix=("df",), replies=(Reply(stdout=self.avail),)),
                 Rule(prefix=("ss",), replies=(Reply(stdout=self.listening),)),

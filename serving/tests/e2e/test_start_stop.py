@@ -279,7 +279,7 @@ def passing_gate_rules(role: NodeRole) -> tuple[Rule, ...]:
     return (
         Rule(prefix=("uname",), node=role, replies=(Reply(stdout="e2e-host\n"),)),
         Rule(prefix=("nvidia-smi",), node=role, replies=(Reply(stdout=""),)),
-        Rule(prefix=("test", "-d"), node=role, replies=(Reply(exit_code=0),)),
+        Rule(prefix=("test", "-e"), node=role, replies=(Reply(exit_code=0),)),
         Rule(
             prefix=("docker", "image", "inspect"),
             node=role,

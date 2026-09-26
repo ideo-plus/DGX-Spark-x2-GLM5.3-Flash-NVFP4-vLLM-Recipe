@@ -1179,7 +1179,7 @@ def gate_rules(*, listing: Mapping[NodeRole, str] | None = None) -> tuple[Rule, 
         (
             Rule(prefix=("uname",), replies=(Reply(stdout="spark-153d\n"),)),
             Rule(prefix=("nvidia-smi",), replies=(Reply(stdout=""),)),
-            Rule(prefix=("test", "-d"), replies=(Reply(),)),
+            Rule(prefix=("test", "-e"), replies=(Reply(),)),
             Rule(
                 prefix=("docker", "image", "inspect"),
                 replies=(Reply(stdout=json.dumps([IMAGE_REF])),),

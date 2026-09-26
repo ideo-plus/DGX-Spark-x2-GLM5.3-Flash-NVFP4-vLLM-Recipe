@@ -455,7 +455,7 @@ def gate_rules(
         (
             Rule(prefix=("uname",), replies=(Reply(stdout="e2e-host\n"),)),
             Rule(prefix=("nvidia-smi",), replies=(Reply(stdout=""),)),
-            Rule(prefix=("test", "-d"), replies=(Reply(exit_code=0 if layout_ok else 1),)),
+            Rule(prefix=("test", "-e"), replies=(Reply(exit_code=0 if layout_ok else 1),)),
             Rule(
                 prefix=("docker", "image", "inspect"),
                 replies=(Reply(stdout=json.dumps(list(digests)) + "\n"),),

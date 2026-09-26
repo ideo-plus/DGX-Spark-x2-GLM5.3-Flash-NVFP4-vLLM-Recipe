@@ -1,0 +1,58 @@
+--- a/vllm/models/glm5next/common/model.py
++++ b/vllm/models/glm5next/common/model.py
+@@ -327,7 +327,9 @@
+                 kv_lora_rank=config.kv_lora_rank,
+                 max_position_embeddings=config.max_position_embeddings,
+                 cache_config=cache_config,
+-                quant_config=None,  # MLA projections are BF16 in checkpoint
++                # The checkpoint's quantization config selects which MLA
++                # projections are quantized; BF16 ones stay BF16 via `ignore`.
++                quant_config=quant_config,
+                 prefix=f"{prefix}.self_attn",
+                 topk_indices_buffer=topk_indices_buffer,
+                 skip_rope=config.mla_nope,
+@@ -1042,9 +1044,12 @@
+     # per-layer quant-scheme resolution. The identity ``gate_up_proj`` entry
+     # inherited from ``Glm4vForConditionalGeneration`` (pre-fused gate_up_proj)
+     # would otherwise route the module to ``global_quant_config`` and mismatch
+-    # at load for mixed-precision Quark checkpoints.
++    # at load for mixed-precision Quark checkpoints. Likewise, the MLA
++    # ``fused_qkv_a_proj`` must expand to the checkpoint's ``q_a_proj`` and
++    # ``kv_a_proj_with_mqa`` so ``ignore`` / ``targets`` match its shards.
+     packed_modules_mapping = {
+         "gate_up_proj": ["gate_proj", "up_proj"],
++        "fused_qkv_a_proj": ["q_a_proj", "kv_a_proj_with_mqa"],
+     }
+ 
+     # NOTE: weight-prefix mapping is inherited from Glm4vForConditionalGeneration
+@@ -1255,11 +1260,14 @@
+     """Dequantize FP8 q_a_proj / kv_a_proj_with_mqa / o_proj to BF16 on load.
+ 
+     The FP8 checkpoint stores these as block-FP8 (weight + weight_scale_inv),
+-    but the model holds them in BF16 (``fused_qkv_a_proj`` is always BF16 via
+-    DeepSeekV2FusedQkvAProjLinear; ``o_proj`` is excluded by
++    but the model holds them in BF16 (``fused_qkv_a_proj``
++    (DeepSeekV2FusedQkvAProjLinear) is BF16 unless the quantization config
++    quantizes it; ``o_proj`` is excluded by
+     modules_to_not_convert). When the model target is BF16 (no
+     ``weight_scale_inv`` param) we dequantize; otherwise we return False so the
+-    normal stacked/direct path loads the FP8 tensor as-is.
++    normal stacked/direct path loads the FP8 tensor as-is. The same holds when
++    the model holds the projection as W8A16 FP8 (per-channel), which registers a
++    ``weight_scale`` param instead of ``weight_scale_inv``.
+     """
+     matched = None
+     for suffix, info in _FP8_ATTN_PROJS.items():
+@@ -1280,8 +1288,11 @@
+     target_w = f"{layer_prefix}.{target_base}.weight"
+     target_s = f"{layer_prefix}.{target_base}.weight_scale_inv"
+     # If the model actually kept this projection in FP8, let the normal path
+-    # handle it (it has a weight_scale_inv param).
++    # handle it (it has a weight_scale_inv param, or a weight_scale param for
++    # W8A16 FP8).
+     if target_s in params_dict:
++        return False
++    if f"{layer_prefix}.{target_base}.weight_scale" in params_dict:
+         return False
+ 
+     entry = buf.setdefault(layer_prefix, {}).setdefault(key, {})
