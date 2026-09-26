@@ -400,7 +400,7 @@ def load_derived_manifest(path: Path) -> dict[str, Any]:
     except (OSError, json.JSONDecodeError) as exc:
         raise ValueError(f"派生のマニフェストを読めない: {path} ({exc})") from exc
     if not isinstance(data, dict) or data.get("kind") != "derived":
-        raise ValueError(f"派生のマニフェストでない (kind = \"derived\" が要る): {path}")
+        raise ValueError(f'派生のマニフェストでない (kind = "derived" が要る): {path}')
     derivation = data.get("derivation")
     if not isinstance(derivation, dict):
         raise ValueError(f"派生のマニフェストに derivation がない: {path}")
@@ -526,7 +526,7 @@ def _derived_weights_section(name: str, derived: DerivedWeights) -> str:
         'kind = "derived"\n'
         f"name = {json.dumps(derived.name)}\n"
         f"manifest = {json.dumps(derived.manifest)}\n"
-        f'mount_at = {json.dumps(f"/models/{derived.name}")}\n'
+        f"mount_at = {json.dumps(f'/models/{derived.name}')}\n"
         "\n"
         f"[configs.{name}.weights.origin]\n"
         f"repo = {json.dumps(derived.origin_repo)}\n"
