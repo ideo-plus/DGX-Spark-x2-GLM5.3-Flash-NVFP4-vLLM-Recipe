@@ -1,0 +1,38 @@
+[project]
+name = "k2-quant"
+version = "0.1.0"
+description = "K2 第 1 段: 共有の専門家・dense・lm_head を FP8 (重みだけ、チャネルごと) にする変換の道具"
+requires-python = ">=3.12"
+dependencies = ["torch~=2.13.0", "numpy~=2.5"]
+
+[dependency-groups]
+dev = [
+    "pytest~=9.1.1",
+    "ruff~=0.16.8",
+    "mypy~=2.3.1",
+    "safetensors~=0.8.0",
+]
+
+[tool.uv]
+package = false
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = [".", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.ruff.format]
+quote-style = "double"
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+files = ["k2_quant", "tests"]
+mypy_path = "tests"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = [".", "tests"]
