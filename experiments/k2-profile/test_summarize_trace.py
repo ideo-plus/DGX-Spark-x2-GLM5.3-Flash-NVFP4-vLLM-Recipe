@@ -1,9 +1,13 @@
-"""torch プロファイラーの trace を集計する道具 (`summarize_trace.py`) の試験 (C5、C6)。
+"""torch プロファイラーの trace を集計する道具 (`summarize_trace.py`) の試験。
 
 確かめること:
 
+- 実機のカーネル名が、8 区分 (MoE 専門家 GEMM・MoE 周辺・BF16 重み GEMV/GEMM・
+  アテンション本体・mHC・NCCL・その他・カーネルのない隙間) の期待の区分に入る
 - カーネル名 → 区分の対応 (`CATEGORY_RULES`) が 1 か所にあり、当たらない名前は `other` に
-  入る (C6)
+  入る
+- 区分の規則の区分キーがすべて `CATEGORY_LABELS` にあり、出力の区分の表の 1 列目が
+  8 ラベルを issue の順に持つ
 - GPU の展開されたイベント (`ph == "X"` かつ `cat` が GPU のもの) だけを数え、`cpu_op` /
   `cuda_runtime` / `M` / `f` と、`dur` のないイベントは数えない。最上位が配列の形と
   `{"traceEvents": …}` の形で同じ結果になる (C5、SCN-C5-N1)
@@ -76,19 +80,74 @@ def _write_plain(path: Path, trace: Any) -> Path:
 @pytest.mark.parametrize(
     ("name", "expected"),
     [
-        pytest.param("nvjet_bf16_gemm", "other_gemm", id="other-gemm"),
+        pytest.param(
+            "cutlass::gemm::kernel::GemmUniversal<GroupProblemShape,"
+            " MainloopSm120ArrayTmaWarpSpecializedBlockScaled>",
+            "moe_gemm",
+            id="moe-gemm-group-problem-shape",
+        ),
+        pytest.param(
+            "tensorrt_llm::kernels::cutlass_kernels::expandInputRowsKernel",
+            "moe_aux",
+            id="moe-aux-expand-input-rows",
+        ),
+        pytest.param(
+            "tensorrt_llm::kernels::cutlass_kernels::finalizeMoeRoutingKernel",
+            "moe_aux",
+            id="moe-aux-finalize-moe-routing",
+        ),
+        pytest.param(
+            "tensorrt_llm::kernels::cutlass_kernels::fusedBuildExpertMapsSortFirstTokenKernel",
+            "moe_aux",
+            id="moe-aux-build-expert-maps",
+        ),
+        pytest.param(
+            "tensorrt_llm::kernels::cutlass_kernels::computeStridesTmaWarpSpecializedKernel",
+            "moe_aux",
+            id="moe-aux-compute-strides",
+        ),
+        pytest.param(
+            "tensorrt_llm::kernels::cutlass_kernels::doActivationKernel",
+            "moe_aux",
+            id="moe-aux-do-activation",
+        ),
+        pytest.param("vllm::moe::single_group_topk", "moe_aux", id="moe-aux-single-group-topk"),
+        pytest.param("vllm::cvt_fp16_to_fp4", "moe_aux", id="moe-aux-cvt-fp16-to-fp4"),
+        pytest.param(
+            "internal::gemvx::kernel<int, int, __nv_bfloat16, __nv_bfloat16, ...>",
+            "weight_gemm",
+            id="weight-gemm-gemvx",
+        ),
+        pytest.param("gemvNSP_bfloat16", "weight_gemm", id="weight-gemm-gemv-nsp"),
+        pytest.param(
+            "cutlass_80_wmma_tensorop_bf16_s161616gemm",
+            "weight_gemm",
+            id="weight-gemm-cutlass-80-wmma",
+        ),
+        pytest.param("nvjet_bf16_gemm", "weight_gemm", id="weight-gemm-nvjet"),
+        pytest.param(
+            "fused_recurrent_gated_delta_rule_fwd_kernel",
+            "attention",
+            id="attention-gated-delta-rule",
+        ),
+        pytest.param(
+            "flashinfer::sparse_mla_sm120::sparse_mla_decode_dsv3_2_kernel",
+            "attention",
+            id="attention-sparse-mla",
+        ),
+        pytest.param("_causal_conv1d_update_kernel", "attention", id="attention-causal-conv1d"),
+        pytest.param("_kpool_update_kernel", "attention", id="attention-kpool"),
+        pytest.param("persistent_topk_kernel", "attention", id="attention-persistent-topk"),
+        pytest.param("_fwht_quant_kernel", "attention", id="attention-fwht"),
+        pytest.param("mhc_post_tilelang_kernel", "mhc", id="mhc"),
         pytest.param("ncclDevKernel_AllReduce_Sum_bf16_RING_LL", "nccl", id="nccl"),
-        pytest.param("paged_attention_v1", "attention", id="attention"),
-        pytest.param("fused_moe_kernel", "moe_gemm", id="moe-gemm"),
-        pytest.param("moe_gemm_kernel", "moe_gemm", id="moe-word-then-gemm-word"),
-        pytest.param("cutlass_moe_kernel", "moe_gemm", id="gemm-word-then-moe-word"),
-        pytest.param("grouped_gemm_kernel", "moe_gemm", id="grouped-gemm"),
     ],
 )
 def test_classify_puts_known_kernels_in_their_category(name: str, expected: str) -> None:
-    """代表的なカーネルが、それぞれの区分になる。
+    """実機のカーネル名が、それぞれの期待の区分になる。
 
-    MoE の語と GEMM の語を両方含む名前は、語の並びの順によらず `moe_gemm` になる (C6)。
+    同じ `cutlass`・`TmaWarpSpecialized`・`topk` の字面を含んでも、MoE 周辺のカーネルは
+    `moe_aux`、BF16 の GEMM は `weight_gemm`、MoE の topk は `moe_aux` になる。
     """
     assert summarize_trace.classify(name) == expected
 
@@ -99,7 +158,7 @@ def test_classify_sends_unknown_names_to_other() -> None:
 
 
 def test_classify_keeps_moe_only_names_out_of_moe_gemm() -> None:
-    """MoE の語だけで GEMM の語を含まない名前は、`moe_gemm` にも `other_gemm` にも入らない (C6)。"""
+    """MoE の語だけで GEMM の語を含まない名前は、`moe_gemm` にも `weight_gemm` にも入らない。"""
     assert summarize_trace.classify("moe_align_block_size_kernel") == summarize_trace.OTHER
 
 
@@ -126,6 +185,13 @@ def test_the_category_rules_live_in_one_table() -> None:
     definitions = [node for node in tree.body if _assigned_name(node) == "CATEGORY_RULES"]
 
     assert len(definitions) == 1, "名前 → 区分の表が 1 か所にない"
+
+
+def test_every_rule_category_has_a_label() -> None:
+    """規則の区分キーが、すべて `CATEGORY_LABELS` にある (集計の初期化で落ちない)。"""
+    rule_categories = {category for category, _ in summarize_trace.CATEGORY_RULES}
+
+    assert rule_categories <= set(summarize_trace.CATEGORY_LABELS)
 
 
 # --- C5: GPU イベントの取り出し -------------------------------------------
@@ -162,13 +228,13 @@ def test_summarize_is_the_same_for_the_dict_and_array_shapes() -> None:
 # --- C5: 区分ごとの時間 ---------------------------------------------------
 
 
-def test_summarize_counts_a_kernel_in_other_gemm() -> None:
-    """`nvjet_bf16_gemm` が `other_gemm` に 40 µs として入る (SCN-C5-P1)。"""
+def test_summarize_counts_a_kernel_in_weight_gemm() -> None:
+    """`nvjet_bf16_gemm` が `weight_gemm` に 40 µs として入る (SCN-C5-P1)。"""
     events = summarize_trace.gpu_events(_trace(_event("nvjet_bf16_gemm", 100, 40)))
 
     summary = summarize_trace.summarize(events, steps=1)
 
-    assert summary.category_us["other_gemm"] == 40
+    assert summary.category_us["weight_gemm"] == 40
     assert summary.wall_us == 40
     assert summary.busy_us == 40
     assert summary.gap_us == 0
@@ -298,10 +364,10 @@ def test_main_prints_categories_averages_ratios_and_top_kernels(
 ) -> None:
     """区分ごとの合計・1 ステップの平均・割合と、上位のカーネルと `other` の上位を出す (C5)。
 
-    合成の trace は、NCCL 1,000・その他 GEMM 5,000・アテンション本体 1,000・その他 2,000 ms を、
-    間に 1,000 ms の隙間を挟んで並べたもの。`--steps 5` なので、wall は 10,000 ms、busy は
-    9,000 ms、隙間は 1,000 ms になる。割合は wall を分母にする (busy を分母にすると
-    その他 GEMM は 55.556 になり、この試験で区別できる)。
+    合成の trace は、NCCL 1,000・BF16 重み GEMV/GEMM 5,000・アテンション本体 1,000・
+    その他 2,000 ms を、間に 1,000 ms の隙間を挟んで並べたもの。`--steps 5` なので、wall は
+    10,000 ms、busy は 9,000 ms、隙間は 1,000 ms になる。割合は wall を分母にする (busy を
+    分母にすると BF16 重み GEMV/GEMM は 55.556 になり、この試験で区別できる)。
     """
     path = _write_plain(
         tmp_path / "trace.json",
@@ -323,7 +389,7 @@ def test_main_prints_categories_averages_ratios_and_top_kernels(
         [1000.0, 200.0, 10.0]
     )
     assert _numbers(
-        _category_row(out, summarize_trace.CATEGORY_LABELS["other_gemm"])
+        _category_row(out, summarize_trace.CATEGORY_LABELS["weight_gemm"])
     ) == pytest.approx([5000.0, 1000.0, 50.0])
     assert _numbers(
         _category_row(out, summarize_trace.CATEGORY_LABELS["attention"])
@@ -349,13 +415,51 @@ def test_main_prints_categories_averages_ratios_and_top_kernels(
     assert "nvjet_bf16_gemm" not in other_section
 
 
+def test_main_lists_the_eight_categories_in_order(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """区分の表の 1 列目が、issue の 8 区分の名前をこの順に持つ。
+
+    8 区分は MoE 専門家 GEMM・MoE 周辺・BF16 重み GEMV/GEMM・アテンション本体・mHC・
+    NCCL・その他・カーネルのない隙間である。規則の区分キーが 1 つでもラベルに無ければ
+    集計は落ちるので、8 行がそろって出ることと合わせて固定する。
+    """
+    path = _write_plain(
+        tmp_path / "trace.json",
+        _trace(
+            _event("cutlass::gemm::kernel::GemmUniversal<GroupProblemShape>", 0, 1),
+            _event("tensorrt_llm::kernels::cutlass_kernels::doActivationKernel", 2, 1),
+            _event("nvjet_bf16_gemm", 4, 1),
+            _event("paged_attention_v1", 6, 1),
+            _event("mhc_post_tilelang_kernel", 8, 1),
+            _event("ncclDevKernel_AllReduce_Sum_bf16_RING_LL", 10, 1),
+            _event("mystery_kernel_xyz", 12, 1),
+        ),
+    )
+
+    assert summarize_trace.main(["--steps", "1", str(path)]) == 0
+    out = capsys.readouterr().out
+
+    labels = [row[0] for row in _table_rows(_section(out, "## 区分ごとの時間")) if row[0] != "区分"]
+    assert labels == [
+        "MoE 専門家 GEMM",
+        "MoE 周辺",
+        "BF16 重み GEMV/GEMM",
+        "アテンション本体",
+        "mHC",
+        "NCCL",
+        "その他",
+        "カーネルのない隙間",
+    ]
+
+
 def test_main_prints_top_kernel_rows_and_cuts_each_list_by_top(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """上位の一覧の行 (名前・区分・回数・合計) を出し、`--top` で 2 つの一覧をそれぞれ切る (C5)。
 
-    合成の trace は、その他 GEMM の `nvjet_bf16_gemm` を 2 回 (3,000 + 2,000 ms)、未分類の
-    2 つのカーネルを 1,000 ms と 500 ms で並べたもの。`--top 1` なので、全体の上位は
+    合成の trace は、BF16 重み GEMV/GEMM の `nvjet_bf16_gemm` を 2 回 (3,000 + 2,000 ms)、
+    未分類の 2 つのカーネルを 1,000 ms と 500 ms で並べたもの。`--top 1` なので、全体の上位は
     `nvjet_bf16_gemm` だけになる。それでも「その他」の上位には、全体の切り詰めとは別に、
     未分類のうち合計が最大のカーネルが残る (切り詰めの後に「その他」を選ぶと、空になる)。
     """
@@ -376,7 +480,7 @@ def test_main_prints_top_kernel_rows_and_cuts_each_list_by_top(
 
     top_rows = [row for row in _table_rows(_section(out, "## 上位のカーネル")) if row[0] != "名前"]
     assert top_rows == [
-        ["nvjet_bf16_gemm", summarize_trace.CATEGORY_LABELS["other_gemm"], "2", "5000.000"]
+        ["nvjet_bf16_gemm", summarize_trace.CATEGORY_LABELS["weight_gemm"], "2", "5000.000"]
     ]
 
     other_section = _section(

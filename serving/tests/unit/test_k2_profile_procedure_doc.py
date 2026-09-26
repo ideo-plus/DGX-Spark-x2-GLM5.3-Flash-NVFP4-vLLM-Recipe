@@ -12,9 +12,13 @@
    `vllm:iteration_tokens_total_count` の増分を `--steps` に渡す、という印がある
 5. 回収 (`serve logs` と `logs/torch-profile` と `.pt.trace.json.gz`) と、集計
    (`summarize_trace.py`)、本文が入らないことの確認 (`zgrep`) の印がある
-6. 状態を変える塊に ⚠ の印がある
-7. 使う `serve <サブコマンド>` が、すべて `cli.build_parser()` に実在する
-8. 相対リンクの道筋が、すべて実在する
+6. head の worker の OOM (`OOM` と `VLLM::Worker_TP`) と、worker の trace だけで読む読み方、
+   `--profiler-config` の 2 つの `false` (`"torch_profiler_with_stack":false` と
+   `"torch_profiler_dump_cuda_time_total":false`)、8 区分のうち `mHC`、日本語の語の選び方の
+   `ロケール` の注意の印がある
+7. 状態を変える塊に ⚠ の印がある
+8. 使う `serve <サブコマンド>` が、すべて `cli.build_parser()` に実在する
+9. 相対リンクの道筋が、すべて実在する
 
 RED: 文書がなければ、`_read_text` で `pytest.fail` する。
 """
@@ -68,6 +72,13 @@ REQUIRED_MARKERS: Final[tuple[str, ...]] = (
     "summarize_trace.py",
     "zgrep",
     "⚠",
+    '"torch_profiler_with_stack":false',
+    '"torch_profiler_dump_cuda_time_total":false',
+    "OOM",
+    "VLLM::Worker_TP",
+    "worker の trace だけ",
+    "ロケール",
+    "mHC",
 )
 """手順書に必要な印 (C7)。"""
 
@@ -101,7 +112,7 @@ def test_the_procedure_states_the_write_nothing_rule_up_front() -> None:
     assert not missing, f"「書かないこと」の決まりに欠けている項目 {missing}: {DOC_PATH}"
 
 
-# --- 2〜6. 必要な印 ---------------------------------------------------------
+# --- 2〜7. 必要な印 ---------------------------------------------------------
 
 
 @pytest.mark.parametrize("marker", REQUIRED_MARKERS)
@@ -110,7 +121,7 @@ def test_the_procedure_mentions_the_required_marker(marker: str) -> None:
     assert marker in _read_text(DOC_PATH)
 
 
-# --- 7. serve のサブコマンドの実在 ----------------------------------------
+# --- 8. serve のサブコマンドの実在 ----------------------------------------
 
 
 _SERVE_CALL: Final[re.Pattern[str]] = re.compile(r"\bserve +([a-z][a-z-]*)(?![\w-])")
@@ -135,7 +146,7 @@ def test_every_serve_command_in_the_procedure_exists() -> None:
     assert not sorted(used - set(top)), f"実在しないサブコマンド: {sorted(used - set(top))}"
 
 
-# --- 8. 相対リンクの実在 --------------------------------------------------
+# --- 9. 相対リンクの実在 --------------------------------------------------
 
 
 _MARKDOWN_LINK: Final[re.Pattern[str]] = re.compile(r"\[[^\]]*\]\(([^)]+)\)")
