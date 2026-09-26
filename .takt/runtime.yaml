@@ -13,9 +13,13 @@ companion:
 provider:
   defaults: { profile: t2 }
   profiles:
-    # T0: Flash 級。2026-09-24 から DeepSeek V4.1 Flash を試している (計測者の指示)
-    t0-test-code:       { provider: opencode, model: opencode-go/deepseek-v4.1-flash }  # write_tests
-    t0-production-code: { provider: opencode, model: opencode-go/deepseek-v4.1-flash }  # implement
+    # T0: Flash 級。2026-09-24 から DeepSeek V4.1 Flash を試していたが、2026-09-26 に takt の中で
+    # `Bad Request: {"model":"deepseek-v4.1-flash"}` がステップごとに続いた (単体の opencode run は通る。
+    # 原因は未確認)。計測者の判断で、当面は Sonnet にする。原因が分かったら下のコメントの行に戻す
+    # t0-test-code:       { provider: opencode, model: opencode-go/deepseek-v4.1-flash }  # write_tests
+    # t0-production-code: { provider: opencode, model: opencode-go/deepseek-v4.1-flash }  # implement
+    t0-test-code:       { provider: claude, model: claude-sonnet-5 }  # write_tests
+    t0-production-code: { provider: claude, model: claude-sonnet-5 }  # implement
     # T1: 構造化出力に対応した provider が要る (selector / companion で使う)
     t1: { provider: claude, model: claude-sonnet-5 }
     # T2: defaults。T3 と T0/T1 の指定に当たらない step
