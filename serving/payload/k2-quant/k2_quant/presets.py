@@ -30,7 +30,7 @@ MLA_LAYER_TYPE: Final = "deepseek_sparse_attention"
 KDA_LAYER_TYPE: Final = "linear_attention"
 
 MLA_PROJECTIONS: Final[tuple[str, ...]] = ("q_a_proj", "kv_a_proj_with_mqa", "q_b_proj", "o_proj")
-KDA_UNMERGED_PROJECTIONS: Final[tuple[str, ...]] = ("o_proj", "forget_gate.f_b_proj", "g_b_proj")
+KDA_UNMERGED_PROJECTIONS: Final[tuple[str, ...]] = ("o_proj", "f_b_proj", "g_b_proj")
 LM_HEAD_PATTERN: Final = r"(?:.*\.)?lm_head$"
 
 

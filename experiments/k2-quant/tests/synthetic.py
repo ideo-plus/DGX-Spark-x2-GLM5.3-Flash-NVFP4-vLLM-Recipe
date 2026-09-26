@@ -15,7 +15,9 @@
 
 第 2a 段の合成 checkpoint (`build_stage2_checkpoint`) は、KDA の層 0 と MLA の層 3、`lm_head`、
 `layer_types` に載らない層 45 (MTP) を持ち、`config.json` に `text_config.layer_types` を持つ。
-同じ字面 (`o_proj`、`gate_proj`) が、層種や親の名前によって対象・非対象に分かれる。
+同じ字面 (`o_proj`、`gate_proj`) が、層種や親の名前によって対象・非対象に分かれる。KDA の gate
+(`f_a_proj`・`f_b_proj`) は、実機と同じく、テンソル名が `self_attn.f_a_proj.weight` の形
+(`forget_gate.` なし) で、`ignore` の名前だけが `self_attn.forget_gate.f_a_proj` の形になる (#76)。
 
 書き込みは `safetensors.torch.save_file` (参照実装) で行う。
 """
@@ -108,7 +110,7 @@ STAGE2A_TARGET_MODULES: tuple[str, ...] = (
     f"{_MLA_LAYER}.self_attn.o_proj",
     # 第 2a 段の KDA のまとめていない射影 (層 0)
     f"{_KDA_LAYER}.self_attn.o_proj",
-    f"{_KDA_LAYER}.self_attn.forget_gate.f_b_proj",
+    f"{_KDA_LAYER}.self_attn.f_b_proj",
     f"{_KDA_LAYER}.self_attn.g_b_proj",
     # lm_head
     "lm_head",
@@ -129,7 +131,7 @@ STAGE2_UNTOUCHED_MODULES: tuple[str, ...] = (
     f"{_KDA_LAYER}.self_attn.k_proj",
     f"{_KDA_LAYER}.self_attn.v_proj",
     f"{_KDA_LAYER}.self_attn.b_proj",
-    f"{_KDA_LAYER}.self_attn.forget_gate.f_a_proj",
+    f"{_KDA_LAYER}.self_attn.f_a_proj",
     f"{_KDA_LAYER}.self_attn.g_a_proj",
     # MLA の kv_b_proj と indexer
     f"{_MLA_LAYER}.self_attn.kv_b_proj",
@@ -143,9 +145,25 @@ STAGE2_UNTOUCHED_MODULES: tuple[str, ...] = (
 """第 2a 段の選び方が拾わないモジュール名。同じ字面 (`o_proj`) が層種によって対象・非対象に
 分かれるので、層 45 の `o_proj` を含める。"""
 
-STAGE2_IGNORE_NAMES: tuple[str, ...] = STAGE2A_TARGET_MODULES + STAGE2_UNTOUCHED_MODULES
+STAGE2_KDA_GATE_IGNORE_NAMES: Mapping[str, str] = {
+    f"{_KDA_LAYER}.self_attn.f_a_proj": f"{_KDA_LAYER}.self_attn.forget_gate.f_a_proj",
+    f"{_KDA_LAYER}.self_attn.f_b_proj": f"{_KDA_LAYER}.self_attn.forget_gate.f_b_proj",
+}
+"""実機の `config.json` の `ignore` は、KDA の gate を `self_attn.forget_gate.f_a_proj` の形で持ち、
+テンソル名 (`self_attn.f_a_proj.weight`) と違う (#76)。テンソル名の形のモジュール名から、`ignore` に
+置く名前へ写す。"""
+
+
+def stage2_ignore_name(module: str) -> str:
+    """第 2a 段の合成 checkpoint の `ignore` に置く名前。KDA の gate だけ `forget_gate.` 付き。"""
+    return STAGE2_KDA_GATE_IGNORE_NAMES.get(module, module)
+
+
+STAGE2_IGNORE_NAMES: tuple[str, ...] = tuple(
+    stage2_ignore_name(module) for module in STAGE2A_TARGET_MODULES + STAGE2_UNTOUCHED_MODULES
+)
 """第 2a 段の合成 checkpoint の `config.json` の `ignore` に置く名前 (変換の前は、BF16 の
-モジュールがすべて `ignore` にある)。"""
+モジュールがすべて `ignore` にある)。KDA の gate だけ、テンソル名と違う形になる。"""
 
 STAGE2_EXPERT_MODULE: str = f"{_MLA_LAYER}.mlp.experts.0.gate_proj"
 """層 3 の専門家 (NVFP4)。`weight_packed`・`weight_scale`・`weight_global_scale` だけを持ち、
@@ -312,8 +330,8 @@ def _stage2_shard_tensors() -> dict[str, dict[str, torch.Tensor]]:
             f"{kda}.k_proj.weight": _matrix(4, 4, seed=22),
             f"{kda}.v_proj.weight": _matrix(4, 4, seed=23),
             f"{kda}.b_proj.weight": _matrix(2, 4, seed=24),
-            f"{kda}.forget_gate.f_a_proj.weight": _matrix(2, 4, seed=25),
-            f"{kda}.forget_gate.f_b_proj.weight": _matrix(4, 2, seed=26),
+            f"{kda}.f_a_proj.weight": _matrix(2, 4, seed=25),
+            f"{kda}.f_b_proj.weight": _matrix(4, 2, seed=26),
             f"{kda}.g_a_proj.weight": _matrix(2, 4, seed=27),
             f"{kda}.g_b_proj.weight": _matrix(4, 2, seed=28),
             f"{kda}.o_proj.weight": _matrix(4, 4, seed=29),
@@ -406,7 +424,9 @@ def build_stage2_checkpoint(root: Path) -> None:
     KDA の層 0 (9 つの射影と dense の MLP)、MLA の層 3 (5 つの射影、indexer、共有の専門家、
     NVFP4 の専門家)、`lm_head`、`layer_types` に載らない層 45 (`o_proj`、`eh_proj`、共有の
     専門家) を持つ。`config.json` は `text_config.layer_types` に `STAGE2_LAYER_TYPES` を持ち、
-    変換の前の BF16 のモジュール (`STAGE2_IGNORE_NAMES`) をすべて `ignore` に置く。
+    変換の前の BF16 のモジュール (`STAGE2_IGNORE_NAMES`) をすべて `ignore` に置く。実機と同じく、
+    KDA の gate は、テンソル名が `self_attn.f_a_proj.weight` の形で、`ignore` の名前だけが
+    `self_attn.forget_gate.f_a_proj` の形になる (#76)。
     """
     config = _config(None, (), ignore_base=STAGE2_IGNORE_NAMES, layer_types=STAGE2_LAYER_TYPES)
     _write_checkpoint(root, _stage2_shard_tensors(), config)

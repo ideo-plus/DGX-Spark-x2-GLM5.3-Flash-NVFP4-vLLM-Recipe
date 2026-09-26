@@ -64,7 +64,7 @@ KDA のまとめていない射影、`lm_head` も選べるようにしたもの
 |---|---|
 | 第 1 段の既定の対象 | 上の表 (dense の MLP、共有の専門家) |
 | MLA の層の射影 | `layers.N.self_attn.{q_a_proj,kv_a_proj_with_mqa,q_b_proj,o_proj}` |
-| KDA の層のまとめていない射影 | `layers.N.self_attn.{o_proj,forget_gate.f_b_proj,g_b_proj}` |
+| KDA の層のまとめていない射影 | `layers.N.self_attn.{o_proj,f_b_proj,g_b_proj}` |
 | `lm_head` | `lm_head` |
 
 - **どの層が MLA でどの層が KDA かは、入力の `config.json` の `text_config.layer_types` (層番号の順の種類の
@@ -100,7 +100,7 @@ vLLM で 1 つの線形層にまとまる組は、組の一部だけが FP8 に�
 |---|---|
 | `q_a_proj` と `kv_a_proj_with_mqa` (MLA) | `fused_qkv_a_proj` |
 | `gate_proj` と `up_proj` (dense の MLP、共有の専門家) | `gate_up_proj` |
-| `q_proj`・`k_proj`・`v_proj`・`b_proj`・`forget_gate.f_a_proj`・`g_a_proj` (KDA) | `in_proj_qkvbfg_a` |
+| `q_proj`・`k_proj`・`v_proj`・`b_proj`・`f_a_proj`・`g_a_proj` (KDA) | `in_proj_qkvbfg_a` |
 
 - 組は同じ親 (`layers.N.self_attn`、`layers.N.mlp` など) の下だけで数える。相手の `.weight` が checkpoint に
   無ければ通す (混ざらないので)。
@@ -342,7 +342,12 @@ docker run --rm --network none \
   - 2a の射影に、`.weight` 以外のパラメータ (`.bias` など) が実機にあるか。あれば、対象の検査が
     `unexpected parameter` で終了 1 にする。
   - MTP の層 45 の attention を、2a に含めなくてよいか (含めていない)。
-  - vLLM 側の実行時の名前 (`forget_gate.f_b_proj` が実行時にも `forget_gate` の下か) と、まとめた層の
-    対応 (`packed_modules_mapping`) が、組を覆うか。これは #73 の範囲。道具は、既存のとおり
-    checkpoint の名前の末尾から target を作る。
+  - 実機のテンソル名は `self_attn.f_a_proj`・`self_attn.f_b_proj` で、`forget_gate.` が付かない。一方、
+    `config.json` の `quantization_config.ignore` には `self_attn.forget_gate.f_a_proj` などの名前がある
+    (2026-09-27、`k2s2a` の変換で分かった。#76)。道具はテンソル名で選ぶ。`ignore` からは、変換した
+    モジュールの名前 (テンソル名の形) だけを外すので、`forget_gate.` 付きの名前は、変換後も `ignore` に
+    残る。
+  - vLLM 側の実行時の名前 (`f_b_proj` が実行時に `forget_gate` の下か)、変換後の `ignore` に残る
+    `forget_gate.` 付きの名前の扱い、まとめた層の対応 (`packed_modules_mapping`) が、組を覆うか。
+    これは #73 の範囲。道具は、既存のとおり checkpoint の名前の末尾から target を作る。
   - 変換した重みを vLLM (#73 の修正を当てたもの) が読み込めるか、精度と速度への影響。
