@@ -17,6 +17,16 @@ args に足し、構成の名前を `-prof` 付きにする (どの `--variant` 
 られる)。マニフェストが無い、`kind` が `derived` でない、`derivation.name` が `<名前>` と違う、
 元の重みが `p1-nvfp4-tp2` の重みと違うときは、生成の前に断る。
 
+`--vllm-overlay <名前>` を付けると、`experiments/k2-vllm-overlay/<名前>.json` (固定した vLLM の
+直したファイルの定義) に並ぶファイルごとに、`serving/payload/vllm-overlay/<名前>/<道筋>` の写し
+(`serve push` で `{remote_root}/payload/` へ配る) を、イメージの中の vLLM の同じファイルに重ねる
+読み取り専用の bind mount を、根拠つきで docker の節の末尾に足す (ADR 0007 の第 2a 段、#73)。
+構成の名前は `--weights` の接尾辞の直後に `-ov-<名前>` を付ける (どの `--variant` にも付け
+られる)。定義が無い、`name` が `<名前>` と違う、`vllm_commit` が固定の commit と違う、道筋が
+`vllm/` で始まる相対の道筋でない、写しが無い、mount の鍵が重なるときは、生成の前に断る。
+写しが「固定のソース + パッチ」と一致することは、生成器ではなく試験 (`test_vllm_overlay.py`)
+が固定する。
+
 `full` と `full-mtp` は、重みの読み込み方を `--load-format instanttensor` にするのを既定とし、
 根拠つきで args に足す (構成の名前は変えない。`#50`)。`--load-format auto` を付けると既定を
 外し、出力は `#50` より前の既定と同じになる。`smoke` には既定を付けない。
@@ -48,6 +58,36 @@ ROOT = Path(__file__).resolve().parents[2]
 CONFIGS_PATH = ROOT / "serving/config/configs.toml"
 WEIGHTS_DIR = ROOT / "serving/weights"
 """コミットした重みのマニフェストの置き場 (`--weights <名前>` が読む)。"""
+OVERLAY_DIR = ROOT / "experiments/k2-vllm-overlay"
+"""固定した vLLM の直したファイルの定義 (`<名前>.json`) の置き場 (`--vllm-overlay` が読む)。"""
+OVERLAY_PAYLOAD_DIR = ROOT / "serving/payload/vllm-overlay"
+"""直したファイルの写しの置き場 (`<名前>/<道筋>`。`serve push` が配る)。"""
+OVERLAY_PAYLOAD_SUBDIR = "payload/vllm-overlay"
+"""Spark の側の、写しの置き場 (`{remote_root}` の下)。"""
+VLLM_COMMIT = "0961bbae2894d574be790d219651824eb199318e"
+"""イメージの vLLM の固定の commit (重ねる定義の `vllm_commit` と一致しなければ断る)。"""
+IMAGE_SITE_PACKAGES = "/usr/local/lib/python3.12/dist-packages"
+"""イメージの中の vLLM の導入先 (`uv pip install --system` が置く場所)。"""
+OVERLAY_SUFFIX = "-ov-"
+OVERLAY_MOUNT_KEY_PREFIX = "mount-vllm-overlay-"
+ARGS_COMMENT = "# --- vllm serve の引数 (この順で並ぶ)"
+"""p1 の節の、docker の設定の末尾を示すコメント (重ねる mount は、この直前に入る)。"""
+OVERLAY_MOUNT_SOURCE = (
+    "https://github.com/vllm-project/vllm/blob/"
+    "0961bbae2894d574be790d219651824eb199318e/docker/Dockerfile"
+)
+OVERLAY_MOUNT_QUOTE = (
+    "ARG PYTHON_VERSION=3.12 … uv pip install --system dist/*.whl --verbose … "
+    '"/usr/local/lib/python${PYTHON_VERSION}/dist-packages/nvpl/lib"'
+)
+"""固定の commit の `docker/Dockerfile` の 26 行目、1062 行目、971 行目の原文。"""
+OVERLAY_MOUNT_WHY = (
+    "ADR 0007 の第 2a 段 (#73)。固定した vLLM (0961bbae) のこのファイルに "
+    "experiments/k2-vllm-overlay のパッチを当てた写し (serving/payload/vllm-overlay/<名前>/…。"
+    "serve push で配る) を、イメージを作り直さずに読み取り専用の bind mount で重ねる。"
+    "重ねる先は、イメージの中の vLLM の導入先 (uv pip install --system が置く dist-packages) の"
+    "同じ道筋"
+)
 EXPECTED_IMAGE_ID = "sha256:9df45888d2d726a1818be1005ace819808d4a1e8b4ec01a3efa7bc7f10a40c90"
 IMAGE_SEEN_AS = "vllm-nope:0961bbae-fi070"
 IMAGE_MEASURED = "docs/results/2026-09-22-nope-build.md"
@@ -188,6 +228,16 @@ class DerivedWeights(NamedTuple):
     target_pattern: str
 
 
+class VllmOverlay(NamedTuple):
+    """`--vllm-overlay` で選ぶ、固定した vLLM の直したファイルの重ね。
+
+    `files` は `vllm/` で始まる相対の道筋で、定義 (`<名前>.json`) の並び (mount の並び) である。
+    """
+
+    name: str
+    files: tuple[str, ...]
+
+
 class LoadFormat(NamedTuple):
     """args に書く `--load-format` の値と、その理由。"""
 
@@ -223,6 +273,10 @@ class Variant(NamedTuple):
 
     `weights` は、手元で変換した重みを使うときの指定 (`None` なら p1 の重みのまま)。
     `with_weights` が作り、名前は `-<名前>` 付きになる。
+
+    `vllm_overlay` は、固定した vLLM の直したファイルを重ねるときの指定 (`None` なら重ねない)。
+    `with_vllm_overlay` が作り、名前は `-ov-<名前>` 付きになる。`render` は、ファイルごとの
+    読み取り専用の bind mount を docker の節の末尾に足す。
     """
 
     name: str
@@ -236,6 +290,7 @@ class Variant(NamedTuple):
     load_format: LoadFormat | None = None
     safetensors_load_strategy: str | None = None
     weights: DerivedWeights | None = None
+    vllm_overlay: VllmOverlay | None = None
 
 
 SMOKE = Variant(
@@ -475,6 +530,94 @@ def with_weights(variant: Variant, derived: DerivedWeights) -> Variant:
     )
 
 
+def load_overlay_definition(path: Path) -> dict[str, Any]:
+    """重ねる定義 (`<名前>.json`) を読む。
+
+    無い・読めない・JSON の object でなければ `ValueError`。
+    """
+    if not path.is_file():
+        raise ValueError(f"重ねる定義がない: {path}")
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"重ねる定義を読めない: {path} ({exc})") from exc
+    if not isinstance(data, dict):
+        raise ValueError(f"重ねる定義が JSON の object でない: {path}")
+    return data
+
+
+def overlay_mount_key(path: str) -> str:
+    """直したファイルの道筋から決まる、docker の設定の鍵。"""
+    slug = re.sub(r"[^A-Za-z0-9]+", "-", path.removeprefix("vllm/")).strip("-")
+    return f"{OVERLAY_MOUNT_KEY_PREFIX}{slug}"
+
+
+def overlay_mount_value(name: str, path: str) -> str:
+    """直したファイル 1 つを重ねる、読み取り専用の bind mount の値 (`{remote_root}` は埋める前)。"""
+    return (
+        f"type=bind,source={{remote_root}}/{OVERLAY_PAYLOAD_SUBDIR}/{name}/{path},"
+        f"target={IMAGE_SITE_PACKAGES}/{path},readonly"
+    )
+
+
+def _is_vllm_relative_path(path: str) -> bool:
+    parts = path.split("/")
+    return len(parts) >= 2 and parts[0] == "vllm" and ".." not in parts and "" not in parts
+
+
+def vllm_overlay(name: str, data: Mapping[str, Any]) -> VllmOverlay:
+    """`--vllm-overlay <名前>` の指定を、重ねる定義から組む。
+
+    名前・commit が違う、道筋が `vllm/` で始まる相対の道筋でない、写しが無い、mount の鍵が
+    重なるときは `ValueError` (生成の前に断る)。
+    """
+    if data.get("name") != name:
+        raise ValueError(
+            f"重ねる定義の名前 ({data.get('name')!r}) が、--vllm-overlay の値 ({name}) と違う"
+        )
+    if data.get("vllm_commit") != VLLM_COMMIT:
+        raise ValueError(
+            f"重ねる定義の vllm_commit ({data.get('vllm_commit')!r}) が、"
+            f"イメージの vLLM の固定の commit ({VLLM_COMMIT}) と違う"
+        )
+    entries = data.get("files")
+    if not isinstance(entries, list) or not entries:
+        raise ValueError("重ねる定義の files が空でない配列でない")
+    files: list[str] = []
+    keys: dict[str, str] = {}
+    for entry in entries:
+        path = entry.get("path") if isinstance(entry, dict) else None
+        if not isinstance(path, str) or not _is_vllm_relative_path(path):
+            raise ValueError(f"重ねる定義の道筋が vllm/ で始まる相対の道筋でない: {path!r}")
+        copy = OVERLAY_PAYLOAD_DIR / name / path
+        if not copy.is_file():
+            raise ValueError(f"重ねる写しがない: {copy}")
+        key = overlay_mount_key(path)
+        if key in keys:
+            raise ValueError(f"重ねる道筋 {keys[key]} と {path} の mount の鍵 ({key}) が重なる")
+        keys[key] = path
+        files.append(path)
+    return VllmOverlay(name=name, files=tuple(files))
+
+
+def with_vllm_overlay(variant: Variant, overlay: VllmOverlay) -> Variant:
+    """`--vllm-overlay <名前>` の構成 (基の変種 + 固定した vLLM の直したファイルの重ね)。
+
+    名前の接尾辞は、`--weights` の接尾辞の直後に付ける。使う vLLM の違いは、重みと同じく
+    道具のフラグ (`-tn` / `-prof` / `-lf-…`) より本質的な差なので先に置く。
+    """
+    return variant._replace(
+        name=f"{variant.name}{OVERLAY_SUFFIX}{overlay.name}",
+        description=(
+            f"{variant.description}。固定した vLLM の直したファイル"
+            f" ({', '.join(overlay.files)}) を、"
+            f"読み取り専用の bind mount で重ねる (vllm-overlay {overlay.name}。"
+            "ADR 0007 の第 2a 段、#73)"
+        ),
+        vllm_overlay=overlay,
+    )
+
+
 def _load_option_why(flag: str, value: str) -> str:
     """読み込み方の引数 (`--load-format` / `--safetensors-load-strategy`) を足す理由。
 
@@ -592,6 +735,30 @@ def _insert_arg_table(
     return block.replace(variant.env_comment, table + "\n" + variant.env_comment, 1)
 
 
+def _insert_docker_table(
+    block: str,
+    variant: Variant,
+    *,
+    key: str,
+    flag: str,
+    value: str,
+    why: str,
+    source: str,
+    quote: str,
+) -> str:
+    """根拠つきの docker のテーブルを 1 つ、docker の節の末尾 (args のコメントの直前) に足す。"""
+    table = (
+        f"[configs.{variant.name}.docker.{key}]\n"
+        f"flag = {json.dumps(flag)}\n"
+        f"value = {json.dumps(value)}\n"
+        f"why = {json.dumps(why, ensure_ascii=False)}\n"
+        f"source = {json.dumps(source)}\n"
+        f"quote = {json.dumps(quote, ensure_ascii=False)}\n"
+    )
+    at = block.index(ARGS_COMMENT)
+    return block[:at] + table + "\n" + block[at:]
+
+
 def render(configs_text: str, image: Mapping[str, Any], variant: Variant = SMOKE) -> str:
     """configs.toml の p1 構成から `variant` に応じた構成の TOML を返す。"""
     start = configs_text.index(f"[configs.{SOURCE_NAME}]")
@@ -640,6 +807,19 @@ def render(configs_text: str, image: Mapping[str, Any], variant: Variant = SMOKE
         "# --- 環境変数 (最初の 3 つだけ。A/B で足すものは docs/results/ の実測を根拠にする) -----",
         variant.env_comment,
     )
+    if variant.vllm_overlay is not None:
+        overlay = variant.vllm_overlay
+        for path in overlay.files:
+            block = _insert_docker_table(
+                block,
+                variant,
+                key=overlay_mount_key(path),
+                flag="--mount",
+                value=overlay_mount_value(overlay.name, path),
+                why=OVERLAY_MOUNT_WHY,
+                source=OVERLAY_MOUNT_SOURCE,
+                quote=OVERLAY_MOUNT_QUOTE,
+            )
     if variant.spec_tokens is not None:
         # (a) 投機を許す項目は、最上位テーブルの `served_model_name` の直後にだけ足す
         block = re.sub(
@@ -783,6 +963,17 @@ def main(argv: Sequence[str] | None = None) -> None:
         ),
     )
     parser.add_argument(
+        "--vllm-overlay",
+        default=None,
+        help=(
+            "重ねる、固定した vLLM の直したファイルの定義の名前"
+            " (experiments/k2-vllm-overlay/<名前>.json を読む)。ファイルごとに、"
+            "{remote_root}/payload/vllm-overlay/<名前>/<道筋> を、イメージの中の vLLM の"
+            "同じファイルに"
+            "読み取り専用で重ねる mount を足し、構成の名前に -ov-<名前> を付ける"
+        ),
+    )
+    parser.add_argument(
         "--nccl-thread-names",
         action="store_true",
         help=(
@@ -845,6 +1036,15 @@ def main(argv: Sequence[str] | None = None) -> None:
         except ValueError as exc:
             parser.error(str(exc))
         variant = with_weights(variant, derived)
+    if args.vllm_overlay is not None:
+        try:
+            overlay = vllm_overlay(
+                args.vllm_overlay,
+                load_overlay_definition(OVERLAY_DIR / f"{args.vllm_overlay}.json"),
+            )
+        except ValueError as exc:
+            parser.error(str(exc))
+        variant = with_vllm_overlay(variant, overlay)
     if args.nccl_thread_names:
         variant = with_thread_names(variant)
     if args.torch_profiler:

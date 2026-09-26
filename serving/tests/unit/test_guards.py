@@ -438,12 +438,12 @@ class Script:
         )
         rules.append(
             Rule(
-                prefix=("test", "-d"),
+                prefix=("test", "-e"),
                 when=lambda argv: len(argv) > 2 and argv[2] in self.missing_dirs,
                 replies=(Reply(exit_code=1),),
             )
         )
-        rules.append(Rule(prefix=("test", "-d"), replies=(Reply(),)))
+        rules.append(Rule(prefix=("test", "-e"), replies=(Reply(),)))
         return tuple(rules)
 
 
@@ -629,8 +629,81 @@ def test_a_missing_layout_dir_is_refused_and_asks_for_push(tmp_path: Path) -> No
 
 def test_the_layout_gate_looks_at_the_mounts_of_the_built_plan(tmp_path: Path) -> None:
     runner, _ = gates_for(tmp_path, serve_config())
-    checked = [argv[2] for argv in runner.argvs if argv[:2] == ("test", "-d")]
+    checked = [argv[2] for argv in runner.argvs if argv[:2] == ("test", "-e")]
     assert sorted(set(checked)) == sorted({WEIGHTS_DIR, CACHE_DIR})
+
+
+# --- ファイルの bind mount (vLLM の直したファイルの重ね。ADR 0007 の第 2a 段、#73) ---
+
+OVERLAY_FILE = "vllm/models/glm5next/common/model.py"
+OVERLAY_SOURCE = f"{REMOTE_ROOT}/payload/vllm-overlay/k2s2a/{OVERLAY_FILE}"
+"""Spark の側の、直したファイルの写し (`serve push` が `payload/` の下へ配る)。"""
+
+OVERLAY_MOUNT = (
+    "type=bind,source={remote_root}/payload/vllm-overlay/k2s2a/"
+    f"{OVERLAY_FILE},target=/usr/local/lib/python3.12/dist-packages/{OVERLAY_FILE},readonly"
+)
+
+
+def overlay_config() -> ConfigDef:
+    """置き場所 (ディレクトリ) の bind mount に、ファイルの bind mount を 1 つ足した構成。"""
+    base = serve_config()
+    return base.model_copy(
+        update={
+            "docker": {
+                **base.docker,
+                "mount-vllm-overlay-models-glm5next-common-model-py": _setting(
+                    "--mount", OVERLAY_MOUNT
+                ),
+            }
+        }
+    )
+
+
+def test_a_file_bind_mount_is_looked_at_with_test_e_and_passes(tmp_path: Path) -> None:
+    """ファイルの bind mount は、`test -e` で見て、あれば通る (`test -d` では通らない)。"""
+    # Given: ファイルの bind mount を持つ計画と、`test -e` に終了 0 を返す台本
+    plan = plans_of(overlay_config())[0]
+    runner = runner_of(tmp_path)
+
+    # When: 置き場所の関門を流す
+    result = g.gate_layout(runner, HEAD, plan)
+
+    # Then: そのファイルの道筋を `test -e` で見て、通る
+    assert ("test", "-e", OVERLAY_SOURCE) in runner.argvs
+    assert result.passed is True, result.detail
+
+
+def test_a_file_bind_mount_whose_source_is_missing_is_refused_and_asks_for_push(
+    tmp_path: Path,
+) -> None:
+    """元のファイルがなければ落ち、その道筋と `serve push` を示す。"""
+    # Given: ファイルの bind mount を持つ計画と、そのファイルにだけ終了 1 を返す台本
+    plan = plans_of(overlay_config())[0]
+    runner = runner_of(tmp_path, Script(missing_dirs=(OVERLAY_SOURCE,)))
+
+    # When: 置き場所の関門を流す
+    result = g.gate_layout(runner, HEAD, plan)
+
+    # Then: 落ちて、道筋と配り方を示す
+    assert result.passed is False
+    assert OVERLAY_SOURCE in result.detail
+    assert "serve push" in result.detail
+
+
+def test_the_layout_gate_asks_only_test_e_for_every_mount_source(tmp_path: Path) -> None:
+    """ディレクトリもファイルも、`test -e` だけで見る (`test -d` は流さない)。"""
+    # Given: ディレクトリ 2 つとファイル 1 つの bind mount を持つ計画
+    plan = plans_of(overlay_config())[0]
+    runner = runner_of(tmp_path)
+
+    # When: 置き場所の関門を流す
+    g.gate_layout(runner, HEAD, plan)
+
+    # Then: 3 つの元の道筋が `test -e` で見られ、`test -d` は 1 度も流れない
+    checked = [argv[2] for argv in runner.argvs if argv[:2] == ("test", "-e")]
+    assert sorted(set(checked)) == sorted({WEIGHTS_DIR, CACHE_DIR, OVERLAY_SOURCE})
+    assert [argv for argv in runner.argvs if argv[:2] == ("test", "-d")] == []
 
 
 def test_a_digest_in_the_second_place_of_repo_digests_passes(tmp_path: Path) -> None:
@@ -848,7 +921,7 @@ def test_the_probe_config_needs_only_tens_of_mib(tmp_path: Path) -> None:
 def test_the_probe_layout_gate_looks_at_the_probe_directory(tmp_path: Path) -> None:
     config = probe_config()
     runner, _ = gates_for(tmp_path, config, Script(records=_probe_records()))
-    assert [argv[2] for argv in runner.argvs if argv[:2] == ("test", "-d")] == [PROBE_DIR]
+    assert [argv[2] for argv in runner.argvs if argv[:2] == ("test", "-e")] == [PROBE_DIR]
 
 
 # --- 派生の重み (手元で変換した重み) -------------------------------------
@@ -1665,7 +1738,7 @@ DIRECT_GATES = (
     "ports_free",
 )
 PARSING_GATES = ("gpu_idle", "image_digest", "weights_verified", "disk_space", "ports_free")
-"""出力を読む関門 (`layout` は `test -d` の終了コードだけ、`reachable` は名前を見ない)。"""
+"""出力を読む関門 (`layout` は `test -e` の終了コードだけ、`reachable` は名前を見ない)。"""
 
 
 @pytest.mark.parametrize("gate", DIRECT_GATES)

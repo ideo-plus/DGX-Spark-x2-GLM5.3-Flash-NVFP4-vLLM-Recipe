@@ -422,7 +422,7 @@ class FetchScript:
             (
                 Rule(prefix=("uname",), replies=(Reply(stdout="spark-153d\n"),)),
                 Rule(prefix=("nvidia-smi",), replies=(Reply(stdout=""),)),
-                Rule(prefix=("test", "-d"), replies=(Reply(),)),
+                Rule(prefix=("test", "-e"), replies=(Reply(),)),
                 Rule(
                     prefix=("docker", "image", "inspect"),
                     replies=(Reply(stdout=json.dumps([IMAGE_REF]) + "\n"),),
@@ -464,7 +464,7 @@ def verify_runner(
     rules.extend(
         (
             Rule(prefix=("uname",), replies=(Reply(stdout="spark-153d\n"),)),
-            Rule(prefix=("test", "-d"), replies=(Reply(exit_code=0 if layout_ok else 1),)),
+            Rule(prefix=("test", "-e"), replies=(Reply(exit_code=0 if layout_ok else 1),)),
             Rule(kind="push", replies=(Reply(),)),
         )
     )

@@ -1,0 +1,16 @@
+--- a/vllm/model_executor/layers/vocab_parallel_embedding.py
++++ b/vllm/model_executor/layers/vocab_parallel_embedding.py
+@@ -611,6 +611,13 @@
+             disable_tp=disable_tp,
+         )
+         self.quant_config = quant_config
++        # compressed-tensors treats ParallelLMHead as a linear layer
++        # (CompressedTensorsLinearMethod); the linear kernels it hands the
++        # module to (e.g. Humming, quantization/utils/humming/linear.py) read
++        # these LinearBase attributes, which an embedding does not define.
++        self.input_size_per_partition = embedding_dim
++        self.output_partition_sizes = [self.num_embeddings_per_partition]
++        self.has_bias = bias
+         if bias:
+             self._register_bias()
+         else:

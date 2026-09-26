@@ -59,7 +59,7 @@ def test_stage2a_pattern_selects_each_layer_by_its_type_across_45_layers() -> No
     選ばない。
 
     MLA の層は `q_a_proj`・`kv_a_proj_with_mqa`・`q_b_proj`・`o_proj` の 4 つ、KDA の層は
-    `o_proj`・`forget_gate.f_b_proj`・`g_b_proj` の 3 つだけが選ばれる。同じ字面が反対の層種に
+    `o_proj`・`f_b_proj`・`g_b_proj` の 3 つだけが選ばれる。同じ字面が反対の層種に
     ある名前 (MLA の層の `g_b_proj`、KDA の層の `q_a_proj`)、KDA のまとめた層、`kv_b_proj`、
     indexer、並びに載らない層 45 の `o_proj` は選ばれない。二桁の層番号 (1 と 11、3 と 13 など)
     も取り違えない。
@@ -71,14 +71,14 @@ def test_stage2a_pattern_selects_each_layer_by_its_type_across_45_layers() -> No
     assert layer_types.count(synthetic.MLA_LAYER_TYPE) == 11
     assert layer_types.count(synthetic.KDA_LAYER_TYPE) == 34
     mla_selected = ("q_a_proj", "kv_a_proj_with_mqa", "q_b_proj", "o_proj")
-    mla_not_selected = ("kv_b_proj", "indexer.wq_b", "g_b_proj", "forget_gate.f_b_proj")
-    kda_selected = ("o_proj", "forget_gate.f_b_proj", "g_b_proj")
+    mla_not_selected = ("kv_b_proj", "indexer.wq_b", "g_b_proj", "f_b_proj")
+    kda_selected = ("o_proj", "f_b_proj", "g_b_proj")
     kda_not_selected = (
         "q_proj",
         "k_proj",
         "v_proj",
         "b_proj",
-        "forget_gate.f_a_proj",
+        "f_a_proj",
         "g_a_proj",
         "q_a_proj",
         "q_b_proj",
@@ -102,6 +102,41 @@ def test_stage2a_pattern_selects_each_layer_by_its_type_across_45_layers() -> No
     selected = selection.select_modules(_weights(*candidates), pattern)
 
     assert set(selected) == expected
+
+
+def test_stage2a_pattern_selects_the_kda_f_b_proj_by_its_tensor_name() -> None:
+    """KDA の層の `f_b_proj` は、実機のテンソル名の形 (`self_attn.f_b_proj`。`forget_gate.` が
+    付かない) で選ばれる (#76)。
+
+    `text_config.layer_types` の先頭 3 層が KDA、4 層目が MLA の config で、層 0 の
+    `self_attn.f_b_proj.weight` が選ばれる。
+    """
+    config = _config([synthetic.KDA_LAYER_TYPE] * 3 + [synthetic.MLA_LAYER_TYPE])
+    module = f"{LANGUAGE_MODEL}.layers.0.self_attn.f_b_proj"
+
+    selected = selection.select_modules(_weights(module), presets.stage2a_pattern(config))
+
+    assert selected == (module,)
+
+
+def test_stage2a_pattern_does_not_select_the_old_form_the_mla_layer_or_merged_f_a_proj() -> None:
+    """同じ字面の名前でも、次の 3 つは選ばれない (#76)。
+
+    - 旧形式のテンソル名 (KDA の層 0 の `self_attn.forget_gate.f_b_proj`)。テンソル名に
+      `forget_gate.` は付かないので、旧形式を残して選ぶことはしない
+    - MLA の層 3 の `self_attn.f_b_proj`。`f_b_proj` は KDA の層の射影
+    - KDA の層 0 の `self_attn.f_a_proj`。q・k・v・b・f_a・g_a のまとめた層で、選ばない
+    """
+    config = _config([synthetic.KDA_LAYER_TYPE] * 3 + [synthetic.MLA_LAYER_TYPE])
+    names = _weights(
+        f"{LANGUAGE_MODEL}.layers.0.self_attn.forget_gate.f_b_proj",
+        f"{LANGUAGE_MODEL}.layers.3.self_attn.f_b_proj",
+        f"{LANGUAGE_MODEL}.layers.0.self_attn.f_a_proj",
+    )
+
+    selected = selection.select_modules(names, presets.stage2a_pattern(config))
+
+    assert selected == ()
 
 
 def test_stage2a_pattern_also_selects_the_stage_1_range_and_lm_head() -> None:

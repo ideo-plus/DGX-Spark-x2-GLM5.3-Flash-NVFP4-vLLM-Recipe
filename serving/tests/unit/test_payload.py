@@ -450,13 +450,17 @@ def test_the_upstream_script_carries_its_own_guards_against_linters_and_formatte
     assert "fmt: off" not in body
 
 
-def test_the_ruff_config_also_excludes_the_upstream_script() -> None:
-    """設定の側の除外 (ディレクトリを歩くときの、二重の歯止め) も、この 1 ファイルだけ。"""
+def test_the_ruff_config_also_excludes_the_upstream_copies() -> None:
+    """設定の側の除外 (ディレクトリを歩くときの、二重の歯止め) は、上流の原文の写しだけ。
+
+    上流の文書のコードブロックの 1 ファイルと、vLLM の直したファイルの写しの置き場
+    (`payload/vllm-overlay`。上流の整形のまま、バイト単位の一致を優先する) である。
+    """
     pyproject = Path(__file__).resolve().parents[2] / "pyproject.toml"
     ruff = tomllib.loads(pyproject.read_text(encoding="utf-8"))["tool"]["ruff"]
 
     assert ruff.get("force-exclude") is True
-    assert ruff.get("extend-exclude") == ["payload/vllm_sanity_check.py"]
+    assert ruff.get("extend-exclude") == ["payload/vllm_sanity_check.py", "payload/vllm-overlay"]
 
 
 def _python_sources(directory: Path) -> dict[str, bytes]:
@@ -520,6 +524,51 @@ def test_ruff_leaves_the_upstream_script_alone_from_any_directory(
     assert done.returncode == 0, done.stdout + done.stderr
     assert "would be reformatted" not in done.stdout + done.stderr
     assert VLLM_SANITY_CHECK_PATH.read_bytes() == before
+
+
+VLLM_OVERLAY_COPY_DIR = PAYLOAD_DIR / "vllm-overlay"
+"""vLLM の直したファイルの写しの置き場 (`serve push` が Spark へ配る。上流の整形のまま置く)。"""
+
+
+def test_ruff_does_not_walk_into_the_vllm_overlay_copies_from_serving() -> None:
+    """`serving/` から `payload` を歩くと、`vllm-overlay` の写しは出ず、自前の 2 つは出る。
+
+    CI の `ruff check .` は `serving/` から呼ぶ。写しを歩くと、上流の整形を直させてしまい、
+    「固定のソース + パッチ」とのバイト単位の一致が壊れる。
+    """
+    # Given: 写しが置いてある (1 つもなければ、「出ない」ことが除外の確認にならない)
+    serving = Path(__file__).resolve().parents[2]
+    assert list(VLLM_OVERLAY_COPY_DIR.rglob("*.py")), f"写しがない: {VLLM_OVERLAY_COPY_DIR}"
+
+    # When: `serving/` から、`payload` の検査の対象のファイルを並べる
+    done = _run_ruff(["check", "--show-files", "payload"], serving)
+
+    # Then: 写しは出ず、自前のスクリプトは、検査の対象のまま出る
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert "vllm-overlay" not in done.stdout
+    assert "allreduce_bench.py" in done.stdout
+
+
+@pytest.mark.parametrize("command", [["format", "--check"], ["check"]], ids=["format", "check"])
+def test_ruff_leaves_every_vllm_overlay_copy_alone_from_serving(command: list[str]) -> None:
+    """名指しで渡しても、写しは整形も指摘もされず、バイト列が変わらない。
+
+    どの写しも、上流のファイルの整形のまま置く (`ruff format --check` は、上流が ruff の
+    整形と違えば、直す差分を出す。`force-exclude` がそれを止める)。
+    """
+    # Given: 置いてある写しのすべて (1 つもなければ、除外の確認にならないので落とす)
+    serving = Path(__file__).resolve().parents[2]
+    copies = sorted(VLLM_OVERLAY_COPY_DIR.rglob("*.py"))
+    assert copies, f"vLLM の直したファイルの写しが 1 つもない: {VLLM_OVERLAY_COPY_DIR}"
+    before = {path: path.read_bytes() for path in copies}
+
+    # When: `serving/` から、写しを名指しして ruff を呼ぶ
+    done = _run_ruff([*command, *(str(path) for path in copies)], serving)
+
+    # Then: 何も指摘せず、整形の差分も出さず、バイト列は変わらない
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert "would be reformatted" not in done.stdout + done.stderr
+    assert {path: path.read_bytes() for path in copies} == before
 
 
 def test_ruff_still_checks_our_own_payload_script_from_the_repo_root() -> None:

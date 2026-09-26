@@ -253,7 +253,7 @@ uv run --directory serving serve stop --yes
 第 2a 段 ([ADR 0007](../decisions/0007-k2-stage2.md)。Issue #74) は、同じ道具に `--preset k2s2a` を付けて、第 1 段の対象 (dense と共有の専門家) に、次を足して FP8 にします。使い方と、選ばない名前の詳細は、[道具の README](../../experiments/k2-quant/README.md) にあります。
 
 - MLA の層の `self_attn.q_a_proj`・`kv_a_proj_with_mqa`・`q_b_proj`・`o_proj`
-- KDA の層の `self_attn.o_proj`・`forget_gate.f_b_proj`・`g_b_proj`
+- KDA の層の `self_attn.o_proj`・`f_b_proj`・`g_b_proj`
 - `lm_head`
 
 どの層が MLA でどの層が KDA かは、入力の `config.json` の `text_config.layer_types` から決まります (層番号を手で並べません)。KDA のまとめた層 (q・k・v・b・f_a・g_a)、MLA の `kv_b_proj` と indexer は、この段では対象にしません。並びが無い config では、道具は何も書かずに終了 1 で止まります。
