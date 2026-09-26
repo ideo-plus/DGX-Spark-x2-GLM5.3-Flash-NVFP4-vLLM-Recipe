@@ -39,11 +39,10 @@
 ## 問題と扱い
 
 - **head の worker が OOM で落ちた。** `/stop_profile` で trace を書き出すときに、head の `VLLM::Worker_TP` が oom-killer に止められた（カーネルのログに `Out of memory: Killed process ... (VLLM::Worker_TP)` がある）。そのためエンジンが止まり、`/stop_profile` は HTTP 500 になった。head の rank 0 の GPU の trace は取れていない。TP の 2 台は同じ形の計算をするので、worker の rank 1 の trace で読んだ。書き出しのメモリを減らす設定は #48 で扱う。
-- **本文の確認は一部だけ。** trace と `profiler_out_*.txt` の中で数えた語は、次の 3 つで、どれも 0 件だった。
-  - 要求の語（`capital of France`、`日本の首都`）
-  - 英語の応答の語
-  
-  日本語の応答の語は、台本の文字の範囲の指定がロケールで効かず、取り出せなかった。そのため、応答の日本語の側は未確認である。trace は `serving/var/`（Git 対象外）に留め、ここには写さない。
+- **本文の確認は、要求の側だけ。**
+  - 要求の語（`capital of France`、`日本の首都`）は、trace と `profiler_out_*.txt` の中で 0 件だった。
+  - 応答の側は、確認できていない。はじめは「英語の応答の語も 0 件」と書いていたが、誤りだった。台本が応答の本文（stderr に出る）を捨てていたため、応答の語は取り出せていなかった（2026-09-26 に分かった。台本は直した）。
+  - trace は `serving/var/`（Git 対象外）に留め、ここには写さない。
 
 ## 次に確かめること
 
