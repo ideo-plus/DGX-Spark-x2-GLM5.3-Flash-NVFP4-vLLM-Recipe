@@ -9,11 +9,14 @@ GPU の時間は、`ph == "X"` かつ `cat` が GPU のもの (`kernel` / `gpu_m
 `gpu_memset`) のイベントだけから数える。名前に `run.py` のような CPU のイベントや、
 `cudaLaunchKernel` のような実行のイベントは数えない。
 
-区分けは次の 6 つである。
+区分けは次の 8 つである。
 
-- MoE の専門家の GEMM (`moe_gemm`)
-- それ以外の GEMM (アテンションの射影・共有の専門家・dense・lm_head。`other_gemm`)
+- MoE の専門家の GEMM (NVFP4 の grouped GEMM。`moe_gemm`)
+- MoE の周辺 (expand・finalize・並べ替え・活性化・topk・fp4 への変換。`moe_aux`)
+- BF16 の重みの GEMV と GEMM (cuBLAS の `gemvx` と `gemvNSP`、`cutlass_80_wmma`、
+  `nvjet`。`weight_gemm`)
 - アテンションの本体 (`attention`)
+- mHC (`mhc`)
 - NCCL の all-reduce など (`nccl`)
 - その他のカーネル (`other`。どの規則にも当たらない名前)
 - カーネルのない隙間 (`gap`。カーネルではなく、`wall − busy` で導く)
@@ -23,8 +26,10 @@ GPU の時間は、`ph == "X"` かつ `cat` が GPU のもの (`kernel` / `gpu_m
 
 trace には 1 ステップの区切りの印が入らない (vLLM の `record_function_or_nullcontext` は
 `VLLM_CUSTOM_SCOPES_FOR_PROFILING` が無いと `nullcontext` になる) ので、ステップ数は
-`--steps` で受け取る。ステップ数は、`/start_profile` の前と `/stop_profile` の後に
-`GET /metrics` の `vllm:iteration_tokens_total_count` を読み、その増分から得る。
+`--steps` で受け取る。ステップ数は、`/start_profile` の前と、負荷の終了後・`/stop_profile`
+の前に `GET /metrics` の `vllm:iteration_tokens_total_count` を読み、その増分から得る
+(head が OOM で止まると停止の後は読めないので、停止の前の値を使う。停止の後にも読めるなら
+同じ値であることを確かめる)。
 
 使い方:
 
@@ -54,38 +59,40 @@ GAP: Final[str] = "gap"
 
 CATEGORY_RULES: Final[tuple[tuple[str, re.Pattern[str]], ...]] = (
     ("nccl", re.compile(r"nccl", re.IGNORECASE)),
+    ("moe_gemm", re.compile(r"GroupProblemShape", re.IGNORECASE)),
+    (
+        "moe_aux",
+        re.compile(
+            r"expandInputRows|finalizeMoeRouting|fusedBuildExpertMaps|computeStrides"
+            r"|doActivation|single_group_topk|cvt_fp16_to_fp4|vllm::moe::",
+            re.IGNORECASE,
+        ),
+    ),
+    ("mhc", re.compile(r"mhc_", re.IGNORECASE)),
     (
         "attention",
         re.compile(
             r"attention|attn|fmha|flash_fwd|mla|paged_kv|paged|gated_delta|delta_rule"
-            r"|recurrent|xqa|kda",
+            r"|recurrent|xqa|kda|causal_conv1d|_kpool_|persistent_topk|fwht",
             re.IGNORECASE,
         ),
     ),
-    ("moe_gemm", re.compile(r"fused_moe_kernel", re.IGNORECASE)),
-    (
-        "moe_gemm",
-        re.compile(
-            r"\A(?=.*(?:moe|expert|grouped_gemm|group_gemm))(?=.*(?:gemm|matmul|cutlass|_mm|mm_|bmm))",
-            re.IGNORECASE | re.DOTALL,
-        ),
-    ),
-    (
-        "other_gemm",
-        re.compile(r"gemm|gemv|matmul|nvjet|xmma|cutlass|cublas|bmm", re.IGNORECASE),
-    ),
+    ("weight_gemm", re.compile(r"gemvx|gemvNSP|cutlass_80_wmma|nvjet", re.IGNORECASE)),
 )
 """カーネル名 → 区分の対応 (この 1 か所だけ。C6)。
 
-実機のカーネル名は未確認なので、初期値である。手順書の「その他」の上位一覧に大きな
-カーネルがあれば、ここを見直して再集計する。
+断片が固有な規則 (moe_gemm・moe_aux・mhc) を広い規則 (attention) より先に置き、MoE 周辺の
+名前を先に取り切ってから weight_gemm を最後に置く。当たらない名前は「その他」の上位一覧に
+並ぶので、新しい名前が現れたらここを見直して再集計する。
 """
 
 CATEGORY_LABELS: Final[Mapping[str, str]] = {
-    "nccl": "NCCL",
-    "attention": "アテンション本体",
     "moe_gemm": "MoE 専門家 GEMM",
-    "other_gemm": "その他 GEMM",
+    "moe_aux": "MoE 周辺",
+    "weight_gemm": "BF16 重み GEMV/GEMM",
+    "attention": "アテンション本体",
+    "mhc": "mHC",
+    "nccl": "NCCL",
     OTHER: "その他",
     GAP: "カーネルのない隙間",
 }

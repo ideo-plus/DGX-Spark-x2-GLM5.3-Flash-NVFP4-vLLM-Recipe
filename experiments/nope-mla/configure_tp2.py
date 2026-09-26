@@ -7,8 +7,8 @@
 名前を `-tn` 付きにする (どの `--variant` にも付けられる)。
 
 `--torch-profiler` を付けると、`--profiler-config` (torch プロファイラー、出力先
-`/logs/torch-profile`) を根拠つきで args に足し、構成の名前を `-prof` 付きにする
-(どの `--variant` にも付けられる)。
+`/logs/torch-profile`、スタックの記録と `key_averages` の表の書き出しは切る) を根拠つきで
+args に足し、構成の名前を `-prof` 付きにする (どの `--variant` にも付けられる)。
 
 `--load-format` (`instanttensor` / `fastsafetensors` / `runai_streamer`) と
 `--safetensors-load-strategy` (`eager` / `prefetch`) を付けると、重みの読み込み方を根拠つきで
@@ -60,7 +60,10 @@ PROFILER_SUFFIX = "-prof"
 PROFILER_ARG_KEY = "profiler-config"
 PROFILER_FLAG = "--profiler-config"
 PROFILER_DIR = "/logs/torch-profile"
-PROFILER_VALUE = '{"profiler":"torch","torch_profiler_dir":"/logs/torch-profile"}'
+PROFILER_VALUE = (
+    '{"profiler":"torch","torch_profiler_dir":"/logs/torch-profile",'
+    '"torch_profiler_with_stack":false,"torch_profiler_dump_cuda_time_total":false}'
+)
 PROFILER_SOURCE = (
     "https://github.com/vllm-project/vllm/blob/"
     "0961bbae2894d574be790d219651824eb199318e/vllm/config/profiler.py"
@@ -68,12 +71,19 @@ PROFILER_SOURCE = (
 PROFILER_QUOTE = (
     "Which profiler to use. … Directory to save torch profiler traces. "
     "Both AsyncLLM's CPU traces and worker's traces (CPU & GPU) will be saved under this "
-    "directory. Note that it must be an absolute path."
+    "directory. Note that it must be an absolute path. … "
+    "If `True`, enables stack tracing in the torch profiler. Enabled by default as it is useful "
+    "for debugging. Can be disabled via --profiler-config.torch_profiler_with_stack=false CLI "
+    "flag. … If `True`, dumps total CUDA time in torch profiler traces. Enabled by default."
 )
 PROFILER_WHY = (
     "#42 (ADR 0006 の K2 の判断)。1 ステップの GPU の時間の内訳を torch プロファイラーで測る。"
     "記録は /start_profile と /stop_profile の間だけ。trace は mount-logs で結び付けた /logs の"
-    "下に書き、serve logs で回収する。この計測のときだけ付ける"
+    "下に書き、serve logs で回収する。この計測のときだけ付ける。#48 で、2026-09-26 の初回の"
+    "計測では /stop_profile の書き出しで head の VLLM::Worker_TP が oom-killer に止められた"
+    "(head は起動時の available が約 1 GB)。スタックの記録 (torch_profiler_with_stack=false) と"
+    "key_averages の表の書き出し (torch_profiler_dump_cuda_time_total=false) を切って、書き出し"
+    "のメモリを減らす"
 )
 LOAD_FORMAT_SUFFIX = "-lf-"
 LOAD_FORMAT_ARG_KEY = "load-format"

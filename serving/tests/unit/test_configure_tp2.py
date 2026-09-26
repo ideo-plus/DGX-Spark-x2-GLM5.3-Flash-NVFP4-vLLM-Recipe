@@ -109,8 +109,19 @@ PROFILER_ARG_FLAG = "--profiler-config"
 PROFILER_DIR = "/logs/torch-profile"
 """torch プロファイラーの出力先 (コンテナの `/logs/` の下。C1)。"""
 
-PROFILER_VALUE = '{"profiler":"torch","torch_profiler_dir":"/logs/torch-profile"}'
-"""足す args の値 (C1)。"""
+# `--profiler-config` の値 (#48)。`torch_profiler_with_stack=false` と
+# `torch_profiler_dump_cuda_time_total=false` を足し、trace の書き出しのメモリを減らす。根拠は
+# vLLM の `0961bbae` の `vllm/config/profiler.py` の docstring (`torch_profiler_with_stack` は
+# 既定 True で "stack tracing" を有効にし、`torch_profiler_dump_cuda_time_total` は既定 True で
+# "dumps total CUDA time in torch profiler traces")。`wrapper.py` の `_stop` は
+# `torch_profiler_dump_cuda_time_total` を写した `dump_device_time_total` が真のときだけ
+# `key_averages()` の表 (`profiler_out_<rank>.txt`) を書く。2026-09-26 の初回計測では、head の
+# `VLLM::Worker_TP` がこの書き出しで oom-killer に止められた。JSON なので `false` は小文字。
+PROFILER_VALUE = (
+    '{"profiler":"torch","torch_profiler_dir":"/logs/torch-profile",'
+    '"torch_profiler_with_stack":false,"torch_profiler_dump_cuda_time_total":false}'
+)
+"""足す args の値 (#48)。"""
 
 PROFILER_ARG_PAIR: tuple[str, str] = (PROFILER_ARG_FLAG, PROFILER_VALUE)
 """足す `--profiler-config` の 2 語 (C1、C3)。"""
@@ -121,8 +132,13 @@ PROFILER_SOURCE = (
 )
 """根拠の出典 (vLLM のソースの docstring。C2)。"""
 
-PROFILER_QUOTE_FRAGMENTS: tuple[str, ...] = ("torch profiler traces", "absolute path")
-"""根拠の原文に含まれる語 (C2)。"""
+PROFILER_QUOTE_FRAGMENTS: tuple[str, ...] = (
+    "torch profiler traces",
+    "absolute path",
+    "stack tracing",
+    "dumps total CUDA time",
+)
+"""根拠の原文に含まれる語 (C2、#48)。あとの 2 つは 2 つの `false` の根拠。"""
 
 # `--variant full --nccl-thread-names` の `render` の出力の SHA-256。計算のしかたは SMOKE と
 # 同じで、生成器に `--torch-profiler` を足す前の `render(本文, image, with_thread_names(FULL))`
@@ -1365,7 +1381,11 @@ def test_profiler_config_adds_only_the_arg_and_the_name(
 
 @pytest.mark.parametrize("kind", PROFILER_BASE_KINDS)
 def test_profiler_arg_provenance_and_value(generator: Any, tmp_path: Path, kind: str) -> None:
-    """足す args の根拠が vLLM のソースで、値が torch と `/logs/` の下の出力先 (C2)。"""
+    """足す args の根拠が vLLM のソースで、値が torch・`/logs/` の下の出力先・2 つの `false` (C2)。
+
+    `torch_profiler_with_stack` と `torch_profiler_dump_cuda_time_total` は、JSON の `false` が
+    `bool` の `False` として読めることまで固定する (#48)。
+    """
     base = _base_variant(generator, kind)
     profiled = generator.with_torch_profiler(base)
     generated = load_configs(
@@ -1383,6 +1403,8 @@ def test_profiler_arg_provenance_and_value(generator: Any, tmp_path: Path, kind:
     assert value["profiler"] == "torch"
     assert value["torch_profiler_dir"] == PROFILER_DIR
     assert value["torch_profiler_dir"].startswith("/logs/")
+    assert value["torch_profiler_with_stack"] is False
+    assert value["torch_profiler_dump_cuda_time_total"] is False
 
 
 @pytest.mark.parametrize("kind", PROFILER_BASE_KINDS)
