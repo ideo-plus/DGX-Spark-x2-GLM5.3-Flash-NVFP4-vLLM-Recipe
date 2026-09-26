@@ -51,7 +51,9 @@ def _build_parser() -> argparse.ArgumentParser:
     selection_group.add_argument(
         "--preset",
         choices=PRESET_NAMES,
-        default=DEFAULT_PRESET,
+        # 既定は解析のあとで決める。Python 3.12 の argparse は、既定と同じ値を明示しても
+        # 相互排他の違反とみなさないため (`--preset k2s1 --pattern ...` が通ってしまう)
+        default=None,
         help=(
             "対象の選び方の名前。k2s1 は第 1 段の既定 (下の --pattern の既定と同じ)。k2s2a は\n"
             "第 1 段の対象 + MLA の射影 + KDA のまとめていない射影 + lm_head (MLA と KDA の層は\n"
@@ -91,7 +93,8 @@ def _build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
     try:
-        plan = plan_conversion(args.source, pattern=args.pattern, preset=args.preset)
+        preset = DEFAULT_PRESET if args.preset is None else args.preset
+        plan = plan_conversion(args.source, pattern=args.pattern, preset=preset)
         execute_plan(
             plan,
             args.output,
