@@ -117,7 +117,9 @@ vLLM の側 (ソースで確かめたと Issue に書いてある。この READM
 
 ## 3. 出力
 
-入力のディレクトリと同じ構成の、新しいディレクトリを作る。
+入力のディレクトリと同じ構成の、新しいディレクトリを作る。`--output` は、存在しないパスか、存在する
+**空の**ディレクトリ (`docker run --mount` の宛先は、コンテナの中に必ず存在する)。中身があれば、何も
+書かずに終了 1 で止まる。
 
 - 対象を含まない shard: 中身を変えずに写す (`--link` ならハードリンク)。
 - 対象を含む shard: 対象のテンソルだけを差し替える。ほかのテンソルは dtype・形・バイト列を保ち、
@@ -128,10 +130,18 @@ vLLM の側 (ソースで確かめたと Issue に書いてある。この READM
   同じ shard に足し、`metadata.total_size` を再計算する。index に載っていない shard の中身は、index に足さない。
 - `config.json`: 上の group を足したもの。
 - `manifest.json`: 出力のすべてのファイル (manifest 自身を除く) の `path`・`size`・`sha256` (`path` 順) と、
-  `total_bytes`、変換の条件 (`tool`、`tool_version`、元の repo と revision、`pattern`、変換した
+  `total_bytes`、変換の条件 (`tool`、`tool_version`、元の repo と revision、`pattern`、`args`、変換した
   `modules`、`weight_dtype`、`scale_dtype`、`strategy`) を書く。
 
+`conversion.args` は、道具に渡した引数のうち、**変換の結果を決めるもの**だけの列で、
+`["--source-repo", <repo>, "--source-revision", <revision>, "--pattern", <実際に使った pattern>]` になる
+(`--pattern` を渡さなくても、既定の値を書く)。`--source` と `--output` はマウントの位置に依存し、`--link` は
+出力のバイト列を変えないので、書かない (書くと、2 台の manifest が一致しなくなる)。serving の
+`serve derived-import` は、この列をそのまま派生のマニフェストの `derivation.conversion.args` にする。
+`args` のない manifest (0.1.0 までの形) は、`serve derived-import` が断る。
+
 同じ入力・同じ引数なら、出力はバイト単位で同じになる (時刻も絶対パスも書かない。試験で固定している)。
+`generated_at` と、道具を含むコミット (`commit`) も書かない。この 2 つは、`serve derived-import` が Mac で足す。
 
 入力に `manifest.json` があると、出力の manifest と取り違えるので、終了 1 で止まる。
 
@@ -158,47 +168,65 @@ uv run --directory experiments/k2-quant pytest -q
 公開仕様に従って自前で読み書きする)。
 
 試験は、小さな合成の checkpoint (数個の shard、数個の線形層。`tests/synthetic.py`) だけを使う。
-実機の重み、GPU、ネットワークは使わない。
+実機の重み、GPU、ネットワークは使わない。`tests/test_serving_chain.py` は、変換の結果を serving の取り込み
+(`serve derived-import`)・構成の生成・照合・関門まで通す (偽の実行役を相手にする)。そのため、dev の依存に
+`serving-kit` (`../../serving`。editable) を持つ。
+
+Linux (CI) では、CUDA の依存 (`cuda-toolkit` 群) を引かない CPU 版の `torch` を使う (`pyproject.toml` の
+`tool.uv.sources`。`download.pytorch.org/whl/cpu`)。macOS は PyPI の `torch` のままである。CI が
+`experiments/k2-quant` を検査する (`docs/development/ci.md`)。
 
 ## 5. 実機での実行の形
 
 **この節のコマンドは、対話側が実機で行う。** 実機の状態を変える (ファイルを作る) 操作なので、⚠ **了承を
-得てから**行う。道具そのものは SSH・rsync・Docker を呼ばない。
+得てから**行う。道具そのものは SSH・rsync・Docker を呼ばない。手順の全体 (道具の配布、2 台の変換、
+Mac への取り込み、照合) は、`docs/vllm-baseline/k2-derived-weights-procedure.md` にある。この節は、
+そのうちの変換のコマンドの意味を説明する。
 
-想定は、推論用のイメージ (`serve` が使うイメージと同じもの) のコンテナの中で、CPU だけで動かす形。
+道具は、推論用のイメージ (`serve` が使うイメージと同じもの) のコンテナの中で、CPU だけで動かす。
 `<remote_root>` は、実機の作業ディレクトリ (`serving/config/nodes.toml` の `remote_root`)。
-下の重みのパスと出力の名前は例なので、実機の配置に合わせる。
 
-1. 道具を実機へ配る (rsync。`experiments/k2-quant/` の下だけ)。実機に GitHub の認証情報は置かない。
-2. 推論サーバーを止めてから、コンテナを起動する。`--gpus` は付けない。
+1. 道具を実機へ配る。道具の写し (`experiments/k2-quant/k2_quant/` と同じ 7 ファイル) は
+   `serving/payload/k2-quant/k2_quant/` に置いてあり、`serve push` が実機の `<remote_root>/payload/` の
+   下へ配る (実機に GitHub の認証情報は置かない)。写しが道具と同じバイト列であることは、
+   `serving/tests/unit/test_payload.py` が固定している。道具を変えたら、写しも同じ変更で更新する。
+2. 変換の結果の置き場所 `<remote_root>/models/<新しい名前>` を、**空で**作る (`docker run --mount` は、
+   宛先がなければ失敗する)。推論サーバーを止めてから、コンテナを起動する。`--gpus` は付けない。
+   `--network none` でネットワークを切る (この道具はネットワークを使わない)。
 
 ```bash
-docker run --rm \
+docker run --rm --network none \
   --entrypoint python3 \
-  --mount type=bind,source=<remote_root>/models,target=/models \
-  --mount type=bind,source=<remote_root>/k2-quant,target=/work,readonly \
-  -w /work \
+  --mount type=bind,source=<remote_root>/payload/k2-quant,target=/tools/k2-quant,readonly \
+  --mount type=bind,source=<remote_root>/models/glm-5-3-flash-nvfp4,target=/origin,readonly \
+  --mount type=bind,source=<remote_root>/models/<新しい名前>,target=/derived \
+  -w /tools/k2-quant \
   <推論イメージ> \
   -m k2_quant \
-  --source /models/glm-5-3-flash-nvfp4 \
-  --output /models/<新しい名前> \
+  --source /origin \
+  --output /derived \
   --source-repo RedHatAI/GLM-5.3-Flash-NVFP4 \
-  --source-revision 18d55bfd5a2194887738da73753975c9d3842f46 \
-  --link
+  --source-revision 18d55bfd5a2194887738da73753975c9d3842f46
 ```
 
-- 上のコマンドで、コンテナの中では `python3 -m k2_quant --source … --output … --source-repo …
-  --source-revision … --link` が動く (Mac の `uv run … python -m k2_quant` と同じ道具)。
-- `--source-repo` と `--source-revision` は、manifest の変換条件に写る (元の重みは
-  `RedHatAI/GLM-5.3-Flash-NVFP4`、rev `18d55bfd5a2194887738da73753975c9d3842f46`。Issue の記載)。
-- `--link` は、入力と出力が同じファイルシステムにあるときだけ使える。別のファイルシステムだと
-  ハードリンクに失敗し、**写さずに** 終了 1 になる (黙って写す動きはしない)。`--link` を付けなければ、
-  対象を含まない shard も写すので、入力と同じ大きさのディスクが要る。
-- 出力先が既にあると、何も書かずに終了 1 になる (上書きしない)。途中で失敗したときは、出力の
-  ディレクトリが途中まで残るので、消してからやり直す。
+- 上のコマンドで、コンテナの中では `python3 -m k2_quant --source /origin --output /derived …` が動く
+  (Mac の `uv run … python -m k2_quant` と同じ道具)。`-w /tools/k2-quant` にするので、`-m k2_quant` が
+  写しの `k2_quant` パッケージを読む。
+- `--source-repo` と `--source-revision` は、manifest の変換条件 (`conversion.source`、`conversion.args`)
+  に写る (元の重みは `RedHatAI/GLM-5.3-Flash-NVFP4`、rev `18d55bfd5a2194887738da73753975c9d3842f46`。
+  Issue の記載)。
+- **`--link` は付けない。** 元の重み (`/origin`) と出力 (`/derived`) は別々の bind mount で、同じ
+  ファイルシステムの上でも、マウントの境界をまたぐハードリンクは `EXDEV` で失敗し、**写さずに**
+  終了 1 になる (黙って写す動きはしない)。`--link` を付けないので、対象を含まない shard も写す。
+  入力と同じ大きさのディスクが要る。`--link` は、入力と出力が同じマウントに見える場所 (Mac など) で
+  使える。
+- 出力先が既にあって中身があると、何も書かずに終了 1 になる (上書きしない)。存在する空のディレクトリは
+  受け付ける。途中で失敗したときは、出力のディレクトリが途中まで残るので、中身を消してからやり直す。
 - 出力のファイルの所有者は、コンテナの中のユーザーになる。必要なら `--user` を付ける (未確認)。
 - 実行の終わりに、変換したモジュール、書き直した shard、写した (リンクした) shard とファイル、写さなかった
   項目が、標準出力に出る。書き直した shard の大きさが、`--link` のときに増えるディスクの目安になる。
+- 2 台それぞれで同じコマンドを流すと、同じ `manifest.json` (バイト単位で同じ) ができる。それを Mac に
+  写して `serve derived-import` に渡す (手順書 §2)。
 
 ### メモリ・ディスク・所要時間の目安
 

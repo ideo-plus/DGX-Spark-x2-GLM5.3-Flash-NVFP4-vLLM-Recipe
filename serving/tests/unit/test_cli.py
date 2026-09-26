@@ -24,6 +24,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import io
 import json
 import subprocess
@@ -139,6 +140,7 @@ EXPECTED_COMMANDS: tuple[tuple[str, ...], ...] = (
     ("pull-image",),
     ("image-licenses",),
     ("manifest",),
+    ("derived-import",),
     ("fetch",),
     ("verify",),
     ("start",),
@@ -1341,6 +1343,264 @@ def test_manifest_writes_the_new_timestamp_when_the_files_changed(
     assert wg.load_manifest(repo.manifest).generated_at == datetime(2027, 1, 1, tzinfo=UTC)
 
 
+# --- serve derived-import -------------------------------------------------
+
+TOOL_PATTERN = r"^model\.language_model\.layers\.(?:0|3)\.mlp\.gate_proj$"
+TOOL_FILES: tuple[dict[str, Any], ...] = (
+    {"path": "config.json", "size": 4_096, "sha256": "1" * 64},
+    {"path": "model-00001-of-00003.safetensors", "size": 5_000, "sha256": "2" * 64},
+)
+
+
+def tool_manifest(
+    *, files: Sequence[dict[str, Any]] = TOOL_FILES, **top_level: Any
+) -> dict[str, Any]:
+    """変換の道具 (`experiments/k2-quant`) が書く `manifest.json` の形 (契約の形)。"""
+    payload: dict[str, Any] = {
+        "conversion": {
+            "tool": "k2-quant",
+            "tool_version": "0.2.0",
+            "source": {"repo": REPO, "revision": REVISION},
+            "pattern": TOOL_PATTERN,
+            "args": [
+                "--source-repo",
+                REPO,
+                "--source-revision",
+                REVISION,
+                "--pattern",
+                TOOL_PATTERN,
+            ],
+            "modules": ["model.language_model.layers.0.mlp.gate_proj"],
+            "weight_dtype": "F8_E4M3",
+            "scale_dtype": "F32",
+            "strategy": "channel",
+        },
+        "files": [dict(entry) for entry in files],
+        "total_bytes": sum(int(entry["size"]) for entry in files),
+    }
+    payload.update(top_level)
+    return payload
+
+
+def write_tool_manifest(directory: Path, name: str, payload: Mapping[str, Any]) -> Path:
+    """道具の `manifest.json` を、Mac に写したファイルとして書く。"""
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / name
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n")
+    return path
+
+
+def derived_import(
+    repo: Repo, inputs: Sequence[Path], *extra: str, now: Callable[[], datetime] | None = None
+) -> Run:
+    """`serve derived-import --name k2s1 --commit <40桁> <入力>...` を流す。"""
+    argv = ["derived-import", "--name", DERIVED_NAME, "--commit", DERIVED_COMMIT, *extra]
+    return run([*argv, *(str(path) for path in inputs)], repo, now=now)
+
+
+def imported_manifest_path(repo: Repo) -> Path:
+    return repo.serving / "weights" / DERIVED_MANIFEST_NAME
+
+
+def test_derived_import_writes_a_derived_manifest_made_from_the_tool_manifest(
+    tmp_path: Path,
+) -> None:
+    """道具の manifest から、`serving/weights/<名前>.manifest.json` の派生のマニフェストが書かれる。
+
+    `args` は入力の `conversion.args` の列そのまま、`target_pattern` は `conversion.pattern`、
+    `origin` は `conversion.source`。`commit` は引数、`tool` は既定の道具の道筋 (手で書かない)。
+    """
+    repo = make_repo(tmp_path)
+    source = write_tool_manifest(tmp_path / "in", "head.manifest.json", tool_manifest())
+
+    result = derived_import(repo, [source])
+
+    assert result.code == cli.EXIT_OK, result.err
+    written = wg.load_manifest(imported_manifest_path(repo))
+    assert isinstance(written, kt.DerivedWeightsManifest)
+    conversion = written.derivation.conversion
+    assert written.derivation.name == DERIVED_NAME
+    assert written.derivation.origin == kt.WeightsOrigin(repo=REPO, revision=REVISION)
+    assert conversion.tool == "experiments/k2-quant"
+    assert conversion.commit == DERIVED_COMMIT
+    assert conversion.args == (
+        "--source-repo",
+        REPO,
+        "--source-revision",
+        REVISION,
+        "--pattern",
+        TOOL_PATTERN,
+    )
+    assert conversion.target_pattern == TOOL_PATTERN
+    assert [(f.path, f.size, f.sha256) for f in written.files] == [
+        (str(f["path"]), int(f["size"]), str(f["sha256"])) for f in TOOL_FILES
+    ]
+    assert written.total_bytes == sum(int(f["size"]) for f in TOOL_FILES)
+
+
+def test_derived_import_reports_the_written_file_and_its_sha256_without_touching_spark(
+    tmp_path: Path,
+) -> None:
+    """標準出力に、名前・道筋・件数・合計・除いたもの・SHA-256・`status=written` を出す。
+
+    Spark には触らない (実行役を 1 つも作らない)。了承も求めない。
+    """
+    repo = make_repo(tmp_path)
+    source = write_tool_manifest(tmp_path / "in", "head.manifest.json", tool_manifest())
+
+    result = derived_import(repo, [source])
+
+    assert result.code == cli.EXIT_OK, result.err
+    assert result.spy.made == []
+    pairs = kv(result.out)
+    path = imported_manifest_path(repo)
+    assert pairs["name"] == DERIVED_NAME
+    assert pairs["path"] == str(path)
+    assert pairs["file_count"] == str(len(TOOL_FILES))
+    assert pairs["total_bytes"] == str(sum(int(f["size"]) for f in TOOL_FILES))
+    assert pairs["excluded"] == ""
+    assert pairs["status"] == "written"
+    assert pairs["manifest_sha256"] == hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def test_derived_import_records_the_tool_path_given_by_the_option(tmp_path: Path) -> None:
+    """`--tool` を渡すと、変換の道具の道筋は、その値になる。"""
+    repo = make_repo(tmp_path)
+    source = write_tool_manifest(tmp_path / "in", "head.manifest.json", tool_manifest())
+
+    result = derived_import(repo, [source], "--tool", "experiments/k2-quant-next")
+
+    assert result.code == cli.EXIT_OK, result.err
+    written = wg.load_manifest(imported_manifest_path(repo))
+    assert isinstance(written, kt.DerivedWeightsManifest)
+    assert written.derivation.conversion.tool == "experiments/k2-quant-next"
+
+
+def test_derived_import_leaves_out_model_card_like_files_like_serve_manifest(
+    tmp_path: Path,
+) -> None:
+    """モデルカードらしい名前と `.gitattributes` は、Hub のマニフェストと同じ規則で除く。"""
+    repo = make_repo(tmp_path)
+    files = (
+        {"path": ".gitattributes", "size": 10, "sha256": "3" * 64},
+        {"path": "README.md", "size": 20, "sha256": "4" * 64},
+        *TOOL_FILES,
+    )
+    source = write_tool_manifest(tmp_path / "in", "head.manifest.json", tool_manifest(files=files))
+
+    result = derived_import(repo, [source])
+
+    assert result.code == cli.EXIT_OK, result.err
+    written = wg.load_manifest(imported_manifest_path(repo))
+    assert [f.path for f in written.files] == [str(f["path"]) for f in TOOL_FILES]
+    assert written.total_bytes == sum(int(f["size"]) for f in TOOL_FILES)
+    assert kv(result.out)["excluded"] == ".gitattributes,README.md"
+
+
+def test_derived_import_accepts_two_manifests_that_differ_only_in_generated_at(
+    tmp_path: Path,
+) -> None:
+    """2 台ぶんの manifest は、最上位の `generated_at` だけが違っても、中身が同じなら受け取る。"""
+    repo = make_repo(tmp_path)
+    head = write_tool_manifest(
+        tmp_path / "in", "head.manifest.json", tool_manifest(generated_at="2026-09-25T00:00:00Z")
+    )
+    worker = write_tool_manifest(
+        tmp_path / "in", "worker.manifest.json", tool_manifest(generated_at="2026-09-26T09:30:00Z")
+    )
+
+    result = derived_import(repo, [head, worker])
+
+    assert result.code == cli.EXIT_OK, result.err
+    assert isinstance(wg.load_manifest(imported_manifest_path(repo)), kt.DerivedWeightsManifest)
+    assert kv(result.out)["inputs"] == "2"
+
+
+def test_derived_import_refuses_two_manifests_that_differ_and_writes_nothing(
+    tmp_path: Path,
+) -> None:
+    """2 台ぶんの manifest の中身が違うと、違う箇所を示して終了コード 1 で、何も書かない。
+
+    先頭だけを読んで残りを無視する取り込みは、2 台の変換の結果が違うことを見逃す。
+    """
+    repo = make_repo(tmp_path)
+    head = write_tool_manifest(tmp_path / "in", "head.manifest.json", tool_manifest())
+    other_files = (TOOL_FILES[0], {**TOOL_FILES[1], "sha256": "f" * 64})
+    worker = write_tool_manifest(
+        tmp_path / "in", "worker.manifest.json", tool_manifest(files=other_files)
+    )
+
+    result = derived_import(repo, [head, worker])
+
+    assert result.code == cli.EXIT_PRECONDITION
+    assert "files[1].sha256" in result.err
+    assert "worker.manifest.json" in result.err
+    assert not imported_manifest_path(repo).exists()
+    assert result.spy.made == []
+
+
+def test_derived_import_refuses_a_manifest_without_the_recorded_arguments(tmp_path: Path) -> None:
+    """`conversion.args` がない manifest (実際の引数の記録がない形) は、補わずに断る。"""
+    repo = make_repo(tmp_path)
+    payload = tool_manifest()
+    del payload["conversion"]["args"]
+    source = write_tool_manifest(tmp_path / "in", "head.manifest.json", payload)
+
+    result = derived_import(repo, [source])
+
+    assert result.code == cli.EXIT_PRECONDITION
+    assert "args" in result.err
+    assert not imported_manifest_path(repo).exists()
+
+
+def test_derived_import_does_not_overwrite_a_hub_manifest(tmp_path: Path) -> None:
+    """宛先に Hub のマニフェストがあれば、終了コード 1 で、そのバイト列を変えない。"""
+    repo = make_repo(tmp_path)
+    destination = imported_manifest_path(repo)
+    destination.write_bytes(wg.to_json_bytes(MANIFEST))
+    before = destination.read_bytes()
+    source = write_tool_manifest(tmp_path / "in", "head.manifest.json", tool_manifest())
+
+    result = derived_import(repo, [source])
+
+    assert result.code == cli.EXIT_PRECONDITION
+    assert destination.read_bytes() == before
+
+
+def test_derived_import_keeps_the_previous_timestamp_when_nothing_changed(tmp_path: Path) -> None:
+    """中身が同じなら、前の `generated_at` を保つ (時刻だけの差分を出さない)。"""
+    repo = make_repo(tmp_path)
+    source = write_tool_manifest(tmp_path / "in", "head.manifest.json", tool_manifest())
+    first = derived_import(repo, [source], now=stepping_clock(FIRST_NOW))
+    assert first.code == cli.EXIT_OK, first.err
+    written = imported_manifest_path(repo).read_bytes()
+
+    again = derived_import(repo, [source], now=stepping_clock(FIRST_NOW + timedelta(days=30)))
+
+    assert again.code == cli.EXIT_OK, again.err
+    assert imported_manifest_path(repo).read_bytes() == written
+    assert kv(again.out)["reused_generated_at"] == "true"
+
+
+def test_derived_import_writes_the_new_timestamp_when_the_content_changed(tmp_path: Path) -> None:
+    """中身が変われば、新しい `generated_at` で書き直す。"""
+    repo = make_repo(tmp_path)
+    source = write_tool_manifest(tmp_path / "in", "head.manifest.json", tool_manifest())
+    derived_import(repo, [source], now=stepping_clock(FIRST_NOW))
+    first = wg.load_manifest(imported_manifest_path(repo)).generated_at
+    later = FIRST_NOW + timedelta(days=30)
+    changed_files = (TOOL_FILES[0], {**TOOL_FILES[1], "sha256": "e" * 64})
+    changed = write_tool_manifest(
+        tmp_path / "in", "head.manifest.json", tool_manifest(files=changed_files)
+    )
+
+    result = derived_import(repo, [changed], now=stepping_clock(later))
+
+    assert result.code == cli.EXIT_OK, result.err
+    assert kv(result.out)["reused_generated_at"] == "false"
+    assert wg.load_manifest(imported_manifest_path(repo)).generated_at >= later > first
+
+
 # --- serve fetch / verify -------------------------------------------------
 
 
@@ -1536,6 +1796,7 @@ def _derived_record_json(role: NodeRole) -> str:
     return kt.DerivedVerificationRecord(
         kind="derived",
         derivation=manifest.derivation,
+        manifest_sha256=manifest.content_sha256,
         scope="all",
         node=role,
         verified_at=datetime(2026, 9, 26, 1, 30, tzinfo=UTC),

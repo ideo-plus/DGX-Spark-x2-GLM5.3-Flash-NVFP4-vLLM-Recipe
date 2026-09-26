@@ -1084,16 +1084,25 @@ def _record_problems(
     if isinstance(record, DerivedVerificationRecord):
         if not isinstance(manifest, DerivedWeightsManifest):
             problems.append("マニフェストが、派生のマニフェストでない")
-        elif record.derivation != manifest.derivation:
-            differences = _derivation_difference(
-                record.derivation, manifest.derivation, compared_label="記録"
-            )
-            detail = (
-                f"派生の重みが違う (記録: {record.identity}、マニフェスト: {manifest.identity})"
-            )
-            if differences:
-                detail += " (違うところ: " + " / ".join(differences) + ")"
-            problems.append(detail)
+        else:
+            if record.derivation != manifest.derivation:
+                differences = _derivation_difference(
+                    record.derivation, manifest.derivation, compared_label="記録"
+                )
+                detail = (
+                    f"派生の重みが違う (記録: {record.identity}、マニフェスト: {manifest.identity})"
+                )
+                if differences:
+                    detail += " (違うところ: " + " / ".join(differences) + ")"
+                problems.append(detail)
+            # `derivation`・件数・合計が同じでも、1 ファイルの sha256 が違うマニフェストがありうる。
+            # 記録は、照合した中身そのもの (マニフェストのバイト列) に結び付ける
+            if record.manifest_sha256 != manifest.content_sha256:
+                problems.append(
+                    f"記録が結び付くマニフェストが違う (記録: {record.manifest_sha256}、"
+                    f"コミットしたマニフェスト: {manifest.content_sha256}。マニフェストを"
+                    "差し替えたなら serve verify で照合し直す)"
+                )
     elif not isinstance(manifest, WeightsManifest):
         problems.append("マニフェストが、Hub のマニフェストでない")
     else:

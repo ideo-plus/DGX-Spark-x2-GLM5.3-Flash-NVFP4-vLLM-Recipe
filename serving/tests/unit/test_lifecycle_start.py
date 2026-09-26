@@ -721,6 +721,7 @@ def derived_verified_record(role: NodeRole, manifest: kt.DerivedWeightsManifest)
     return kt.DerivedVerificationRecord(
         kind="derived",
         derivation=manifest.derivation,
+        manifest_sha256=manifest.content_sha256,
         scope="all",
         node=role,
         verified_at=VERIFIED_AT,

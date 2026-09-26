@@ -888,22 +888,15 @@ def derived_weights(
     )
 
 
-def derived_serve_config(*, origin_revision: str = REVISION, kind: str = "serve") -> ConfigDef:
+def derived_serve_config(*, origin_revision: str = REVISION) -> ConfigDef:
     """派生の重みを、読み取り専用で結び付ける推論サーバーの構成 (`serve_config` に沿う)。"""
-    base = serve_config() if kind == "serve" else probe_config()
-    docker = dict(base.docker)
-    if kind == "serve":
-        docker["mount-weights"] = _setting(
-            "--mount",
-            f"type=bind,source={{remote_root}}/models/{DERIVED_NAME},"
-            f"target=/models/{DERIVED_NAME},readonly",
-        )
-    else:
-        docker["mount-probe"] = _setting(
-            "--mount",
-            f"type=bind,source={{remote_root}}/probe/{DERIVED_NAME},target=/probe,readonly",
-        )
-    return base.model_copy(
+    docker = dict(serve_config().docker)
+    docker["mount-weights"] = _setting(
+        "--mount",
+        f"type=bind,source={{remote_root}}/models/{DERIVED_NAME},"
+        f"target=/models/{DERIVED_NAME},readonly",
+    )
+    return serve_config().model_copy(
         update={
             "name": f"p2-nope-tp2-full-{DERIVED_NAME}",
             "weights": derived_weights(origin_revision=origin_revision),
@@ -928,20 +921,24 @@ def derived_record_json(
     role: NodeRole,
     *,
     derived: kit_types.Derivation | None = None,
-    scope: str = "all",
+    manifest: kit_types.DerivedWeightsManifest | None = None,
     file_count: int | None = None,
     mismatched: Sequence[str] = (),
 ) -> str:
-    """派生の照合の結果の記録の中身 (`record_json` の派生版)。"""
-    files = MANIFEST.probe_files if scope == "probe_files" else MANIFEST.files
+    """派生の照合の結果の記録の中身 (`record_json` の派生版)。
+
+    記録が結び付くマニフェストは、既定では `derived_manifest()` (関門に渡す既定のマニフェスト)。
+    """
+    bound = derived_manifest() if manifest is None else manifest
     record = kit_types.DerivedVerificationRecord(
         kind="derived",
         derivation=derivation() if derived is None else derived,
-        scope="probe_files" if scope == "probe_files" else "all",
+        manifest_sha256=bound.content_sha256,
+        scope="all",
         node=role,
         verified_at=VERIFIED_AT,
-        file_count=len(files) if file_count is None else file_count,
-        total_bytes=sum(entry.size for entry in files),
+        file_count=len(MANIFEST.files) if file_count is None else file_count,
+        total_bytes=MANIFEST.total_bytes,
         mismatched=tuple(mismatched),
     )
     return record.model_dump_json()
@@ -1155,6 +1152,84 @@ def test_a_derived_record_with_a_different_file_count_is_refused(tmp_path: Path)
     assert "3" in detail and str(len(MANIFEST.files)) in detail
 
 
+def swapped_derived_manifest() -> kit_types.DerivedWeightsManifest:
+    """`derived_manifest()` と、1 ファイルの sha256 だけが違う。
+
+    件数・大きさ・合計・`derivation` は同じである。
+    """
+    first = MANIFEST_FILES[0]
+    files = (first.model_copy(update={"sha256": "f" * 64}), *MANIFEST_FILES[1:])
+    return derived_manifest().model_copy(update={"files": files})
+
+
+def test_a_derived_record_is_refused_when_the_committed_manifest_was_swapped(
+    tmp_path: Path,
+) -> None:
+    """記録が結び付くマニフェストと、いま渡されたマニフェストの中身が違えば断る。
+
+    同じ `derivation`・ファイルの数・大きさの合計でも、1 ファイルの sha256 が違うマニフェストを
+    正解にすると、その前のマニフェストで作った記録は、この正解の照合にならない。
+    """
+    swapped = swapped_derived_manifest()
+    assert swapped.derivation == derived_manifest().derivation
+    assert swapped.total_bytes == derived_manifest().total_bytes
+    assert len(swapped.files) == len(derived_manifest().files)
+
+    runner, results = derived_gates_for(tmp_path, derived_serve_config(), manifest=swapped)
+
+    for role in ROLES:
+        assert not passed_of(results, "weights_verified", role)
+        detail = detail_of(results, "weights_verified", role)
+        assert "マニフェストが違う" in detail
+        assert derived_manifest().content_sha256 in detail
+        assert swapped.content_sha256 in detail
+    assert set(cat_paths(runner)) == {DERIVED_ALL_RECORD}
+
+
+def test_a_derived_record_is_accepted_when_it_is_bound_to_the_committed_manifest(
+    tmp_path: Path,
+) -> None:
+    """記録が、いま渡されたマニフェストに結び付いていれば、差し替えた側でも通る。
+
+    記録を作り直せば (照合し直せば)、差し替えたマニフェストを正解にできる。
+    """
+    swapped = swapped_derived_manifest()
+    records: Records = {
+        role: {DERIVED_ALL_RECORD: derived_record_json(role, manifest=swapped)} for role in ROLES
+    }
+
+    _, results = derived_gates_for(
+        tmp_path,
+        derived_serve_config(),
+        manifest=swapped,
+        script=Script(records=records),
+    )
+
+    assert passed_of(results, "weights_verified", "head")
+    assert passed_of(results, "weights_verified", "worker")
+
+
+def test_a_derived_record_without_the_manifest_sha256_is_refused(tmp_path: Path) -> None:
+    """マニフェストへの結び付けのない記録 (`manifest_sha256` がない) は、読めない記録として断る。"""
+    unbound = json.loads(derived_record_json("head"))
+    del unbound["manifest_sha256"]
+    records: Records = {
+        "head": {DERIVED_ALL_RECORD: json.dumps(unbound)},
+        "worker": {DERIVED_ALL_RECORD: derived_record_json("worker")},
+    }
+
+    _, results = derived_gates_for(
+        tmp_path,
+        derived_serve_config(),
+        manifest=derived_manifest(),
+        script=Script(records=records),
+    )
+
+    assert not passed_of(results, "weights_verified", "head")
+    assert "重みの照合の記録を読めない" in detail_of(results, "weights_verified", "head")
+    assert passed_of(results, "weights_verified", "worker")
+
+
 def test_the_derived_record_paths_are_separate_from_the_hub_record_paths(tmp_path: Path) -> None:
     weights = derived_weights()
     assert g.weights_record_path(HEAD, weights, "all") == DERIVED_ALL_RECORD
@@ -1170,22 +1245,6 @@ def test_the_hub_record_path_is_unchanged(tmp_path: Path) -> None:
     # Hub の重みは、いまと同じ道筋 (`<slug>.verified.json`) で読み書きする
     assert g.weights_record_path(HEAD, WEIGHTS, "all") == ALL_RECORD
     assert g.weights_record_path(HEAD, WEIGHTS, "probe_files") == PROBE_RECORD
-
-
-def test_a_derived_probe_config_reads_the_derived_probe_record(tmp_path: Path) -> None:
-    config = derived_serve_config(kind="probe")
-    records: Records = {
-        "head": {
-            DERIVED_PROBE_RECORD: derived_record_json("head", scope="probe_files"),
-            DERIVED_ALL_RECORD: derived_record_json("head"),
-        },
-        "worker": {},
-    }
-    runner = runner_of(tmp_path, Script(records=records))
-    results = g.run_gates(runner, config, NODES, plans_of(config), manifest=derived_manifest())
-
-    assert passed_of(results, "weights_verified", "head")
-    assert set(cat_paths(runner)) == {DERIVED_PROBE_RECORD}
 
 
 def test_the_required_space_of_a_derived_config_is_the_derived_manifest_total() -> None:

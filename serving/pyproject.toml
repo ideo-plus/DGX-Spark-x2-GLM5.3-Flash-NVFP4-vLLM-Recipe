@@ -31,7 +31,9 @@ dev = [
 [tool.ruff]
 line-length = 100
 target-version = "py312"
-src = ["src", "tests"]
+# `payload/k2-quant` は、変換の道具 (`experiments/k2-quant/k2_quant`) の写し。`k2_quant` を
+# 自前のパッケージとして扱う (import の並びの検査が、道具の側と同じ結果になる)
+src = ["src", "tests", "payload/k2-quant"]
 # `payload/vllm_sanity_check.py` は、vLLM の公式のトラブルシュートの文書のコードブロックを、
 # 1 文字も変えずに置いたもの (task 4.2)。整形も静的検査も、この上流の原文を書き換えない・
 # 誤りとして指摘しないよう、ruff の対象から外す (`allreduce_bench.py` は自前のコードなので

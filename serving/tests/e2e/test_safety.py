@@ -642,6 +642,99 @@ def run_manifest(
     return invocation, tuple(transport.requests)
 
 
+def _tool_manifest_payload() -> dict[str, Any]:
+    """変換の道具 (`experiments/k2-quant`) が書く `manifest.json` の形 (小さな見本)。"""
+    files = [
+        {"path": "config.json", "size": 2, "sha256": "1" * 64},
+        {"path": "model-00001-of-00001.safetensors", "size": 8, "sha256": "2" * 64},
+    ]
+    pattern = r"^lm_head$"
+    return {
+        "conversion": {
+            "tool": "k2-quant",
+            "tool_version": "0.2.0",
+            "source": {"repo": k.REPO, "revision": k.REVISION},
+            "pattern": pattern,
+            "args": [
+                "--source-repo",
+                k.REPO,
+                "--source-revision",
+                k.REVISION,
+                "--pattern",
+                pattern,
+            ],
+            "modules": ["lm_head"],
+            "weight_dtype": "F8_E4M3",
+            "scale_dtype": "F32",
+            "strategy": "channel",
+        },
+        "files": files,
+        "total_bytes": sum(entry["size"] for entry in files),
+    }
+
+
+def run_derived_import(repo: k.Repo, inputs_dir: Path) -> tuple[k.Invocation, tuple[Path, ...]]:
+    """`serve derived-import` は、Spark にも Hub にも触らず、`serving/weights/` に 1 つだけ書く。
+
+    2 台ぶんの manifest (中身は同じ) を、リポジトリの外の `inputs_dir` に置いて渡す。
+    `runner_factory` は、呼ばれたら落ちるものを渡す。Hub への口 (`weights_mod.new_client`) も、
+    この呼び出しの間だけ、呼ばれたら落ちるものに差し替える。返すのは、呼び出しの前後で
+    リポジトリの下に新しくできたファイル。
+    """
+    import io
+
+    inputs_dir.mkdir(parents=True, exist_ok=True)
+    inputs = []
+    for name in ("spark-153d.manifest.json", "spark-5083.manifest.json"):
+        path = inputs_dir / name
+        path.write_text(json.dumps(_tool_manifest_payload()) + "\n", encoding="utf-8")
+        inputs.append(str(path))
+
+    def exploding_factory(var_root: Path) -> FakeRunner:
+        raise AssertionError("serve derived-import は、Spark に触ってはいけない")
+
+    def exploding_client(timeout_s: float | None = None) -> httpx.Client:
+        raise AssertionError("serve derived-import は、Hub に触ってはいけない")
+
+    before = set(k.files_under(repo.root))
+    out = io.StringIO()
+    err = io.StringIO()
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(weights_mod, "new_client", exploding_client)
+        code = cli.main(
+            [
+                "derived-import",
+                "--name",
+                "k2s1",
+                "--commit",
+                "a" * 40,
+                *inputs,
+                "--configs",
+                str(repo.configs),
+                "--nodes",
+                str(repo.nodes),
+                "--var-root",
+                str(repo.var_root),
+            ],
+            runner_factory=exploding_factory,
+            stdin=io.StringIO(""),
+            stdout=out,
+            stderr=err,
+            repo_root=repo.root,
+            repo_facts=(k.REPO_COMMIT, False),
+            now=lambda: datetime.now(UTC),
+            sleep=k.never_sleep,
+        )
+    written = tuple(sorted(set(k.files_under(repo.root)) - before))
+    invocation = k.Invocation(
+        code=code,
+        out=out.getvalue(),
+        err=err.getvalue(),
+        runner=FakeRunner(var_root=repo.var_root),
+    )
+    return invocation, written
+
+
 def _known_container_names(base: Path) -> set[str]:
     """このファイルの台本が「自分のコンテナ」として使う、すべての名前を組み立てる。
 
@@ -1317,6 +1410,57 @@ def test_rule8_manifest_never_requests_the_model_card_from_the_hub(world: World)
 
     manifest_calls = world.calls_of("manifest")
     assert not manifest_calls, f"serve manifest が Spark に触った: {manifest_calls}"
+
+
+@dataclass
+class DerivedImportRun:
+    """`serve derived-import` を 1 度流した結果 (Spark に触らない他のシナリオと、別に流す)。"""
+
+    invocation: k.Invocation
+    written: tuple[str, ...]
+    """呼び出しの前後で、リポジトリの下に新しくできたファイル (リポジトリの根からの相対の道筋)。"""
+
+
+@pytest.fixture(scope="module")
+def derived_import_run(tmp_path_factory: pytest.TempPathFactory) -> DerivedImportRun:
+    """`world` (Spark を相手にする全サブコマンド) とは別に、`derived-import` だけを流す。
+
+    このサブコマンドは Spark にも Hub にも触らないので、`world` の網 (Spark への呼び出しの一覧)
+    には、何も足さない。`world` の組み立てが `derived-import` の有無に左右されないように、別の
+    フィクスチャにする。
+    """
+    base = tmp_path_factory.mktemp("safety-derived-import")
+    repo = k.make_repo(base, port=k.UNUSED_PORT)
+    invocation, written = run_derived_import(repo, base / "inputs")
+    return DerivedImportRun(
+        invocation=invocation,
+        written=tuple(path.relative_to(repo.root).as_posix() for path in written),
+    )
+
+
+def test_derived_import_touches_neither_spark_nor_the_hub(
+    derived_import_run: DerivedImportRun,
+) -> None:
+    """`serve derived-import` は、Spark にも Hub にも触らない。
+
+    操作の対象は Mac の `serving/weights/` だけである。実行役の工場と Hub への口は、呼ばれたら
+    落ちるものを渡している。終了コード 0 で終わり、落ちた印の文言が標準エラーにないことで、
+    どちらにも触れなかったことを確かめる。
+    """
+    invocation = derived_import_run.invocation
+
+    assert invocation.code == cli.EXIT_OK, invocation.err
+    assert "触ってはいけない" not in invocation.err
+
+
+def test_derived_import_writes_only_the_manifest_under_serving_weights(
+    derived_import_run: DerivedImportRun,
+) -> None:
+    """`serve derived-import` が新しく作るファイルは、`serving/weights/<名前>.manifest.json` だけ。
+
+    `var_root` の下 (記録の置き場所) にも、`payload/` にも、何も書かない。
+    """
+    assert derived_import_run.written == ("serving/weights/k2s1.manifest.json",)
 
 
 def test_rule8_fetch_excludes_the_model_card_from_the_download(world: World) -> None:

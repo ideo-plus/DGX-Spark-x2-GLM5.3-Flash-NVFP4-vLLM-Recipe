@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import ast
 import inspect
+import re
 from datetime import UTC, datetime
 from ipaddress import IPv4Address
 from pathlib import Path
@@ -263,6 +264,7 @@ DERIVED_MANIFEST = t.DerivedWeightsManifest(
 DERIVED_VERIFIED = t.DerivedVerificationRecord(
     kind="derived",
     derivation=DERIVATION,
+    manifest_sha256="d" * 64,
     scope="all",
     node="head",
     verified_at=AT,
@@ -784,6 +786,94 @@ def test_derived_manifest_kind_must_be_the_explicit_derived_literal() -> None:
         t.DerivedWeightsManifest.model_validate(payload)
 
 
+def test_manifest_content_sha256_is_a_sha256_hex_digest() -> None:
+    """マニフェストの中身の SHA-256 は、64 桁の小文字の 16 進である。"""
+    assert re.fullmatch(r"[0-9a-f]{64}", DERIVED_MANIFEST.content_sha256)
+
+
+def test_equal_manifests_have_the_same_content_sha256() -> None:
+    """同じ中身のマニフェストは、JSON を往復しても同じ SHA-256 になる。"""
+    restored = t.DerivedWeightsManifest.model_validate_json(DERIVED_MANIFEST.model_dump_json())
+
+    assert restored == DERIVED_MANIFEST
+    assert restored.content_sha256 == DERIVED_MANIFEST.content_sha256
+
+
+def test_manifest_content_sha256_changes_when_one_file_hash_changes() -> None:
+    """1 ファイルの sha256 が違うだけのマニフェストは、別の SHA-256 になる。
+
+    件数・大きさ・`derivation` が同じでも、差し替えたマニフェストを見分けられること。
+    """
+    first = DERIVED_MANIFEST.files[0]
+    swapped_files = (
+        first.model_copy(update={"sha256": "f" * 64}),
+        *DERIVED_MANIFEST.files[1:],
+    )
+    swapped = DERIVED_MANIFEST.model_copy(update={"files": swapped_files})
+
+    assert swapped.total_bytes == DERIVED_MANIFEST.total_bytes
+    assert swapped.derivation == DERIVED_MANIFEST.derivation
+    assert swapped.content_sha256 != DERIVED_MANIFEST.content_sha256
+
+
+def test_derived_verification_record_requires_the_manifest_sha256() -> None:
+    """`manifest_sha256` のない記録 (結び付けのない古い形) は、型として断る。"""
+    payload = DERIVED_VERIFIED.model_dump()
+    del payload["manifest_sha256"]
+
+    with pytest.raises(ValidationError, match="manifest_sha256"):
+        t.DerivedVerificationRecord.model_validate(payload)
+
+
+@pytest.mark.parametrize("bad", ["", "a" * 63, "a" * 65, "A" * 64, "g" * 64])
+def test_derived_verification_record_manifest_sha256_is_sixty_four_lowercase_hex(bad: str) -> None:
+    payload = DERIVED_VERIFIED.model_dump()
+    payload["manifest_sha256"] = bad
+
+    with pytest.raises(ValidationError, match="manifest_sha256"):
+        t.DerivedVerificationRecord.model_validate(payload)
+
+
+def test_derived_weights_are_refused_for_a_probe_config_with_the_reason() -> None:
+    """派生の重みは、`kind = "probe"` の構成に結び付けられない。
+
+    理由 (`serve fetch --probe-files` の道がなく、縮小の確認の置き場所を作れない) を、
+    型の誤りの文で示す。
+    """
+    payload = CONFIG.model_dump()
+    payload["kind"] = "probe"
+    payload["weights"] = DERIVED_WEIGHTS.model_dump()
+
+    with pytest.raises(ValidationError) as caught:
+        t.ConfigDef.model_validate(payload)
+
+    message = str(caught.value)
+    assert "派生の重みを使えない" in message
+    assert "--probe-files" in message
+
+
+def test_derived_weights_are_accepted_for_a_serve_config() -> None:
+    """派生の重みは、`kind = "serve"` の構成には結び付けられる。"""
+    payload = CONFIG.model_dump()
+    payload["weights"] = DERIVED_WEIGHTS.model_dump()
+
+    config = t.ConfigDef.model_validate(payload)
+
+    assert config.kind == "serve"
+    assert config.weights == DERIVED_WEIGHTS
+
+
+def test_hub_weights_are_still_accepted_for_a_probe_config() -> None:
+    """Hub の重みは、`kind = "probe"` の構成に、いまと同じように結び付けられる。"""
+    payload = CONFIG.model_dump()
+    payload["kind"] = "probe"
+
+    config = t.ConfigDef.model_validate(payload)
+
+    assert config.kind == "probe"
+    assert config.weights == WEIGHTS
+
+
 # --- 3.1 構成 -----------------------------------------------------------
 
 
@@ -1216,8 +1306,24 @@ def test_the_reply_summary_itself_carries_no_body() -> None:
 # --- 依存の向き ---------------------------------------------------------
 
 ALLOWED_IMPORT_ROOTS = frozenset(
-    {"__future__", "datetime", "enum", "ipaddress", "pathlib", "re", "typing", "pydantic"}
+    {
+        "__future__",
+        "datetime",
+        "enum",
+        "hashlib",
+        "ipaddress",
+        "json",
+        "pathlib",
+        "re",
+        "typing",
+        "pydantic",
+    }
 )
+"""標準ライブラリと pydantic だけ。
+
+`hashlib` と `json` は、マニフェストの正規のバイト列と、その SHA-256 (`ManifestFiles` の
+`canonical_bytes` と `content_sha256`) を、この部品が持つために足した。
+"""
 
 
 def test_types_module_imports_nothing_from_serving_kit() -> None:

@@ -15,6 +15,7 @@
 | `serve pull-image <構成>` | イメージを、ダイジェストで 2 台に取得する | 変える |
 | `serve image-licenses <構成>` | イメージの中のライセンスの表記を読んで出す | 変える |
 | `serve manifest <repo> <revision>` | Mac で、重みのマニフェストを作る | 変えない |
+| `serve derived-import <manifest>...` | 道具の manifest を、Mac で取り込む | 変えない |
 | `serve fetch <構成> [--probe-files]` | 重みを 2 台に取得して照合する | 変える |
 | `serve verify <構成> [--probe-files]` | 2 台の重みをマニフェストと照合する | 変える |
 | `serve start <構成> [--timeout]` | 2 台で起こし、受け付けの開始まで待つ | 変える |
@@ -95,6 +96,10 @@
    `probe_files` の範囲で照合する**。縮小の確認の構成が読む照合の記録は、`guards` が
    `<remote_root>/state/<slug>.probe.verified.json` に固定していて (design.md 「関門」)、
    全体の範囲の記録では、その構成の関門が通らないためである
+18. **`serve derived-import` は、Spark にも Hub にも触らない** (`derived` の読み取りと変換と、
+   `serving/weights/` への書き込みだけ)。2 台ぶんの manifest は、最上位の `generated_at` を除いて
+   一致するときだけ取り込み、違う箇所を示して終了コード 1 にする。宛先に Hub のマニフェストが
+   あれば上書きしない。中身が同じなら、`serve manifest` と同じく、前の `generated_at` を保つ
 """
 
 from __future__ import annotations
@@ -116,6 +121,7 @@ import httpx
 
 from serving_kit import (
     __version__,
+    derived,
     guards,
     image,
     lifecycle,
@@ -132,6 +138,7 @@ from serving_kit.remote import RemoteError, RemoteRunner, SshRunner
 from serving_kit.types import (
     AnyWeightsManifest,
     ConfigDef,
+    DerivedWeightsManifest,
     GateResult,
     LaunchObservation,
     LinkReport,
@@ -577,6 +584,38 @@ def build_parser() -> argparse.ArgumentParser:
     manifest.add_argument("repo", metavar="<repo>", help="Hugging Face Hub のリポジトリの名前")
     manifest.add_argument("revision", metavar="<revision>", help="40 桁の commit sha")
 
+    derived_import = _leaf(
+        subparsers,
+        "derived-import",
+        "変換の道具が書いた manifest.json を、派生の重みのマニフェストとして"
+        " serving/weights/ に取り込む (Spark に触らない)",
+    )
+    derived_import.add_argument(
+        "--name",
+        required=True,
+        metavar="<名前>",
+        help="派生の重みの名前 (英数字とハイフン。例: k2s1)。マニフェストの名前になる",
+    )
+    derived_import.add_argument(
+        "--commit",
+        required=True,
+        metavar="<40桁>",
+        help="変換に使った道具を含むコミット (40 桁の 16 進)",
+    )
+    derived_import.add_argument(
+        "--tool",
+        default=derived.DEFAULT_TOOL_PATH,
+        metavar="<道筋>",
+        help=f"リポジトリの中の、変換の道具の道筋 (既定: {derived.DEFAULT_TOOL_PATH})",
+    )
+    derived_import.add_argument(
+        "manifests",
+        nargs="+",
+        type=Path,
+        metavar="<manifest.json>",
+        help="2 台ぶんの manifest.json (最上位の generated_at を除いて一致しなければ断る)",
+    )
+
     fetch = _with_config(subparsers, "fetch", "重みを 2 台に取得して照合する")
     fetch.add_argument(
         "--probe-files",
@@ -903,17 +942,79 @@ def _cmd_manifest(ctx: _Context) -> int:
     return EXIT_OK
 
 
-def _reuse_generated_at(manifest: WeightsManifest, path: Path) -> WeightsManifest | None:
-    """前のマニフェストと中身が同じなら、前の `generated_at` を保つ (決めごとの 11)。"""
+def _reuse_generated_at[M: (WeightsManifest, DerivedWeightsManifest)](
+    manifest: M, path: Path
+) -> M | None:
+    """前のマニフェストと中身が同じなら、前の `generated_at` を保つ (決めごとの 11)。
+
+    前のマニフェストが別の種類 (Hub と派生) なら、中身は同じにならないので `None` を返す。
+    """
     if not path.is_file():
         return None
     try:
         previous = weights_mod.load_manifest(path)
     except (weights_mod.WeightsError, ValueError, OSError):
         return None
+    if type(previous) is not type(manifest):
+        return None
     if previous.model_copy(update={"generated_at": manifest.generated_at}) != manifest:
         return None
     return manifest.model_copy(update={"generated_at": previous.generated_at})
+
+
+# --- serve derived-import -------------------------------------------------
+
+
+def _cmd_derived_import(ctx: _Context) -> int:
+    """道具の manifest を、派生の重みのマニフェストとして取り込む (決めごとの 18)。"""
+    tools = [derived.read_tool_manifest(source) for source in ctx.args.manifests]
+    differences = derived.compare_tool_manifests(tools)
+    if differences:
+        raise weights_mod.WeightsRefError(
+            "2 台のマニフェストが一致しない: " + " / ".join(differences)
+        )
+    name = str(ctx.args.name)
+    result = derived.import_tool_manifest(
+        tools[0],
+        name=name,
+        tool_path=str(ctx.args.tool),
+        commit=str(ctx.args.commit),
+        generated_at=ctx.now(),
+    )
+    manifest = result.manifest
+    path = ctx.serving / "weights" / f"{name}.manifest.json"
+    if path.is_file() and isinstance(weights_mod.load_manifest(path), WeightsManifest):
+        raise weights_mod.WeightsRefError(
+            f"'{path}' は Hub の重みのマニフェストなので、派生の重みで上書きしない (別の名前を選ぶ)"
+        )
+    reused = _reuse_generated_at(manifest, path)
+    if reused is not None:
+        manifest = reused
+    path.parent.mkdir(parents=True, exist_ok=True)
+    weights_mod.write_manifest(manifest, path)
+    conversion = manifest.derivation.conversion
+    ctx.show.say("name", name)
+    ctx.show.say("path", path)
+    ctx.show.say(
+        "origin", manifest.derivation.origin.repo + "@" + manifest.derivation.origin.revision
+    )
+    ctx.show.say("tool", conversion.tool)
+    ctx.show.say("commit", conversion.commit)
+    ctx.show.say("target_pattern", conversion.target_pattern)
+    ctx.show.say("file_count", len(manifest.files))
+    ctx.show.say("total_bytes", manifest.total_bytes)
+    ctx.show.say("excluded", ",".join(result.excluded_paths))
+    ctx.show.say("inputs", len(tools))
+    ctx.show.say("manifest_sha256", manifest.content_sha256)
+    ctx.show.say("generated_at", manifest.generated_at.isoformat())
+    ctx.show.say("reused_generated_at", reused is not None)
+    ctx.show.say("status", "written")
+    ctx.show.detail(
+        f"{len(tools)} 台ぶんの manifest が一致した。{len(manifest.files)} ファイル、"
+        f"{manifest.total_bytes} バイトの派生のマニフェストを書いた"
+        + (f" (除いたもの: {', '.join(result.excluded_paths)})" if result.excluded_paths else "")
+    )
+    return EXIT_OK
 
 
 # --- serve fetch / verify -------------------------------------------------
@@ -1488,6 +1589,7 @@ _HANDLERS: Final[Mapping[str, Callable[[_Context], int]]] = {
     "pull-image": _cmd_pull_image,
     "image-licenses": _cmd_image_licenses,
     "manifest": _cmd_manifest,
+    "derived-import": _cmd_derived_import,
     "fetch": _cmd_fetch,
     "verify": _cmd_verify,
     "start": _cmd_start,

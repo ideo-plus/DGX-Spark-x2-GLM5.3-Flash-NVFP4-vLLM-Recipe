@@ -7,7 +7,9 @@
 - 対象を含む shard は対象だけが FP8 になり、他のテンソルはバイト列・dtype・`__metadata__` を保つ
 - index に `weight_scale` が増え、`total_size` を作り直す (索引外 shard は足さない)
 - manifest が出力の全ファイルを SHA-256 と大きさで覆い、変換条件を持つ
+- manifest の `conversion.args` が、出力を決める実際の引数 (元の repo・版・pattern) だけを持つ
 - 同じ入力・同じ引数なら出力はバイト単位で同じ
+- 出力先は、新しいディレクトリか、存在する空のディレクトリ (bind mount の宛先)
 - 入力の不備では出力を 1 ファイルも書かずに終了 1
 """
 
@@ -32,6 +34,7 @@ from k2_quant import TOOL_NAME, TOOL_VERSION
 from k2_quant import safetensors_file as sf
 from k2_quant.__main__ import main
 from k2_quant.fp8 import dequantize_per_channel
+from k2_quant.selection import DEFAULT_PATTERN
 
 SOURCE_REPO = "RedHatAI/GLM-5.3-Flash-NVFP4"
 SOURCE_REVISION = "18d55bfd5a2194887738da73753975c9d3842f46"
@@ -72,6 +75,12 @@ def _read_json(path: Path) -> dict[str, object]:
 def _read_config(path: Path) -> dict[str, Any]:
     parsed: dict[str, Any] = json.loads(path.read_text(encoding="utf-8"))
     return parsed
+
+
+def _manifest_conversion(output: Path) -> dict[str, Any]:
+    """出力の `manifest.json` の `conversion` (変換の条件) を読む。"""
+    conversion: dict[str, Any] = _read_config(output / synthetic.MANIFEST_NAME)["conversion"]
+    return conversion
 
 
 def _group_target(output: Path) -> str:
@@ -478,6 +487,69 @@ def test_manifest_lists_all_output_files_with_hashes(tmp_path: Path) -> None:
     assert conversion["strategy"] == "channel"
 
 
+def test_manifest_records_the_arguments_that_shape_the_output(tmp_path: Path) -> None:
+    """manifest の `conversion.args` は、元の repo・元の版・実際に使った pattern の列になる。
+
+    取り込み側 (`serve derived-import`) は、この列をそのまま派生の重みの変換の引数にする。
+    """
+    source = tmp_path / "source"
+    output = tmp_path / "output"
+    synthetic.build_checkpoint(source)
+
+    assert _run(source, output, pattern=NARROW_PATTERN) == 0
+
+    assert _manifest_conversion(output)["args"] == [
+        "--source-repo",
+        SOURCE_REPO,
+        "--source-revision",
+        SOURCE_REVISION,
+        "--pattern",
+        NARROW_PATTERN,
+    ]
+
+
+def test_manifest_records_the_default_pattern_when_pattern_is_omitted(tmp_path: Path) -> None:
+    """`--pattern` を渡さなくても、`conversion.args` には実際に使った既定の pattern を明示する。"""
+    source = tmp_path / "source"
+    output = tmp_path / "output"
+    synthetic.build_checkpoint(source)
+
+    assert _run(source, output) == 0
+
+    conversion = _manifest_conversion(output)
+    assert conversion["args"] == [
+        "--source-repo",
+        SOURCE_REPO,
+        "--source-revision",
+        SOURCE_REVISION,
+        "--pattern",
+        DEFAULT_PATTERN,
+    ]
+    assert conversion["pattern"] == DEFAULT_PATTERN
+
+
+def test_manifest_does_not_depend_on_where_the_paths_are_or_on_link(tmp_path: Path) -> None:
+    """`--source`・`--output` の場所と `--link` の有無は、manifest のバイト列を変えない。
+
+    実機では入力と出力のマウント位置が違うので、これらが `conversion.args` に入ると、
+    2 台の manifest が一致しなくなり、`--link` を使ったかどうかで出力も変わってしまう。
+    """
+    first_source = tmp_path / "first-source"
+    second_source = tmp_path / "elsewhere" / "second-source"
+    first = tmp_path / "first"
+    second = tmp_path / "other" / "second"
+    synthetic.build_checkpoint(first_source)
+    synthetic.build_checkpoint(second_source)
+    second.parent.mkdir()
+
+    assert _run(first_source, first) == 0
+    assert _run(second_source, second, link=True) == 0
+
+    first_manifest = (first / synthetic.MANIFEST_NAME).read_bytes()
+    assert (second / synthetic.MANIFEST_NAME).read_bytes() == first_manifest
+    assert "--link" not in _manifest_conversion(second)["args"]
+
+
 def test_conversion_is_deterministic(tmp_path: Path) -> None:
     """同じ入力・同じ引数なら全ファイルがバイト単位で同じ (C6)。"""
     source = tmp_path / "source"
@@ -531,15 +603,40 @@ def test_other_files_are_copied_and_subdirectories_skipped(
     assert synthetic.SKIPPED_DIR_NAME in captured.out
 
 
-def test_rejects_existing_output_directory(tmp_path: Path) -> None:
-    """出力先が既存なら終了 1 で、何も書かない (C7)。"""
+def test_rejects_a_non_empty_existing_output_directory(tmp_path: Path) -> None:
+    """中身のある既存の出力先は終了 1 で、何も書き足さない (C7)。"""
+    source = tmp_path / "source"
+    output = tmp_path / "output"
+    synthetic.build_checkpoint(source)
+    output.mkdir()
+    (output / "keep.txt").write_text("既存\n", encoding="utf-8")
+
+    assert _run(source, output) == 1
+    assert sorted(path.name for path in output.iterdir()) == ["keep.txt"]
+    assert (output / "keep.txt").read_text(encoding="utf-8") == "既存\n"
+
+
+def test_accepts_an_existing_empty_output_directory(tmp_path: Path) -> None:
+    """存在する空のディレクトリは、出力先として受け付け、全ファイルを書く。
+
+    `docker run --mount type=bind,target=/derived` の宛先は、コンテナの中に必ず存在する。
+    """
     source = tmp_path / "source"
     output = tmp_path / "output"
     synthetic.build_checkpoint(source)
     output.mkdir()
 
-    assert _run(source, output) == 1
-    assert list(output.iterdir()) == []
+    assert _run(source, output, pattern=NARROW_PATTERN) == 0
+
+    written = sorted(path.name for path in output.iterdir())
+    assert synthetic.MANIFEST_NAME in written
+    assert synthetic.CONFIG_NAME in written
+    assert synthetic.INDEX_NAME in written
+    assert set(synthetic.SHARD_NAMES) | {synthetic.NON_INDEXED_SHARD} <= set(written)
+    manifest_paths = [
+        entry["path"] for entry in _read_config(output / synthetic.MANIFEST_NAME)["files"]
+    ]
+    assert manifest_paths == [name for name in written if name != synthetic.MANIFEST_NAME]
 
 
 def test_rejects_zero_selection(tmp_path: Path) -> None:

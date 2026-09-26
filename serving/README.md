@@ -68,6 +68,7 @@ uv run serve stop --yes
 | `serve pull-image <構成>` | イメージを、ダイジェストで 2 台に取得して照合する | **変える** |
 | `serve image-licenses <構成>` | イメージの中のライセンスの表記を読んで出す (`kind = "inspect"` のコンテナを起こし、読み終えたら消す) | **変える** |
 | `serve manifest <repo> <revision>` | Mac で、重みのマニフェストを作る | 変えない (Spark に触らない) |
+| `serve derived-import --name <名前> --commit <40桁> [--tool <道筋>] <manifest.json>...` | 変換の道具 (`experiments/k2-quant`) が書いた `manifest.json` を、派生の重みのマニフェスト (`serving/weights/<名前>.manifest.json`) として取り込む。2 台ぶんを渡すと、最上位の `generated_at` を除いて一致するときだけ書く | 変えない (Spark に触らない) |
 | `serve fetch <構成> [--probe-files]` | 重み (または、設定とトークナイザだけ) を 2 台に取得して照合する | **変える** |
 | `serve verify <構成> [--probe-files]` | 2 台の重みを、マニフェストと照合する | **変える** (照合の記録の 1 ファイルだけ) |
 | `serve start <構成> [--timeout <秒>]` | 2 台で起こし、受け付けの開始まで待つ | **変える** |
@@ -150,7 +151,7 @@ traceback を出さずに、`エラー: <1 行>` として標準エラーに出�
 
 | 置き場所 | 何を置くか | 配布の宛先にできるか |
 |---|---|---|
-| `payload/` | Spark で流すスクリプト、`spark-power-caps.default` (`serving/payload/` の中身) | できる |
+| `payload/` | Spark で流すスクリプト、`spark-power-caps.default`、`k2-quant/` (変換の道具 `experiments/k2-quant/k2_quant` の写し。試験でバイト単位の同一を固定) (`serving/payload/` の中身) | できる |
 | `models/` | 重み (本体) | できない |
 | `probe/` | 縮小の確認用の、設定とトークナイザ | できない |
 | `cache/` | JIT などのキャッシュ | できない |

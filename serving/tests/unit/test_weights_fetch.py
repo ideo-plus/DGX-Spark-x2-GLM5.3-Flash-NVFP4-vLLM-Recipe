@@ -1691,6 +1691,19 @@ def test_a_derived_verification_reads_its_own_directory_and_writes_a_derived_rec
     assert record["mismatched"] == []
 
 
+def test_a_derived_record_carries_the_content_sha256_of_the_verified_manifest(
+    tmp_path: Path,
+) -> None:
+    """照合の記録は、照合の正解にしたマニフェストの中身の SHA-256 を、2 台とも持つ。"""
+    verify_derived(derived_verify_runner(tmp_path), tmp_path)
+
+    for role in ROLES:
+        record = json.loads(
+            (record_source(tmp_path, role) / DERIVED_RECORD_NAME).read_text(encoding="utf-8")
+        )
+        assert record["manifest_sha256"] == derived_manifest().content_sha256
+
+
 def test_the_derived_record_this_module_writes_is_read_back_by_the_gate(tmp_path: Path) -> None:
     # 派生の記録は、この module と guards の継ぎ目で、同じ道筋・同じ形で読める
     verify_derived(derived_verify_runner(tmp_path), tmp_path)

@@ -468,6 +468,47 @@ def test_the_same_derived_input_produces_byte_identical_manifests() -> None:
     assert list(payload["files"][0].keys()) == sorted(payload["files"][0].keys())
 
 
+def test_a_written_derived_manifest_has_the_content_sha256_of_its_file_bytes(
+    tmp_path: Path,
+) -> None:
+    """`write_manifest` が書いたファイルのバイト列の SHA-256 が、`content_sha256` である。
+
+    照合の記録が結び付く値は、コミットしたマニフェストのバイト列そのものの SHA-256 になる。
+    """
+    manifest = _derived_manifest()
+    path = tmp_path / "weights" / "k2s1.manifest.json"
+
+    w.write_manifest(manifest, path)
+
+    assert hashlib.sha256(path.read_bytes()).hexdigest() == manifest.content_sha256
+
+
+def test_a_hub_manifest_file_written_by_write_manifest_has_its_content_sha256(
+    tmp_path: Path,
+) -> None:
+    """Hub のマニフェストの `content_sha256` も、書いたファイルのバイト列の SHA-256 である。"""
+    manifest = kit_types.WeightsManifest.model_validate(_hub_payload())
+    path = tmp_path / "hub.manifest.json"
+
+    w.write_manifest(manifest, path)
+
+    assert hashlib.sha256(path.read_bytes()).hexdigest() == manifest.content_sha256
+
+
+def test_the_committed_hub_manifest_is_written_back_byte_for_byte() -> None:
+    """コミット済みの Hub のマニフェストを読んで書き出すと、バイト列が変わらない。
+
+    Hub のマニフェストの出力の形 (鍵の順、字下げ、末尾の改行) は、派生のための変更で変えない。
+    """
+    committed = (
+        Path(__file__).resolve().parents[2]
+        / "weights"
+        / "RedHatAI__GLM-5.3-Flash-NVFP4.manifest.json"
+    )
+
+    assert w.to_json_bytes(w.load_manifest(committed)) == committed.read_bytes()
+
+
 # --- 誤り: 大きさと sha256 --------------------------------------------------
 
 

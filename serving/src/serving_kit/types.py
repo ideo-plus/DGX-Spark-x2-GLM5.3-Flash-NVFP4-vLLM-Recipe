@@ -26,6 +26,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 from datetime import datetime
 from enum import StrEnum
@@ -390,6 +392,12 @@ class ConfigDef(_Frozen):
         name = self.served_model_name
         if name is not None and (not name or any(ch in name for ch in " \t,/")):
             raise ValueError(f"served_model_name は、/ や空白を含まない 1 つの名前にする: {name}")
+        if self.kind == "probe" and isinstance(self.weights, DerivedWeightsRef):
+            raise ValueError(
+                "kind が probe の構成は、手元で変換した派生の重みを使えない (派生の重みには"
+                " serve fetch --probe-files の道がなく、縮小の確認用の置き場所 probe/<名前>/ に"
+                "設定とトークナイザを置けない)"
+            )
         return self
 
 
@@ -586,6 +594,10 @@ class ManifestFiles(_Frozen):
 
     `files` は `path` の順に並べ、モデルカード (`README.md`) と `.gitattributes` は
     載せない。並びと合計の検証は、派生のマニフェストにも同じように掛かる。
+
+    コミットするファイルのバイト列 (`canonical_bytes`) と、その SHA-256 (`content_sha256`) の
+    所有者も、この型である (`weights.to_json_bytes` は、ここへ委譲する)。照合の記録は、
+    `content_sha256` で、どのマニフェストの中身を照合したかを結び付ける。
     """
 
     total_bytes: NonNegativeInt
@@ -608,6 +620,21 @@ class ManifestFiles(_Frozen):
         if total != self.total_bytes:
             raise ValueError(f"total_bytes ({self.total_bytes}) が files の合計 ({total}) と違う")
         return self
+
+    def canonical_bytes(self) -> bytes:
+        """マニフェストを、同じ入力なら同じバイト列になる形で書き出す。
+
+        鍵の順 (アルファベット順)、2 字の字下げ、末尾の改行を固定する (`logs.py` の
+        `collect.json` と同じ流儀)。`weights.write_manifest` が書くバイト列は、これである。
+        """
+        payload = self.model_dump(mode="json")
+        text = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+        return text.encode("utf-8")
+
+    @property
+    def content_sha256(self) -> str:
+        """`canonical_bytes` の SHA-256 (小文字の 16 進 64 桁)。"""
+        return hashlib.sha256(self.canonical_bytes()).hexdigest()
 
     @property
     def probe_files(self) -> tuple[ManifestFile, ...]:
@@ -686,10 +713,15 @@ class DerivedVerificationRecord(_Frozen):
 
     `serve verify` が `state/<名前>.derived.verified.json` に書く。Hub の記録とは
     別の道筋・別の型にして、別の種類の記録を読まないことを構造で保証する。
+
+    `manifest_sha256` は、照合の正解にしたマニフェストの中身の SHA-256 (`content_sha256`) で
+    ある。必須の項目にして、マニフェストを差し替えたあとに、前のマニフェストで作った記録が
+    通らないようにする (`guards` が、いまのマニフェストの値と突き合わせる)。
     """
 
     kind: Literal["derived"]
     derivation: Derivation
+    manifest_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     scope: VerificationScope
     node: NodeRole
     verified_at: datetime
