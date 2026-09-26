@@ -38,6 +38,8 @@ import pytest
 from serving_kit.types import BandwidthRun, BandwidthSample
 
 PAYLOAD_DIR = Path(__file__).resolve().parents[2] / "payload"
+K2_QUANT_TOOL_DIR = Path(__file__).resolve().parents[3] / "experiments" / "k2-quant" / "k2_quant"
+K2_QUANT_COPY_DIR = PAYLOAD_DIR / "k2-quant" / "k2_quant"
 ALLREDUCE_BENCH_PATH = PAYLOAD_DIR / "allreduce_bench.py"
 VLLM_SANITY_CHECK_PATH = PAYLOAD_DIR / "vllm_sanity_check.py"
 
@@ -455,6 +457,34 @@ def test_the_ruff_config_also_excludes_the_upstream_script() -> None:
 
     assert ruff.get("force-exclude") is True
     assert ruff.get("extend-exclude") == ["payload/vllm_sanity_check.py"]
+
+
+def _python_sources(directory: Path) -> dict[str, bytes]:
+    """ディレクトリ直下の `*.py` を、名前からバイト列への対応にする (`__pycache__` は見ない)。"""
+    assert directory.is_dir(), f"ディレクトリがない: {directory}"
+    return {path.name: path.read_bytes() for path in sorted(directory.glob("*.py"))}
+
+
+def test_the_k2_quant_payload_copy_has_the_same_files_as_the_tool() -> None:
+    """Spark に配る変換の道具の写しは、道具と同じ名前の `*.py` を、過不足なく持つ。
+
+    `serve push` は `serving/payload/` の中身を配る。道具の本体は `experiments/k2-quant/` に
+    あるので、配るための写しを `serving/payload/k2-quant/` に置く。
+    """
+    assert set(_python_sources(K2_QUANT_COPY_DIR)) == set(_python_sources(K2_QUANT_TOOL_DIR))
+
+
+def test_the_k2_quant_payload_copy_is_byte_identical_to_the_tool() -> None:
+    """写しの各ファイルは、道具のファイルと 1 バイトも違わない。
+
+    コミットした道具の内容と、Spark で動かす写しが同じであることを、この試験で固定する。
+    """
+    tool = _python_sources(K2_QUANT_TOOL_DIR)
+    copy = _python_sources(K2_QUANT_COPY_DIR)
+
+    different = sorted(name for name in tool if name in copy and tool[name] != copy[name])
+
+    assert not different, f"写しが道具と違う: {different}"
 
 
 def _run_ruff(args: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:

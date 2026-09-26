@@ -193,6 +193,7 @@ __all__ = [
     "WeightsRefError",
     "build_manifest",
     "default_weights_dir",
+    "exclusion_reason",
     "fetch_weights",
     "load_manifest",
     "manifest_path",
@@ -362,7 +363,7 @@ def _parse_entry(raw: object, *, source: str, index: int) -> _RawEntry:
     return _RawEntry(path=raw_path, is_file=True, size=raw_size, lfs_sha256=lfs_sha256)
 
 
-def _exclusion_reason(path: str) -> str | None:
+def exclusion_reason(path: str) -> str | None:
     """モデルカードらしい名前と `.gitattributes` を除く理由 (指摘 4)。
 
     requirements 8.8 / 11.3: モデルカードは、DGX Spark の起動のレシピそのものでありうるので
@@ -646,7 +647,7 @@ def _build_files(
     for entry in raw_entries:
         if not entry.is_file:
             continue
-        if _exclusion_reason(entry.path) is not None:
+        if exclusion_reason(entry.path) is not None:
             excluded.append(entry.path)
             continue
         if entry.lfs_sha256 is not None:
@@ -785,10 +786,10 @@ def to_json_bytes(manifest: AnyWeightsManifest) -> bytes:
 
     鍵の順 (アルファベット順)、2 字の字下げ、末尾の改行を固定する (`logs.py` の
     `collect.json` と同じ流儀。tasks.md 3.2 の完了の状態: 同じ入力から同じファイルができる)。
+    バイト列の作り方の所有者は `types.ManifestFiles.canonical_bytes` で、照合の記録が結び付く
+    SHA-256 (`content_sha256`) も、同じバイト列から作る。
     """
-    payload = manifest.model_dump(mode="json")
-    text = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
-    return text.encode("utf-8")
+    return manifest.canonical_bytes()
 
 
 def write_manifest(manifest: AnyWeightsManifest, path: Path) -> None:
@@ -1957,6 +1958,7 @@ def _make_record(
         return DerivedVerificationRecord(
             kind="derived",
             derivation=manifest.derivation,
+            manifest_sha256=manifest.content_sha256,
             scope=scope,
             node=node,
             verified_at=verified_at,

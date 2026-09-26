@@ -219,6 +219,13 @@ uv run serve image-licenses p1-image-hf-version --yes   # 取得の道具 hf の
 `uv run serve manifest RedHatAI/GLM-5.3-Flash-NVFP4 <40 桁の revision>` で作る。Spark に
 触らない)。
 
+手元で変換した重み (K2 の FP8 など) のマニフェストは、Hub から作らず、変換の道具が書いた
+`manifest.json` を
+`uv run serve derived-import --name <名前> --commit <40 桁の commit> <manifest.json>...`
+で取り込んで、`serving/weights/<名前>.manifest.json` に書く (Spark に触らない。2 台ぶんを
+渡すと、`generated_at` を除いた一致を確かめる)。手順は
+[K2 の派生の重みの手順書](k2-derived-weights-procedure.md) の §2 にある。
+
 段 0 は、重みの本体 (184.3 GiB) を 1 バイトも落とさない。要るのは、設定とトークナイザ
 (約 37 MiB) だけである。
 

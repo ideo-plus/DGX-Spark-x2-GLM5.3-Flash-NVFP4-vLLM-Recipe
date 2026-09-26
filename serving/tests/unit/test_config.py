@@ -1830,6 +1830,31 @@ def test_a_derived_weights_config_without_the_kind_is_refused(repo: Path) -> Non
     assert f"configs.{DERIVED}.weights" in message
 
 
+def test_a_probe_config_with_derived_weights_is_refused_with_the_reason(repo: Path) -> None:
+    """`kind = "probe"` の構成に派生の重みを結び付けると、読み込みで、構成の行として断る。
+
+    理由 (`serve fetch --probe-files` の道がなく、縮小の確認の置き場所を作れない) を示す。
+    """
+    _write_derived_manifest(repo)
+    _write_origin_manifest(repo)
+    text = _toml(_config(DERIVED, kind="probe", weights=False), _derived_weights())
+
+    message = _refuse(repo, text)
+
+    lines = [line for line in message.splitlines() if line.startswith(f"configs.{DERIVED}: ")]
+    assert any("派生の重みを使えない" in line and "--probe-files" in line for line in lines), (
+        message
+    )
+
+
+def test_a_probe_config_with_hub_weights_still_loads(repo: Path) -> None:
+    """Hub の重みの `kind = "probe"` の構成は、いまと同じように読める。"""
+    configs = _load(repo, _toml(_config(PROBE, kind="probe")))
+
+    assert configs[PROBE].kind == "probe"
+    assert isinstance(configs[PROBE].weights, WeightsRef)
+
+
 # --- 依存の向き ---------------------------------------------------------
 
 ALLOWED_IMPORT_ROOTS = frozenset(

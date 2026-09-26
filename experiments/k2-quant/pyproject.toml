@@ -1,6 +1,6 @@
 [project]
 name = "k2-quant"
-version = "0.1.0"
+version = "0.2.0"
 description = "K2 第 1 段: 共有の専門家・dense・lm_head を FP8 (重みだけ、チャネルごと) にする変換の道具"
 requires-python = ">=3.12"
 dependencies = ["torch~=2.13.0", "numpy~=2.5"]
@@ -11,10 +11,22 @@ dev = [
     "ruff~=0.16.8",
     "mypy~=2.3.1",
     "safetensors~=0.8.0",
+    # 変換の結果を serving の取り込みの口・照合・関門まで通す試験 (tests/test_serving_chain.py) が使う
+    "serving-kit",
 ]
 
 [tool.uv]
 package = false
+
+[tool.uv.sources]
+serving-kit = { path = "../../serving", editable = true }
+# Linux (CI) では、CUDA の依存 (`cuda-toolkit` 群) を引かない CPU 版の torch を使う
+torch = [{ index = "pytorch-cpu", marker = "sys_platform == 'linux'" }]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
 
 [tool.ruff]
 line-length = 100
@@ -31,8 +43,9 @@ quote-style = "double"
 python_version = "3.12"
 strict = true
 files = ["k2_quant", "tests"]
-mypy_path = "tests"
+# serving の試験の補助 (fake_runner.py) を、連鎖の試験が使う
+mypy_path = "tests:../../serving/tests"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = [".", "tests"]
+pythonpath = [".", "tests", "../../serving/tests"]

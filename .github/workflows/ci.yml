@@ -21,7 +21,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        project: [bench, serving]
+        project: [bench, serving, experiments/k2-quant]
     defaults:
       run:
         working-directory: ${{ matrix.project }}
