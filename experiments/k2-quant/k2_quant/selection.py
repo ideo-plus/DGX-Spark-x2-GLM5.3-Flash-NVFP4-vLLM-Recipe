@@ -5,15 +5,24 @@
 実行時の層名に当てる target ではない。`config.json` に足す target は、選ばれた
 モジュールから `quant_config` が作る (この正規表現は書かない)。
 
-既定は Issue #56 の第 1 段の範囲: dense の MLP (層 0〜2)、共有の専門家、lm_head。MTP の
-`eh_proj` は既定から外す。vLLM (commit 0961bbae、`vllm/models/glm5next/common/mtp.py:49`)
-の `eh_proj` は `self.eh_proj = nn.Linear(config.hidden_size * 2, config.hidden_size,
-bias=False)` で、`quant_config` を受けない plain `nn.Linear` なので、FP8 の `eh_proj` を
-読み込めない。一方、MTP の head (`shared_head.head`) は `SharedHead`
-(`vllm/model_executor/models/deepseek_mtp.py`) の中の `ParallelLMHead` で、`quant_config`
-を受けるので、既定に残す (Issue は MTP の head も「別の重みとしてあるなら対象にする」と
-しているので、その名前の形も選ぶ。実機の index にその名前が無ければ、何も選ばれない。
-名前は未確認)。`eh_proj` を含めたいときは、`--pattern` にその分岐を足して渡す。
+既定は Issue #56 の第 1 段の範囲のうち、dense の MLP (層 0〜2) と共有の専門家。第 1 段の
+範囲に挙がっている次の 2 種は、vLLM が FP8 の重みを読めないので、既定から外す。
+
+- MTP の `eh_proj`: vLLM (commit 0961bbae、`vllm/models/glm5next/common/mtp.py:49`) の
+  `eh_proj` は `self.eh_proj = nn.Linear(config.hidden_size * 2, config.hidden_size,
+  bias=False)` で、`quant_config` を受けない plain `nn.Linear` なので、FP8 の `eh_proj` を
+  読み込めない。
+- `lm_head` と MTP の head (`shared_head.head`): vLLM 0961bbae は、FP8 (W8A16、
+  compressed-tensors) の `ParallelLMHead` を humming の線形カーネルで読めず、
+  `AttributeError: 'ParallelLMHead' object has no attribute 'output_partition_sizes'` で
+  起動できなかった (2026-09-26 の実機。#68)。`lm_head` は `ParallelLMHead` (`model.py:947-951`。
+  `docs/research/2026-09-26-k2-quant-survey.md` §1 の表)、`shared_head.head` は `SharedHead`
+  (`vllm/model_executor/models/deepseek_mtp.py`) の中の同じ `ParallelLMHead`。同調査は、ソースから
+  `lm_head` を「量子化できる」と読んでいたが、実機では読めなかった。例外を出したカーネルの
+  ファイルと行は、この repo の記録に無く、未確認。
+
+これらを含めたいとき (実験目的) は、`--pattern` にその分岐を足して渡す (README の「`--pattern` の
+書き方」)。変換自体はできるが、vLLM 0961bbae では読み込めない。
 """
 
 from __future__ import annotations
@@ -27,8 +36,6 @@ from k2_quant.safetensors_file import TensorInfo
 DEFAULT_PATTERN: Final[str] = (
     r".*\.layers\.(?:0|1|2)\.mlp\.(?:gate|up|down)_proj$"
     r"|.*\.layers\.\d+\.mlp\.shared_experts\.(?:gate|up|down)_proj$"
-    r"|.*\.layers\.\d+\.shared_head\.head$"
-    r"|(?:.*\.)?lm_head$"
 )
 
 WEIGHT_SUFFIX: Final = ".weight"

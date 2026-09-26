@@ -5,6 +5,8 @@
 
 - 対象を含まない shard と shard 以外の通常ファイルはバイト単位で同じ (`--link` なら同じ inode)
 - 対象を含む shard は対象だけが FP8 になり、他のテンソルはバイト列・dtype・`__metadata__` を保つ
+- 既定では `lm_head` と MTP の `shared_head.head` を変換せず (#68)、`ignore` に残す。
+  `--pattern` で明示したときだけ変換する
 - index に `weight_scale` が増え、`total_size` を作り直す (索引外 shard は足さない)
 - manifest が出力の全ファイルを SHA-256 と大きさで覆い、変換条件を持つ
 - manifest の `conversion.args` が、出力を決める実際の引数 (元の repo・版・pattern) だけを持つ
@@ -289,6 +291,8 @@ def test_output_config_adds_only_the_fp8_group_and_removes_only_converted_names(
     # eh_proj は既定で変換しないので、ignore に残る (vLLM が quant_config を受けない
     # plain nn.Linear として実装しているため)
     assert "model.language_model.layers.45.eh_proj" in ignore_after
+    # lm_head も既定で変換しないので、ignore に残る (FP8 の ParallelLMHead を読めない。#68)
+    assert "lm_head" in ignore_after
 
     def without(config: dict[str, Any], *keys: str) -> dict[str, Any]:
         return {key: value for key, value in config.items() if key not in keys}
@@ -305,9 +309,9 @@ def test_output_target_matches_only_the_runtime_names_of_converted_modules(tmp_p
     vLLM は `re:` 付き target を、実行時の層名に `re.match` で当てる。本体は
     `language_model.model.layers.N...`、MTP は `model.layers.45...`、lm_head は
     `language_model.lm_head`。checkpoint にあるが既定で変換しない `eh_proj` (vLLM が
-    quant_config を受けない plain `nn.Linear` として実装しているため) や、checkpoint に無い
-    (変換していない) `shared_head.head`、専門家、`ignore` にだけ名前がある層 7 の共有の
-    専門家には、当たらない。
+    quant_config を受けない plain `nn.Linear` として実装しているため) と `lm_head`
+    (FP8 の `ParallelLMHead` を読めない。#68)、checkpoint に無い (変換していない)
+    `shared_head.head`、専門家、`ignore` にだけ名前がある層 7 の共有の専門家には、当たらない。
     """
     source = tmp_path / "source"
     output = tmp_path / "output"
@@ -320,10 +324,10 @@ def test_output_target_matches_only_the_runtime_names_of_converted_modules(tmp_p
         "language_model.model.layers.0.mlp.gate_proj",
         "language_model.model.layers.3.mlp.shared_experts.up_proj",
         "model.layers.45.mlp.shared_experts.down_proj",
-        "language_model.lm_head",
     ):
         assert _hits(target, converted), converted
     for not_converted in (
+        "language_model.lm_head",
         "model.layers.45.shared_head.head",
         "model.layers.45.eh_proj",
         "language_model.model.layers.3.mlp.experts.0.gate_proj",
@@ -356,16 +360,95 @@ def test_eh_proj_is_not_converted_by_default(tmp_path: Path) -> None:
     assert module in config["quantization_config"]["ignore"]
 
 
-def test_output_target_matches_the_shared_head_when_it_is_converted(tmp_path: Path) -> None:
-    """MTP の head の重みがあれば既定で変換され、出力の `targets` もその実行時の名前に当たる (C3)。
+def test_lm_head_is_not_converted_by_default(tmp_path: Path) -> None:
+    """`lm_head` は既定では変換されず、dtype・バイト列を保ち、`weight_scale` を足さず、
+    `ignore` に残る。
 
-    重みが無い場合に当たらないこと (上の試験) と対になる。変換された head は `ignore` から外れる。
+    FP8 (W8A16、compressed-tensors) の `ParallelLMHead` を humming の線形カーネルで読めず、
+    `AttributeError: 'ParallelLMHead' object has no attribute 'output_partition_sizes'` で
+    起動できなかった (#68)。同じ shard の dense の対象は変換され、書き直した shard の中で
+    `lm_head` のバイト列が保たれる。
+    """
+    source = tmp_path / "source"
+    output = tmp_path / "output"
+    synthetic.build_checkpoint(source)
+
+    assert _run(source, output) == 0
+
+    shard = synthetic.SHARD_NAMES[2]
+    dense = "model.language_model.layers.2.mlp.down_proj"
+    assert _tensor_identity(output / shard, "lm_head.weight") == _tensor_identity(
+        source / shard, "lm_head.weight"
+    )
+    assert _tensor_identity(output / shard, "lm_head.weight")[0] == torch.bfloat16
+    with safe_open(str(output / shard), framework="pt") as handle:
+        names = set(handle.keys())
+        assert handle.get_tensor(f"{dense}.weight").dtype == torch.float8_e4m3fn
+    assert "lm_head.weight_scale" not in names
+    assert f"{dense}.weight_scale" in names
+    config = _read_config(output / synthetic.CONFIG_NAME)
+    assert "lm_head" in config["quantization_config"]["ignore"]
+
+
+def test_shared_head_is_not_converted_by_default(tmp_path: Path) -> None:
+    """MTP の head の重みがあっても、既定では変換されず、バイト列を保ち、`weight_scale` を足さず、
+    `ignore` に残り、出力の `targets` もその実行時の名前に当たらない。
+
+    `shared_head.head` は `SharedHead` (`vllm/model_executor/models/deepseek_mtp.py`) の中の
+    `ParallelLMHead` で、`lm_head` と同じく FP8 では読めない (#68)。
     """
     source = tmp_path / "source"
     output = tmp_path / "output"
     synthetic.build_checkpoint(source, include_shared_head=True)
 
     assert _run(source, output) == 0
+
+    module = synthetic.SHARED_HEAD_MODULE
+    shard = synthetic.SHARD_NAMES[2]
+    assert _tensor_identity(output / shard, f"{module}.weight") == _tensor_identity(
+        source / shard, f"{module}.weight"
+    )
+    assert _tensor_identity(output / shard, f"{module}.weight")[0] == torch.bfloat16
+    with safe_open(str(output / shard), framework="pt") as handle:
+        assert f"{module}.weight_scale" not in set(handle.keys())
+    assert not _hits(_group_target(output), "model.layers.45.shared_head.head")
+    config = _read_config(output / synthetic.CONFIG_NAME)
+    assert module in config["quantization_config"]["ignore"]
+
+
+def test_lm_head_is_converted_when_the_pattern_names_it(tmp_path: Path) -> None:
+    """`--pattern` に `lm_head` の分岐を足せば、`lm_head` も変換され、`ignore` から外れ、
+    出力の `targets` がその実行時の名前 (`language_model.lm_head`) に当たる。
+
+    既定から外しても、変換の能力は残る。
+    """
+    source = tmp_path / "source"
+    output = tmp_path / "output"
+    synthetic.build_checkpoint(source)
+
+    assert _run(source, output, pattern=DEFAULT_PATTERN + r"|(?:.*\.)?lm_head$") == 0
+
+    converted = _load_tensors(output)
+    assert converted["lm_head.weight"].dtype == torch.float8_e4m3fn
+    assert "lm_head.weight_scale" in converted
+    assert _hits(_group_target(output), "language_model.lm_head")
+    config = _read_config(output / synthetic.CONFIG_NAME)
+    assert "lm_head" not in config["quantization_config"]["ignore"]
+
+
+def test_shared_head_is_converted_when_the_pattern_names_it(tmp_path: Path) -> None:
+    """`--pattern` に `shared_head.head` の分岐を足せば、MTP の head も変換され、`ignore` から外れ、
+    出力の `targets` がその実行時の名前に当たる。
+
+    既定から外しても、変換の能力は残る。
+    """
+    source = tmp_path / "source"
+    output = tmp_path / "output"
+    synthetic.build_checkpoint(source, include_shared_head=True)
+
+    assert (
+        _run(source, output, pattern=DEFAULT_PATTERN + r"|.*\.layers\.\d+\.shared_head\.head$") == 0
+    )
 
     converted = _load_tensors(output)
     assert converted[f"{synthetic.SHARED_HEAD_MODULE}.weight"].dtype == torch.float8_e4m3fn

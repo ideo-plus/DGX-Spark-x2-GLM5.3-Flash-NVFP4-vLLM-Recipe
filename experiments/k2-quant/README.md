@@ -1,4 +1,4 @@
-# k2-quant: 共有の専門家・dense・lm_head を FP8 (重みだけ、チャネルごと) にする変換の道具
+# k2-quant: 共有の専門家・dense を FP8 (重みだけ、チャネルごと) にする変換の道具
 
 K2 の第 1 段 (Issue #56)。vLLM を直さずに量子化できる部分を、FP8 E4M3 の重みと、出力チャネルごとの
 対称スケールに変換する。この段の目的は、「変換 → vLLM で読み込み → Marlin FP8 で読む」の流れを確かめること。
@@ -16,14 +16,11 @@ K2 の第 1 段 (Issue #56)。vLLM を直さずに量子化できる部分を、
 |---|---|---|
 | dense の MLP | `layers.{0,1,2}.mlp.{gate,up,down}_proj` | 9 |
 | 共有の専門家 | `layers.N.mlp.shared_experts.{gate,up,down}_proj` (N は 3〜45 の 43 層) | 129 |
-| `lm_head` | `lm_head` | 1 |
-| MTP の head | `layers.\d+.shared_head.head` (別の重みとしてあるときだけ。名前は未確認) | 0 か 1 |
 
-合計は 139 個 (MTP の head が別の重みとしてあれば 140 個)。実機の index で、この数と合うかは未確認
-(実行すると `converted modules: N` が出る)。この範囲は、Issue の「第 1 段で FP8 にする `ignore` の中の名前」
-のうち、vLLM が FP8 の重みとして読める形のもの (下の「既定に含めないもの」の `eh_proj` を除く) に合わせた。
-MTP の head は、Issue が「別の重みとしてあるなら、それも対象にする。名前は、index から確かめる」としている
-ので、その名前の形に当たれば選ぶ (index に無ければ、何も選ばれず、何も起きない)。
+合計は 138 個。実機の index で、この数と合うかは未確認 (実行すると `converted modules: N` が出る)。
+この範囲は、Issue の「第 1 段で FP8 にする `ignore` の中の名前」のうち、vLLM が FP8 の重みとして
+読める形のもの (下の「既定に含めないもの」の `eh_proj`・`lm_head`・`shared_head.head` を除く) に
+合わせた。
 
 既定に含めないもの:
 
@@ -35,23 +32,22 @@ MTP の head は、Issue が「別の重みとしてあるなら、それも対�
   で、`quant_config` を受けない plain `nn.Linear` なので、FP8 の `eh_proj` を読み込めない。Issue は
   第 1 段の対象に挙げているが、この理由で既定から外した (`--pattern` に分岐を足せば変換自体はできる
   が、vLLM 側で読めない)。
+- **`lm_head` と MTP の `shared_head.head`** (#68): vLLM 0961bbae は、FP8 (W8A16、
+  compressed-tensors) の `ParallelLMHead` を humming の線形カーネルで読めず、
+  `AttributeError: 'ParallelLMHead' object has no attribute 'output_partition_sizes'` で起動できない
+  (2026-09-26 に、`lm_head` を含めて変換した `k2s1` を起動して確認したと、Issue #69 の背景にある。
+  この repo の記録には無い)。`lm_head` は
+  `ParallelLMHead` (`model.py:947-951`。`docs/research/2026-09-26-k2-quant-survey.md` §1 の表)、
+  `shared_head.head` は `SharedHead` (`vllm/model_executor/models/deepseek_mtp.py`) の中の同じ
+  `ParallelLMHead`。この調査は、ソースから `lm_head` を「量子化できる」と読んでいたが、実機では
+  読めなかった。例外を出したカーネルのファイルと行は、この repo の記録に無く、未確認。Issue は第 1 段の
+  対象に挙げているが、この理由で既定から外した (`--pattern` に分岐を足せば変換自体はできるが、
+  vLLM 0961bbae では読めない。下の「`--pattern` の書き方」)。
+- `docs/vllm-baseline/mtp-procedure.md` の判断 (ModelOpt の NVFP4 の重みで MTP を有効にすると、
+  placeholder の `shared_head.head` が量子化されて落ちる不具合 (#55442) は、RedHatAI の重み
+  (`compressed-tensors`、量子化の対象は experts だけ) には当たらない) は、既定の変換では前提が変わらない
+  (`shared_head.head` を変換しない)。`--pattern` で足したときだけ、前提が変わる。
 - KDA と MLA の射影: vLLM の側で BF16 に固定されている。この段では触らない。
-
-### vLLM 側の扱いが未確認のもの (`shared_head.head`)
-
-`shared_head.head` は、Issue が第 1 段の対象に挙げている。`SharedHead`
-(`vllm/model_executor/models/deepseek_mtp.py`) の中の `ParallelLMHead` で、`quant_config` を
-受けるので、FP8 の重みとして読める見込みだが、実機での読み込みはこの repo の記録では確かめられていない。
-`eh_proj` は、上の「既定に含めないもの」のとおり、vLLM (`vllm/models/glm5next/common/mtp.py:49`、
-commit 0961bbae) のソースで `quant_config` を受けない plain `nn.Linear` と確認できたので、既定から
-外し、この道具では扱わない。
-
-- `docs/vllm-baseline/mtp-procedure.md` には、ModelOpt の NVFP4 の重みで MTP を有効にすると、placeholder の
-  `shared_head.head` が量子化されて落ちる不具合 (#55442) があり、RedHatAI の重み (`compressed-tensors`、
-  量子化の対象は experts だけ) には当たらない、という判断がある。これはソース上の判断で、実機では未確認。
-  この道具は `shared_head.head` を変換対象に加えるので、この判断の前提が変わる。
-- 読み込めなければ、`--pattern` で外して作り直す (下の「`--pattern` の書き方」)。この段の目的は、
-  「変換 → 読み込み → Marlin FP8 で読む」の流れを確かめることなので、これは実機で最初に確かめる項目になる。
 
 ### `--pattern` の書き方
 
@@ -70,10 +66,11 @@ commit 0961bbae) のソースで `quant_config` を受けない plain `nn.Linear
   には当たらない。
 - `model.language_model.` の下でも、最上位の名前でもないモジュール (例: `model.visual.…`) を選ぶと、
   実行時の名前の形が分からず、target を変換した集合に限れないので、何も書かずに終了 1 で止まる。
-- 例: `shared_head.head` を外す。`python -m k2_quant --help` に出る既定の正規表現から、該当の分岐
-  (`|.*\.layers\.\d+\.shared_head\.head$`) だけを消して、`--pattern` に渡す。分岐は `|` で
-  つながっているので、ほかの分岐は変えない。
-- 逆に `eh_proj` を含めたいとき (実験目的) は、既定の正規表現に `|.*\.layers\.\d+\.eh_proj$` を足して
+- 例: `lm_head` を含める (実験目的)。`python -m k2_quant --help` に出る既定の正規表現の末尾に、
+  分岐 `|(?:.*\.)?lm_head$` を足して、`--pattern` に渡す。分岐は `|` でつながっているので、ほかの
+  分岐は変えない。MTP の head は `|.*\.layers\.\d+\.shared_head\.head$` を足す。ただし、vLLM 0961bbae は
+  FP8 (W8A16) の `ParallelLMHead` を読み込めない (上の「既定に含めないもの」。#68)。
+- `eh_proj` を含めたいとき (実験目的) も、既定の正規表現に `|.*\.layers\.\d+\.eh_proj$` を足して
   `--pattern` に渡す。ただし、vLLM は `eh_proj` を `quant_config` を受けない plain `nn.Linear` として
   実装しているため、FP8 に変換しても読み込めない (上の「既定に含めないもの」)。
 
@@ -112,7 +109,9 @@ target に当たる、対象の名前が `model.language_model.` の下でも最
 vLLM の側 (ソースで確かめたと Issue に書いてある。この README では再確認していない):
 
 - 共有の専門家と dense は `Glm5NextMLP` で、`quant_config` を受ける。
-- `ParallelLMHead` は、compressed-tensors の scheme があれば、線形層として量子化される。
+- `ParallelLMHead` は、compressed-tensors の scheme があれば、線形層として量子化されると読んでいたが、
+  実機では、FP8 (W8A16) の `ParallelLMHead` を humming の線形カーネルで読めなかった (#68。上の
+  「既定に含めないもの」)。
 - 重みだけの FP8 の scheme は `compressed_tensors_w8a16_fp8.py` (`CompressedTensorsW8A16Fp8`)。
 
 ## 3. 出力
@@ -230,11 +229,24 @@ docker run --rm --network none \
 
 ### メモリ・ディスク・所要時間の目安
 
-- メモリ: 対象のテンソルを 1 つずつ変換する。ピークは、最大の対象である `lm_head`
-  (`vocab_size=154880`、`hidden_size=4096`。BF16 で約 1.3 GB) のとき。`fp8.py` の中間テンソル (読み込んだ
-  バイト列 + float32 への変換 + 割り算 + clamp) から見積もると、BF16 の大きさの約 7 倍、約 9 GB
-  (**コードからの見積もり。実測ではない**)。変換した FP8 (1 バイト/要素) は、その shard を書き出すまで
-  メモリに残る。推論サーバーを止めてから実行する。
+- メモリ: 対象のテンソルを 1 つずつ変換する。`fp8.py` の中間テンソル (読み込んだバイト列 + float32 への
+  変換 + 割り算 + clamp) の大きさは、そのとき変換している 1 つのテンソルで決まる。変換した FP8
+  (1 バイト/要素) は、その shard を書き出すまでメモリに残る。推論サーバーを止めてから実行する。
+  - 既定の対象と `lm_head` を、**テンソル 1 つずつの BF16 の大きさ** (TP で分ける前) で比べる
+    (**表からの計算で、実測ではない**)。元にする値は、`docs/research/2026-09-26-k2-quant-survey.md` §1 の
+    表の「1 台の BF16」(TP=2 の 1 台ぶん。列・行の並列の層は 2 で割ってある)。分ける前の大きさは、
+    その値を 2 倍して、テンソルの数で割って出す。
+    - dense の MLP: 0.45 GB × 2 ÷ 9 (層 0〜2 の 3 層 × 3 射影) ≈ 0.10 GB
+    - 共有の専門家: 1.06 GB × 2 ÷ 126 (表の 42 層 × 3 射影) ≈ 0.017 GB
+      (`moe_intermediate_size=2048`、`hidden_size=4096` から、2048 × 4096 × 2 バイト ≈ 0.017 GB でも合う)
+    - `lm_head`: 0.63 GB × 2 ÷ 1 ≈ 1.26 GB (`vocab_size=154880`、`hidden_size=4096` から、
+      154880 × 4096 × 2 バイト ≈ 1.27 GB でも合う)
+  - 既定の対象は、どのテンソルも `lm_head` より小さい。そのため、中間テンソルの大きさで見た既定のピークは、
+    `--pattern` に `lm_head` を足したときより小さい見込み。ただし、次は未確認: 表の共有の専門家は 42 層
+    (層 3〜44) のぶんなので、MTP (層 45) の共有の専門家の形。dense の `intermediate_size` (上の値は表からの
+    逆算で、この repo に config の値の記録は無い)。shard に積み上がる FP8 のぶんを含めた、ピークの実測。
+  - `lm_head` を足したときのピークは、最大の対象である `lm_head` (BF16 で約 1.3 GB) のとき。中間テンソルは、
+    BF16 の大きさの約 7 倍、約 9 GB (**コードからの見積もり。実測ではない**)。
 - ディスク: `--link` なら、書き直す shard のぶん。書き直す shard は、実行の出力に出る。
 - 所要時間: 未計測。
 
@@ -247,14 +259,15 @@ docker run --rm --network none \
 
 ## 6. 未確認事項
 
-- 実機の `model.safetensors.index.json` に、MTP の head (`shared_head.head`) の重みが別にあるか。名前の形
-  (既定の正規表現は `layers.\d+.shared_head.head` に当たれば選ぶ) も、実機の index で確かめる。
-- `shared_head.head` を、vLLM (0961bbae) が FP8 の重みとして読めるか (上の「vLLM 側の扱いが未確認の
-  もの」)。読めなければ、`--pattern` で外す。`eh_proj` は、vLLM のソースで `quant_config` を受けない
-  plain `nn.Linear` と確認できたので、既定の対象から外した (この点は解決済み)。
+- `lm_head` と `shared_head.head` は、vLLM (0961bbae) が FP8 (W8A16) の `ParallelLMHead` を humming の
+  線形カーネルで読めない (#68) ので、既定の対象から外した (この点は解決済み。上の「既定に含めないもの」)。
+  例外を出したカーネルのファイルと行は、この repo の記録に無く、未確認。実機の
+  `model.safetensors.index.json` に MTP の head (`shared_head.head`) の重みが別にあるかは、既定の変換の
+  結果に影響しない (`--pattern` で足したときだけ効く。名前の形は未確認)。`eh_proj` も、vLLM のソースで
+  `quant_config` を受けない plain `nn.Linear` と確認できたので、既定の対象から外した (この点も解決済み)。
 - 推論イメージの中の Python、`torch`、`numpy` のバージョン (この道具は `torch==2.13.0`、`numpy==2.5.3`、
   Python 3.13 の Mac で検証した。`pyproject.toml` の `requires-python` は 3.12 以上で、`torch~=2.13`、
   `numpy~=2.5`。イメージ側は未確認)。
 - 変換した重みを vLLM (0961bbae) が読み込めるか、Marlin FP8 で読まれるか、短縮が約 6 ms になるか
   (この段の本来の確認事項。ローカルの試験では確かめられない)。
-- 実機の shard の名前・個数、対象の個数 (139 個。MTP の head があれば 140 個)、所要時間、メモリのピーク。
+- 実機の shard の名前・個数、対象の個数 (138 個)、所要時間、メモリのピーク。

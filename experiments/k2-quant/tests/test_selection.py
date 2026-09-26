@@ -1,13 +1,14 @@
 """対象の選択 (正規表現と名前の規則) の試験 (C2)。
 
-既定の正規表現が拾う側・拾わない側を確かめる。既定の正規表現は Issue #56 の第 1 段の範囲
-(dense の MLP、共有の専門家、`lm_head`) を、実機 `ignore` と同じ形
-(`model.language_model.layers.N....`) の checkpoint のテンソル名で拾い、専門家・ルーター・
-attention・visual・MTP の `eh_proj` などは拾わない。`eh_proj` は、vLLM
+既定の正規表現が拾う側・拾わない側を確かめる。既定の正規表現は Issue #56 の第 1 段の範囲のうち
+dense の MLP と共有の専門家を、実機 `ignore` と同じ形 (`model.language_model.layers.N....`) の
+checkpoint のテンソル名で拾い、専門家・ルーター・attention・visual・`lm_head`・MTP の
+`eh_proj` と `shared_head.head` などは拾わない。`eh_proj` は、vLLM
 (`vllm/models/glm5next/common/mtp.py:49`、commit 0961bbae) では quant_config を受けない
-plain `nn.Linear` なので、既定の対象から外している。この正規表現は checkpoint の名前だけに
-当てる。実行時の層名に当てる `config.json` の target は、変換したモジュールから作る
-(`tests/test_quant_config.py`)。
+plain `nn.Linear` なので、既定の対象から外している。`lm_head` と `shared_head.head` は、
+FP8 (W8A16、compressed-tensors) の `ParallelLMHead` を humming の線形カーネルで読めない
+(#68) ので、既定の対象から外している。この正規表現は checkpoint の名前だけに当てる。実行時の層名に
+当てる `config.json` の target は、変換したモジュールから作る (`tests/test_quant_config.py`)。
 """
 
 from __future__ import annotations
@@ -25,10 +26,10 @@ def _first_stage_modules() -> set[str]:
     """Issue #56 の「第 1 段で FP8 にする `ignore` の中の名前」のうち、既定で拾う名前を、
     実機の名前の形で作る。
 
-    dense (層 0〜2) の 3 射影、共有の専門家 (層 3〜45 の 43 層) の 3 射影、`lm_head`。MTP の
-    `eh_proj` は Issue の第 1 段の範囲に挙がっているが、vLLM が quant_config を受けない
-    plain `nn.Linear` として実装しているため、既定では拾わない (`_out_of_range_modules` の
-    decoy として確かめる)。
+    dense (層 0〜2) の 3 射影、共有の専門家 (層 3〜45 の 43 層) の 3 射影。MTP の `eh_proj`
+    (vLLM が quant_config を受けない plain `nn.Linear` として実装している) と、`lm_head`・MTP の
+    `shared_head.head` (FP8 の `ParallelLMHead` を読めない。#68) は、Issue の第 1 段の範囲に
+    挙がっているが、既定では拾わない (`_out_of_range_modules` の decoy として確かめる)。
     """
     dense = {
         f"{LANGUAGE_MODEL}.layers.{layer}.mlp.{projection}"
@@ -40,7 +41,7 @@ def _first_stage_modules() -> set[str]:
         for layer in range(3, 46)
         for projection in PROJECTIONS
     }
-    return dense | shared | {"lm_head"}
+    return dense | shared
 
 
 def _out_of_range_modules() -> set[str]:
@@ -66,6 +67,10 @@ def _out_of_range_modules() -> set[str]:
         # MTP の eh_proj: vLLM が quant_config を受けない plain nn.Linear なので既定から外す
         # (vllm/models/glm5next/common/mtp.py:49、commit 0961bbae)
         f"{LANGUAGE_MODEL}.layers.45.eh_proj",
+        # lm_head と MTP の shared_head.head: FP8 (W8A16) の ParallelLMHead を humming の線形
+        # カーネルで読めないので既定から外す (#68)
+        "lm_head",
+        f"{LANGUAGE_MODEL}.layers.45.shared_head.head",
         f"{LANGUAGE_MODEL}.embed_tokens",
         f"{LANGUAGE_MODEL}.norm",
     }
@@ -97,12 +102,13 @@ def test_module_name_is_none_for_other_parameters(tensor_name: str) -> None:
     assert selection.module_name(tensor_name) is None
 
 
-def test_default_pattern_selects_first_stage_names() -> None:
-    """既定の正規表現は第 1 段の 3 種の名前を拾い、MTP の `eh_proj` は拾わない (C2)。
+def test_default_pattern_selects_dense_and_shared_experts_only() -> None:
+    """既定の正規表現は dense と共有の専門家の 2 種の名前を拾い、MTP の `eh_proj` と `lm_head` は
+    拾わない (C2)。
 
     `eh_proj` は、vLLM (`vllm/models/glm5next/common/mtp.py:49`、commit 0961bbae) では
     quant_config を受けない plain `nn.Linear` なので、テンソルは checkpoint にあっても
-    既定では選ばれない。
+    既定では選ばれない。`lm_head` は、FP8 の `ParallelLMHead` を読めない (#68) ので選ばれない。
     """
     tensor_names = [
         "model.language_model.layers.0.mlp.gate_proj.weight",
@@ -118,20 +124,19 @@ def test_default_pattern_selects_first_stage_names() -> None:
         "model.language_model.layers.0.mlp.gate_proj",
         "model.language_model.layers.3.mlp.shared_experts.down_proj",
         "model.language_model.layers.45.mlp.shared_experts.up_proj",
-        "lm_head",
     }
 
 
 def test_default_pattern_selects_exactly_the_first_stage_range() -> None:
-    """既定の正規表現は、第 1 段の 139 個の名前を全部拾い、近い名前は 1 つも拾わない (C2)。
+    """既定の正規表現は、dense と共有の専門家の 138 個を全部拾い、近い名前は 1 つも拾わない (C2)。
 
-    dense の層 0〜2 × 3 射影、共有の専門家の層 3〜45 × 3 射影、`lm_head` を実機の名前の形で
-    作り、範囲外の近い名前と混ぜて、選ばれた集合が一致することを固定する。範囲外の近い名前は、
-    dense の形の層 3・10・12・20・21・30・45、専門家、ルーター、attention、visual、MTP の
-    `eh_proj` と別の部品。
+    dense の層 0〜2 × 3 射影、共有の専門家の層 3〜45 × 3 射影を実機の名前の形で作り、範囲外の
+    近い名前と混ぜて、選ばれた集合が一致することを固定する。範囲外の近い名前は、dense の形の
+    層 3・10・12・20・21・30・45、専門家、ルーター、attention、visual、`lm_head`、MTP の
+    `eh_proj` と `shared_head.head` と別の部品。
     """
     expected = _first_stage_modules()
-    assert len(expected) == 9 + 43 * 3 + 1
+    assert len(expected) == 9 + 43 * 3
     decoys = _out_of_range_modules()
     assert not (expected & decoys)
     tensor_names = [f"{module}.weight" for module in sorted(expected | decoys)]
@@ -141,8 +146,13 @@ def test_default_pattern_selects_exactly_the_first_stage_range() -> None:
     assert set(selected) == expected
 
 
-def test_default_pattern_selects_the_mtp_shared_head_when_present() -> None:
-    """MTP の head が別の重みとしてあれば、既定で選ぶ (Issue #56。名前は実機で未確認)。"""
+def test_default_pattern_does_not_select_the_mtp_shared_head() -> None:
+    """MTP の head が別の重みとしてあっても、既定では選ばない (#68)。
+
+    `shared_head.head` は `SharedHead` (`vllm/model_executor/models/deepseek_mtp.py`) の中の
+    `ParallelLMHead` で、FP8 (W8A16、compressed-tensors) の `ParallelLMHead` を humming の
+    線形カーネルで読めない。
+    """
     shared_head = "model.language_model.layers.45.shared_head.head"
 
     selected = selection.select_modules(
@@ -150,7 +160,24 @@ def test_default_pattern_selects_the_mtp_shared_head_when_present() -> None:
         selection.DEFAULT_PATTERN,
     )
 
-    assert selected == (shared_head,)
+    assert selected == ()
+
+
+@pytest.mark.parametrize(
+    "tensor_name",
+    [
+        "lm_head.weight",
+        "model.language_model.lm_head.weight",
+    ],
+)
+def test_default_pattern_does_not_select_lm_head(tensor_name: str) -> None:
+    """`lm_head` は、最上位の名前でも、接頭辞つきの名前でも、既定では選ばない (#68)。
+
+    FP8 (W8A16、compressed-tensors) の `ParallelLMHead` を humming の線形カーネルで読めず、
+    `AttributeError: 'ParallelLMHead' object has no attribute 'output_partition_sizes'` で
+    起動できなかった。
+    """
+    assert selection.select_modules([tensor_name], selection.DEFAULT_PATTERN) == ()
 
 
 def test_default_pattern_rejects_non_dense_positions() -> None:

@@ -1,4 +1,4 @@
-"""K2 第 1 段: 共有の専門家・dense・lm_head を FP8 (重みだけ、チャネルごと) にする変換の道具。"""
+"""K2 第 1 段: 共有の専門家・dense を FP8 (重みだけ、チャネルごと) にする変換の道具。"""
 
 from __future__ import annotations
 
