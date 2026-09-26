@@ -16,7 +16,7 @@ import hashlib
 import json
 import statistics
 import time
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Callable, Sequence
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -482,9 +482,24 @@ async def test_a_put_body_failure_before_the_gate_does_not_hang_the_round(
 # --- 中断: task を残さない (base.py の注、runner が SIGINT で打ち切る) -----
 
 
+async def _settle(*tasks: asyncio.Future[Any]) -> None:
+    """打ち切って、片付くまで待つ (試験が失敗したときに、task を残さない)。"""
+    for task in tasks:
+        task.cancel()
+    await asyncio.gather(*tasks, return_exceptions=True)
+
+
 async def test_cancelling_run_condition_mid_round_leaves_no_pending_tasks(
     fake_server: FakeServer, suite: ConcurrencySuite
 ) -> None:
+    """1 回ぶんの n 本を送っている途中で打ち切っても、task を残さない。
+
+    打ち切る時点は時計ではなく、偽のサーバーに n 本の `/v1/messages` が届いた
+    ことで決める (issue #55)。0.2 秒の時計で決めると、打ち切りが送る前の準備
+    (包みと文書の合わせ込みの `count_tokens` の往復) に落ちることがあり、
+    「回の途中」という前提が保証されない。準備の途中の打ち切りは、下の
+    `test_cancelling_during_the_preparation_...` が別に確かめる。
+    """
     n = 3
     fake_server.set_response(replace(token_stream_response(output_tokens=4), first_delay_s=5.0))
     profile = make_profile(
@@ -497,14 +512,86 @@ async def test_cancelling_run_condition_mid_round_leaves_no_pending_tasks(
             async for _ in suite.run_condition(ctx, plan):
                 pass
 
-        before = {task for task in asyncio.all_tasks() if not task.done()}
-        with pytest.raises(TimeoutError):
-            await asyncio.wait_for(consume(), timeout=0.2)
+        before = {pending for pending in asyncio.all_tasks() if not pending.done()}
+        task = asyncio.create_task(consume())
+        # wait_for_requests は同期のブロッキング呼び出し。await せず直に呼ぶと
+        # イベントループが止まり、上の task が進めない (test_client_probe.py と同じ)
+        arrival = asyncio.create_task(
+            asyncio.to_thread(fake_server.wait_for_requests, n, path="/v1/messages")
+        )
+        try:
+            await asyncio.wait({task, arrival}, return_when=asyncio.FIRST_COMPLETED)
+            if task.done():
+                # n 本がそろう前に終わったので、「回の途中」に届いていない。
+                # どう終わったかを、失敗の出力に残す
+                arrived = fake_server.call_count("/v1/messages")
+                error = task.exception()
+                if error is not None:
+                    raise AssertionError(
+                        f"要求が {n} 件そろう前に consume() が例外で終わった "
+                        f"(届いた本数 {arrived}): {error!r}"
+                    ) from error
+                pytest.fail(
+                    f"要求が {n} 件そろう前に consume() が例外なしで戻った (届いた本数 {arrived})"
+                )
+            await arrival  # 待機そのものが失敗した (n 本がそろわなかった) ときは、その例外を投げる
+        except BaseException:
+            await _settle(task, arrival)
+            raise
+        # n 本が合図で送られ、偽のサーバーが最初のイベントを待たせている「回の途中」で打ち切る
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
         # 打ち切りが実際に片付くまで、少しだけ道を譲る
         for _ in range(5):
             await asyncio.sleep(0)
-        leftover = {task for task in asyncio.all_tasks() if not task.done()} - before
+        leftover = {pending for pending in asyncio.all_tasks() if not pending.done()} - before
         assert leftover == set()
+        assert fake_server.call_count("/v1/messages") == n
+
+
+async def test_cancelling_during_the_preparation_is_not_lost_when_the_http_call_swallows_it(
+    fake_server: FakeServer,
+    suite: ConcurrencySuite,
+    swallow_the_first_cancel_on: Callable[[str], asyncio.Event],
+) -> None:
+    """包みの計測 (`count_tokens` の往復) が打ち切りを握りつぶしても、打ち切りは伝わる。
+
+    issue #55 の原因。HTTP の層 (anyio 4.15.1 の `connect_tcp`) が外からの打ち切りを
+    握りつぶすと、`CancelledError` が消えて `run_condition` は最後まで走る。
+    握りつぶされた状態は `swallow_the_first_cancel_on` (conftest.py) が作る。
+    打ち切りが伝われば、`/v1/messages` は 1 本も送られない。
+    """
+    n = 3
+    fake_server.set_response(token_stream_response(output_tokens=4))
+    profile = make_profile(
+        concurrency={"levels": [n], "rounds": 1, "max_tokens": 8, "input_tokens": 400}
+    )
+    stalled = swallow_the_first_cancel_on("/v1/messages/count_tokens")
+
+    async with suite_ctx(fake_server, profile=profile) as (ctx, _):
+        plan = _plan_for(ctx, level=n, rounds=1, max_tokens=8, input_tokens=400, warmup_trials=0)
+
+        async def consume() -> None:
+            async for _ in suite.run_condition(ctx, plan):
+                pass
+
+        before = {pending for pending in asyncio.all_tasks() if not pending.done()}
+        task = asyncio.create_task(consume())
+        try:
+            await asyncio.wait_for(stalled.wait(), timeout=5.0)
+            task.cancel()
+            # 握りつぶされたままなら、consume() は最後まで走って例外なしで戻る
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(task, timeout=5.0)
+        except BaseException:
+            await _settle(task)
+            raise
+        for _ in range(5):
+            await asyncio.sleep(0)
+        leftover = {pending for pending in asyncio.all_tasks() if not pending.done()} - before
+        assert leftover == set()
+        assert fake_server.call_count("/v1/messages") == 0
 
 
 # --- 合図 (`_RoundGate`) が実際に効いていること (4.3、必須 1) ---------------
