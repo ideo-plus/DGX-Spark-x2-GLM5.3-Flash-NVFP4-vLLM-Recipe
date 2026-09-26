@@ -10,6 +10,10 @@
   実物の `load_configs` / `load_nodes` / `select_config` / `build_plans` で読める
 - 基の `p1-nvfp4-tp2` との差は、説明、イメージの節、`--max-model-len` と `--max-num-seqs`
   の値と理由、初回の NCCL の記録の 3 変数 (`env` への追加) だけである
+- `full` と `full-mtp` の args には、既定で `--load-format instanttensor` が根拠つきで入り、
+  構成の名前は変わらない (#50)。`smoke` には入らない
+- `--load-format auto` を付けると既定を外し、出力は変更前とバイト単位で同じになる。
+  外した出力の SHA-256 は固定値で、既定つきの出力はその固定値から導出できる
 - 生成の前後で、実物の `configs.toml` のバイト列が同じである (生成器は読むだけで書かない)
 - 生成器は、ネットワークも `subprocess` も読み込まない
 
@@ -67,10 +71,20 @@ WEIGHTS_LABEL = "RedHatAI/GLM-5.3-Flash-NVFP4@18d55bfd5a2194887738da73753975c9d3
 # のバイト列 (UTF-8) に hashlib.sha256 を掛けたもの。既定の出力が替わっていないことの固定に使う
 SMOKE_RENDER_SHA256 = "d9d5313864d9b8ae5d90f441cc100f2a9af18a9924f93178ac1c8dde3a80539d"
 
-# `--variant full` の `render` の出力の SHA-256。計算のしかたは SMOKE と同じで、変更前の
-# 生成器 (MTP の追加の前) で `render(本文, image, FULL)` のバイト列 (UTF-8) に掛けたもの。
-# full の出力もバイト単位で変わっていないことの固定に使う (C6)。
-FULL_RENDER_SHA256 = "194cdd43aa1c5e5d2c92b66cb9cc0466d5aeef870e7eb0e3a1e74a2faf6c4f8a"
+# `--variant full` の既定 (`--load-format instanttensor`。#50) の `render` の出力の SHA-256。
+# 計算のしかた: まず既定を外した形 (opt-out) の出力を作る。これは #50 より前の生成器で
+# `render(本文, image, FULL)` のバイト列 (UTF-8) に hashlib.sha256 を掛けたものと一致する。
+# その出力の `FULL.env_comment` の直前に、`default_load_format_table(FULL)` が組む
+# `[configs.p2-nope-tp2-full.args.load-format]` のテーブル 1 つ (value instanttensor、why は
+# #50・#37 の実測、source/quote は #46 で入れた vLLM の `LoadConfig` の docstring) を
+# `str.replace(env_comment, table + "\n" + env_comment, 1)` で挿入したバイト列に掛けたもの。
+# 根拠は #50 と #37 の実測 (重みの読み込み 363 秒 (head) → 32 秒、起動 約 11 分 → 約 3 分)。
+FULL_RENDER_SHA256 = "6db1815b7d64cdb2876686f34441dc9721b4119392ed2c50440d19b1169e092a"
+
+# `--load-format auto` (`without_load_format(FULL)`) の出力の SHA-256。計算のしかた:
+# #50 より前の生成器で `render(本文, image, FULL)` のバイト列 (UTF-8) に hashlib.sha256 を
+# 掛けたもの。既定を外したときの出力が、変更前とバイト単位で同じであることの固定に使う (C2)。
+FULL_AUTO_RENDER_SHA256 = "194cdd43aa1c5e5d2c92b66cb9cc0466d5aeef870e7eb0e3a1e74a2faf6c4f8a"
 
 MTP_SPEC_TOKENS: tuple[int, ...] = (1, 2, 3, 5)
 """MTP の下書きトークン数 (Issue「すること 4」、C7)。"""
@@ -90,12 +104,20 @@ NCCL_QUOTE_FRAGMENT = "NCCL CPU threads"
 THREAD_NAME_BASE_KINDS: tuple[str, ...] = ("smoke", "full", "mtp1", "mtp2")
 """`--nccl-thread-names` を付けられる基の変種 (C1、C3)。"""
 
-# `--variant full-mtp --spec-tokens N` の `render` の出力の SHA-256。計算のしかたは SMOKE と
-# 同じで、生成器に thread-name を足す前の `render(本文, image, mtp_variant(N))` のバイト列
-# (UTF-8) に hashlib.sha256 を掛けたもの。MTP の出力もバイト単位で変わっていないことの固定に
-# 使う (C3)。
-MTP1_RENDER_SHA256 = "645a4f9596ab1d53b7fea821807b641d9508525b6a9a4c0bea24430ff88bf64c"
-MTP2_RENDER_SHA256 = "6ab08944640e3997398204da40d47f0f2ae608035ec987eda52b43eeff6a27a3"
+# `--variant full-mtp --spec-tokens N` の既定 (`--load-format instanttensor`) の `render` の
+# SHA-256。計算のしかたは FULL_RENDER_SHA256 と同じで、opt-out の
+# `render(本文, image, without_load_format(mtp_variant(N)))` の `mtp_variant(N).env_comment` の
+# 直前に `default_load_format_table(mtp_variant(N))` を挿入したバイト列 (UTF-8) に
+# hashlib.sha256 を掛けたもの。根拠は #50 と #37 の実測である (C3)。
+MTP1_RENDER_SHA256 = "98de07c744a7e74059507348b010508e1daec62befcf855309a94241b6e9dad0"
+MTP2_RENDER_SHA256 = "fc4e88ee0844bb1d3dd02d625c5fa2cec62e9cdb7257aeb6ede96abf5fdee4d6"
+
+# `--load-format auto` (`without_load_format(mtp_variant(N))`) の出力の SHA-256。計算のしかたは
+# SMOKE と同じで、生成器に thread-name を足す前の `render(本文, image, mtp_variant(N))` の
+# バイト列 (UTF-8) に hashlib.sha256 を掛けたもの。既定を外した MTP の出力が、変更前と
+# バイト単位で同じであることの固定に使う (C2)。
+MTP1_AUTO_RENDER_SHA256 = "645a4f9596ab1d53b7fea821807b641d9508525b6a9a4c0bea24430ff88bf64c"
+MTP2_AUTO_RENDER_SHA256 = "6ab08944640e3997398204da40d47f0f2ae608035ec987eda52b43eeff6a27a3"
 
 PROFILER_SUFFIX = "-prof"
 """`--torch-profiler` で付ける、構成の名前の接尾辞 (C1、C3)。"""
@@ -140,11 +162,19 @@ PROFILER_QUOTE_FRAGMENTS: tuple[str, ...] = (
 )
 """根拠の原文に含まれる語 (C2、#48)。あとの 2 つは 2 つの `false` の根拠。"""
 
-# `--variant full --nccl-thread-names` の `render` の出力の SHA-256。計算のしかたは SMOKE と
-# 同じで、生成器に `--torch-profiler` を足す前の `render(本文, image, with_thread_names(FULL))`
-# のバイト列 (UTF-8) に hashlib.sha256 を掛けたもの。付けないときの出力がバイト単位で変わって
-# いないことの固定に使う (C4)。
-FULL_TN_RENDER_SHA256 = "fcec31120db71411ec0525377658e42efa62268e74112aa895dc102c1df6b0d3"
+# `--variant full --nccl-thread-names` の既定 (`--load-format instanttensor`) の `render` の
+# SHA-256。計算のしかたは FULL_RENDER_SHA256 と同じで、opt-out の
+# `render(本文, image, without_load_format(with_thread_names(FULL)))` の
+# `with_thread_names(FULL).env_comment` の直前に
+# `default_load_format_table(with_thread_names(FULL))` を挿入したバイト列 (UTF-8) に
+# hashlib.sha256 を掛けたもの (C3)。
+FULL_TN_RENDER_SHA256 = "ce9fc27cbeaaaa5ddc0459f81b70f01983d8ec2cd51adaeddd3a39df0b08b48c"
+
+# `--load-format auto` (`without_load_format(with_thread_names(FULL))`) の出力の SHA-256。
+# 計算のしかたは SMOKE と同じで、生成器に `--torch-profiler` を足す前の
+# `render(本文, image, with_thread_names(FULL))` のバイト列 (UTF-8) に hashlib.sha256 を
+# 掛けたもの。既定を外したときの出力が、変更前とバイト単位で同じであることの固定に使う (C2)。
+FULL_TN_AUTO_RENDER_SHA256 = "fcec31120db71411ec0525377658e42efa62268e74112aa895dc102c1df6b0d3"
 
 PROFILER_BASE_KINDS: tuple[str, ...] = THREAD_NAME_BASE_KINDS
 """`--torch-profiler` を付けられる基の変種 (C1、C3)。"""
@@ -198,6 +228,34 @@ LOAD_STRATEGY_QUOTE_FRAGMENTS: Mapping[str, str] = {
 }
 """`--safetensors-load-strategy` の根拠の原文に含まれる語 (C3)。"""
 
+LOAD_FORMAT_OPT_OUT = "auto"
+"""既定 (`full` / `full-mtp` の `instanttensor`) を外す `--load-format auto` (C2)。"""
+
+LOAD_FORMAT_OPT_OUT_SUFFIX = "-lf-auto"
+"""`--load-format auto` が名前や本文に現れてはならない接尾辞 (C2)。"""
+
+DEFAULT_LOAD_FORMAT_VALUE = "instanttensor"
+"""`full` / `full-mtp` の既定の `--load-format` の値 (#50。C1)。"""
+
+DEFAULT_LOAD_FORMAT_SOURCE = LOAD_CONFIG_SOURCE
+"""既定の `--load-format` の根拠の出典 (#46 で入れた vLLM の `LoadConfig` の docstring。C1)。"""
+
+DEFAULT_LOAD_FORMAT_QUOTE = (
+    '"instanttensor" will load the Safetensors weights on CUDA devices using InstantTensor, '
+    "which enables distributed loading with pipelined prefetching and fast direct I/O."
+)
+"""既定の `--load-format` の根拠の原文 (#46 で入れた vLLM の `LoadConfig` の docstring。C1)。"""
+
+DEFAULT_LOAD_FORMAT_WHY = (
+    "#50 (#37 の実測、2026-09-26)。--load-format instanttensor で、重みの読み込みが "
+    "363 秒 (head) から 32 秒に、起動全体が約 11 分から約 3 分になった。同じ構成の probe で、"
+    "decode の tok/s (code/en 14.06、code/ja 13.99、prose/en 14.07、prose/ja 13.88) は"
+    "既定の読み方 (14.13、14.01、14.12、13.98) と同じ範囲、toolcall は 5/5 で正解・不正解が"
+    "投機なしの回と同じ、needle 8k は正解、壊れの印は 0 件。計測のたびに起動するので、"
+    "full と full-mtp の既定にする。外すときは --load-format auto (出力は #50 より前の既定と同じ)"
+)
+"""既定の `--load-format` を args に足す理由 (#50 と #37 の実測。C1、C3)。"""
+
 
 def load_format_suffix(value: str) -> str:
     """`--load-format <値>` の名前の接尾辞 (`_` はコンテナ名に使えないので `-` に替える。C1)。"""
@@ -207,6 +265,36 @@ def load_format_suffix(value: str) -> str:
 def load_strategy_suffix(value: str) -> str:
     """`--safetensors-load-strategy <値>` の名前の接尾辞 (C2)。"""
     return f"{LOAD_STRATEGY_SUFFIX}{value}"
+
+
+def default_load_format_table(variant: Any) -> str:
+    """既定の `--load-format instanttensor` の args テーブルを組む (C3 の導出。実装に依らない)。
+
+    書式は生成器の `_insert_arg_table` と同じである。why は #50 と #37 の実測、source と
+    quote は #46 で入れた vLLM の `LoadConfig` の docstring を使う。
+    """
+    return (
+        f"[configs.{variant.name}.args.{LOAD_FORMAT_ARG_KEY}]\n"
+        f'flag = "{LOAD_FORMAT_ARG_FLAG}"\n'
+        f"value = '{DEFAULT_LOAD_FORMAT_VALUE}'\n"
+        f"why = {json.dumps(DEFAULT_LOAD_FORMAT_WHY, ensure_ascii=False)}\n"
+        f"source = {json.dumps(DEFAULT_LOAD_FORMAT_SOURCE)}\n"
+        f"quote = {json.dumps(DEFAULT_LOAD_FORMAT_QUOTE, ensure_ascii=False)}\n"
+    )
+
+
+def derive_default_load_format(generator: Any, text: str, image: Any, variant: Any) -> str:
+    """既定つきの出力を、opt-out の出力 + テーブル 1 つから導出する (C3 の導出)。
+
+    `variant` は既定を持つ変種 (`FULL` / `mtp_variant(N)` / その `with_thread_names` など)。
+    `without_load_format(variant)` の出力の `variant.env_comment` の直前に、`variant` の
+    テーブルを 1 つ挿入する。文字列の置換で作るので、実装の内部には依らない。
+    """
+    opt_out = generator.render(text, image, generator.without_load_format(variant))
+    derived = opt_out.replace(
+        variant.env_comment, default_load_format_table(variant) + "\n" + variant.env_comment, 1
+    )
+    return str(derived)
 
 
 def mtp_target_name(n: int) -> str:
@@ -226,6 +314,16 @@ def _base_variant(generator: Any, kind: str) -> Any:
     if kind == "full":
         return generator.FULL
     return generator.mtp_variant(int(kind.removeprefix("mtp")))
+
+
+def _variant_for_extra(generator: Any, extra: tuple[str, ...]) -> Any:
+    """`main` の `--variant` の指定 (`extra`) に対応する、既定を持つ変種を返す。"""
+    if "--variant" not in extra:
+        return generator.SMOKE
+    kind = extra[extra.index("--variant") + 1]
+    if kind == "full":
+        return generator.FULL
+    return generator.mtp_variant(int(extra[extra.index("--spec-tokens") + 1]))
 
 
 def _load_generator() -> Any:
@@ -507,6 +605,15 @@ def _find_pair(argv: tuple[str, ...], flag: str) -> tuple[str, str]:
     return argv[index], argv[index + 1]
 
 
+def _insert_before_the_load_format(argv: list[str], pair: tuple[str, ...]) -> None:
+    """`pair` を、`--load-format` の直前 (まだ無ければ末尾) に挿入する (C4 の挿入順の導出)。"""
+    if LOAD_FORMAT_ARG_FLAG in argv:
+        at = argv.index(LOAD_FORMAT_ARG_FLAG)
+        argv[at:at] = list(pair)
+    else:
+        argv.extend(pair)
+
+
 def test_plans_for_both_nodes(generator: Any, tmp_path: Path) -> None:
     """2 台の計画が、head → worker の順にでき、役割・名前・短い文脈・IB・NCCL の記録を持つ。
 
@@ -719,7 +826,8 @@ def test_full_config_loads_and_keeps_p1_context_and_seqs(generator: Any, tmp_pat
     確かめること:
 
     - `--max-model-len` と `--max-num-seqs` の `Setting` が p1 と完全一致 (163840、16)
-    - `args` 全体、`weights`、`docker`、p1 から引き継いだ `env` も一致する
+    - `weights`、`docker`、p1 から引き継いだ `env` も一致する
+    - `args` は、#50 の既定 `--load-format instanttensor` を除けば p1 と一致する
     - イメージの 4 項目は smoke と同じ
     - 説明に、prefill・並列・長文脈の計測用と、実機では未確認であることを書く
     - NCCL の記録 3 つは smoke と同じ flag/value/source/quote を持つ (外さない)
@@ -738,7 +846,11 @@ def test_full_config_loads_and_keeps_p1_context_and_seqs(generator: Any, tmp_pat
     assert full.args["max-num-seqs"] == p1.args["max-num-seqs"]
     assert full.args["max-model-len"].value == "163840"
     assert full.args["max-num-seqs"].value == "16"
-    assert full.args == p1.args
+    # #50 の既定 --load-format instanttensor を除けば、args は p1 のままである
+    assert full.args[LOAD_FORMAT_ARG_KEY].value == DEFAULT_LOAD_FORMAT_VALUE
+    assert {
+        key: setting for key, setting in full.args.items() if key != LOAD_FORMAT_ARG_KEY
+    } == p1.args
 
     # イメージ、重み、docker の設定は smoke と同じ (= p1 から引き継いだもの)
     assert full.image.ref == EXPECTED_IMAGE_ID
@@ -866,7 +978,8 @@ def test_full_argv_matches_smoke_argv_except_context_and_seqs(
     """smoke の 2 台の列に、full で替わる場所だけの置換を当てると、full の列と一致する。
 
     替わる場所: コンテナの名前、`vllm-baseline.config=` のラベル、
-    `--max-model-len` と `--max-num-seqs` の直後の値。イメージ ID、重みのラベル、
+    `--max-model-len` と `--max-num-seqs` の直後の値、末尾への `--load-format instanttensor`
+    (#50 の既定。smoke には入らない) の追加。イメージ ID、重みのラベル、
     NCCL の記録の 3 つの `-e` の組は同じである。`config-sha256` のラベルは、
     中身が変わるので両者で違うのが正しいため、比較から除く。
     """
@@ -881,6 +994,7 @@ def test_full_argv_matches_smoke_argv_except_context_and_seqs(
         )
         expected[expected.index("--max-model-len") + 1] = "163840"
         expected[expected.index("--max-num-seqs") + 1] = "16"
+        expected.extend((LOAD_FORMAT_ARG_FLAG, DEFAULT_LOAD_FORMAT_VALUE))
 
         kept = [arg for arg in expected if not arg.startswith(f"{LABEL_CONFIG_SHA256}=")]
         actual = [arg for arg in full_plan.argv if not arg.startswith(f"{LABEL_CONFIG_SHA256}=")]
@@ -909,12 +1023,18 @@ def test_main_accepts_variant_full(generator: Any, tmp_path: Path) -> None:
 
 
 def test_full_variant_output_is_unchanged(generator: Any, tmp_path: Path) -> None:
-    """`--variant full` の `render` の SHA-256 が、変更前の生成器で計算した値と一致する (C6)。"""
+    """full の既定の出力と、既定を外した出力の SHA-256 が、固定値と一致する (C2、C3)。
+
+    既定の出力は #50 の `--load-format instanttensor` を含み、外した出力は変更前と
+    バイト単位で同じである。
+    """
     text, image = _render_default_input(generator, tmp_path)
 
-    full = generator.render(text, image, generator.FULL)
+    default = generator.render(text, image, generator.FULL)
+    opt_out = generator.render(text, image, generator.without_load_format(generator.FULL))
 
-    assert hashlib.sha256(full.encode("utf-8")).hexdigest() == FULL_RENDER_SHA256
+    assert hashlib.sha256(default.encode("utf-8")).hexdigest() == FULL_RENDER_SHA256
+    assert hashlib.sha256(opt_out.encode("utf-8")).hexdigest() == FULL_AUTO_RENDER_SHA256
 
 
 # --- MTP の生成 (C5) ------------------------------------------------------
@@ -1257,12 +1377,17 @@ def test_thread_names_full_plan_names_follow_the_pattern(generator: Any, tmp_pat
 
 
 def test_thread_names_output_without_the_flag_is_unchanged(generator: Any, tmp_path: Path) -> None:
-    """付けない full の出力は、変更前のバイト列と一致し、`-tn` の名前は空いている (C1、C3)。"""
+    """付けない full の出力は固定値と一致し、`-tn` の名前は空いている (C1、C3)。
+
+    既定つきの出力は #50 の固定値、既定を外した出力は変更前の固定値と一致する。
+    """
     text, image = _render_default_input(generator, tmp_path)
 
     rendered = generator.render(text, image, generator.FULL)
+    opt_out = generator.render(text, image, generator.without_load_format(generator.FULL))
 
     assert hashlib.sha256(rendered.encode("utf-8")).hexdigest() == FULL_RENDER_SHA256
+    assert hashlib.sha256(opt_out.encode("utf-8")).hexdigest() == FULL_AUTO_RENDER_SHA256
     assert "NCCL_SET_THREAD_NAME" not in rendered
     assert f"[configs.{FULL_TARGET_NAME}-tn]" not in rendered
     assert f"{FULL_TARGET_NAME}-tn" not in load_configs(CONFIGS_PATH, REPO_ROOT)
@@ -1289,21 +1414,24 @@ def test_thread_names_render_leaves_a_decoy_alone(generator: Any, tmp_path: Path
 
 
 @pytest.mark.parametrize(
-    ("spec_tokens", "expected"),
+    ("spec_tokens", "expected", "expected_auto"),
     [
-        pytest.param(1, MTP1_RENDER_SHA256, id="mtp1"),
-        pytest.param(2, MTP2_RENDER_SHA256, id="mtp2"),
+        pytest.param(1, MTP1_RENDER_SHA256, MTP1_AUTO_RENDER_SHA256, id="mtp1"),
+        pytest.param(2, MTP2_RENDER_SHA256, MTP2_AUTO_RENDER_SHA256, id="mtp2"),
     ],
 )
 def test_mtp_variant_output_is_unchanged(
-    generator: Any, tmp_path: Path, spec_tokens: int, expected: str
+    generator: Any, tmp_path: Path, spec_tokens: int, expected: str, expected_auto: str
 ) -> None:
-    """`--variant full-mtp` の `render` の SHA-256 が、変更前の生成器の値と一致する (C3)。"""
+    """mtp の既定の出力と、既定を外した出力の SHA-256 が固定値と一致する (C2、C3)。"""
     text, image = _render_default_input(generator, tmp_path)
+    variant = generator.mtp_variant(spec_tokens)
 
-    rendered = generator.render(text, image, generator.mtp_variant(spec_tokens))
+    rendered = generator.render(text, image, variant)
+    opt_out = generator.render(text, image, generator.without_load_format(variant))
 
     assert hashlib.sha256(rendered.encode("utf-8")).hexdigest() == expected
+    assert hashlib.sha256(opt_out.encode("utf-8")).hexdigest() == expected_auto
 
 
 @pytest.mark.parametrize("kind", THREAD_NAME_BASE_KINDS)
@@ -1427,7 +1555,7 @@ def test_profiler_argv_matches_base_argv_plus_the_arg_pair(
         expected[expected.index(f"vllm-baseline.config={base.name}")] = (
             f"vllm-baseline.config={profiled.name}"
         )
-        expected.extend(PROFILER_ARG_PAIR)
+        _insert_before_the_load_format(expected, PROFILER_ARG_PAIR)
 
         kept = [arg for arg in expected if not arg.startswith(f"{LABEL_CONFIG_SHA256}=")]
         actual = [arg for arg in prof_plan.argv if not arg.startswith(f"{LABEL_CONFIG_SHA256}=")]
@@ -1436,7 +1564,7 @@ def test_profiler_argv_matches_base_argv_plus_the_arg_pair(
 
 
 def test_profiler_with_thread_names_names_and_arg_order(generator: Any, tmp_path: Path) -> None:
-    """2 つの旗を重ねると `-tn-prof` になり、args の末尾は投機のあとに続く (C3)。"""
+    """2 旗を重ねると `-tn-prof` になり、args の末尾は投機 → プロファイラー → load-format (C4)。"""
     variant = generator.with_torch_profiler(generator.with_thread_names(generator.mtp_variant(2)))
 
     assert variant.name == "p2-nope-tp2-mtp2-tn-prof"
@@ -1445,7 +1573,7 @@ def test_profiler_with_thread_names_names_and_arg_order(generator: Any, tmp_path
         _generate_variant(generator, tmp_path, variant, "prof-tn-mtp2"), REPO_ROOT
     )
     keys = list(generated[variant.name].args)
-    assert keys[-2:] == ["speculative-config", PROFILER_ARG_KEY]
+    assert keys[-3:] == ["speculative-config", PROFILER_ARG_KEY, LOAD_FORMAT_ARG_KEY]
 
 
 @pytest.mark.parametrize("kind", PROFILER_BASE_KINDS)
@@ -1466,7 +1594,7 @@ def test_profiler_with_thread_names_argv_matches_base_plus_both_additions(
         )
         at = expected.index("NCCL_DEBUG_FILE=/logs/nccl.%h.%p.log") + 1
         expected[at:at] = list(THREAD_NAME_ENV)
-        expected.extend(PROFILER_ARG_PAIR)
+        _insert_before_the_load_format(expected, PROFILER_ARG_PAIR)
 
         kept = [arg for arg in expected if not arg.startswith(f"{LABEL_CONFIG_SHA256}=")]
         actual = [arg for arg in both_plan.argv if not arg.startswith(f"{LABEL_CONFIG_SHA256}=")]
@@ -1537,6 +1665,10 @@ def test_profiler_output_without_the_flag_is_unchanged(generator: Any, tmp_path:
 
     full_tn = generator.render(text, image, generator.with_thread_names(generator.FULL))
     assert hashlib.sha256(full_tn.encode("utf-8")).hexdigest() == FULL_TN_RENDER_SHA256
+    full_tn_opt_out = generator.render(
+        text, image, generator.without_load_format(generator.with_thread_names(generator.FULL))
+    )
+    assert hashlib.sha256(full_tn_opt_out.encode("utf-8")).hexdigest() == FULL_TN_AUTO_RENDER_SHA256
     existing = load_configs(CONFIGS_PATH, REPO_ROOT)
     assert f"{FULL_TARGET_NAME}{PROFILER_SUFFIX}" not in existing
     assert f"{FULL_TARGET_NAME}-tn{PROFILER_SUFFIX}" not in existing
@@ -1558,6 +1690,392 @@ def test_profiler_render_leaves_a_decoy_alone(generator: Any, tmp_path: Path) ->
     assert f"{FULL_TARGET_NAME}{PROFILER_SUFFIX}" not in load_configs(CONFIGS_PATH, REPO_ROOT)
     assert "[configs.p1-nvfp4-tp2" not in rendered
     assert "p1-fetch-nvfp4" not in rendered
+
+
+# --- 既定の重みの読み込み (full / full-mtp。#50。C1、C2、C3、C4) -------------
+
+
+def test_full_default_load_format_table_is_inserted_once_before_the_env_comment(
+    generator: Any, tmp_path: Path
+) -> None:
+    """full の出力に、既定の load-format テーブルが env コメントの直前に 1 つだけ入る (C1)。"""
+    text, image = _render_default_input(generator, tmp_path)
+
+    rendered = generator.render(text, image, generator.FULL)
+
+    generated = tomllib.loads(rendered)["configs"][FULL_TARGET_NAME]
+    assert list(generated["args"])[-1] == LOAD_FORMAT_ARG_KEY
+    assert generated["args"][LOAD_FORMAT_ARG_KEY]["value"] == DEFAULT_LOAD_FORMAT_VALUE
+    assert rendered.count(f'flag = "{LOAD_FORMAT_ARG_FLAG}"') == 1
+    assert rendered.index(
+        f"[configs.{FULL_TARGET_NAME}.args.{LOAD_FORMAT_ARG_KEY}]"
+    ) < rendered.index(generator.FULL.env_comment)
+
+
+@pytest.mark.parametrize("spec_tokens", (1, 2))
+def test_mtp_default_load_format_table_follows_the_speculative_table(
+    generator: Any, tmp_path: Path, spec_tokens: int
+) -> None:
+    """mtp の出力で、既定の load-format テーブルは投機のテーブルの後に入る (C1)。"""
+    text, image = _render_default_input(generator, tmp_path)
+    variant = generator.mtp_variant(spec_tokens)
+
+    rendered = generator.render(text, image, variant)
+
+    generated = tomllib.loads(rendered)["configs"][variant.name]
+    assert list(generated["args"])[-2:] == ["speculative-config", LOAD_FORMAT_ARG_KEY]
+    assert variant.name == mtp_target_name(spec_tokens)
+
+
+@pytest.mark.parametrize("kind", ("full", "mtp1", "mtp2"))
+def test_default_load_format_provenance_is_the_pinned_vllm_load_source(
+    generator: Any, tmp_path: Path, kind: str
+) -> None:
+    """full / mtp の既定の load-format の根拠が、固定 commit の vLLM の LoadConfig である (C1)。"""
+    variant = _base_variant(generator, kind)
+    generated = load_configs(
+        _generate_variant(generator, tmp_path, variant, f"default-prov-{kind}"), REPO_ROOT
+    )
+
+    added = generated[variant.name].args[LOAD_FORMAT_ARG_KEY]
+    assert added.flag == LOAD_FORMAT_ARG_FLAG
+    assert added.value == DEFAULT_LOAD_FORMAT_VALUE
+    assert str(added.source) == DEFAULT_LOAD_FORMAT_SOURCE
+    assert added.quote is not None
+    assert LOAD_FORMAT_QUOTE_FRAGMENTS[DEFAULT_LOAD_FORMAT_VALUE] in added.quote
+    assert added.why == DEFAULT_LOAD_FORMAT_WHY
+    for fragment in ("#50", "#37", "363", "32"):
+        assert fragment in added.why
+
+
+def test_smoke_has_no_default_load_format(generator: Any, tmp_path: Path) -> None:
+    """smoke には既定の load-format を足さない (C1 の負例、#50 の設計判断)。"""
+    text, image = _render_default_input(generator, tmp_path)
+
+    rendered = generator.render(text, image, generator.SMOKE)
+
+    assert LOAD_FORMAT_ARG_FLAG not in rendered
+    assert hashlib.sha256(rendered.encode("utf-8")).hexdigest() == SMOKE_RENDER_SHA256
+
+
+@pytest.mark.parametrize("kind", ("full", "mtp1", "mtp2"))
+def test_default_load_format_is_appended_to_the_argv(
+    generator: Any, tmp_path: Path, kind: str
+) -> None:
+    """既定つきの 2 台の argv は、opt-out の argv の末尾に load-format の組を足したもの (C1)。"""
+    variant = _base_variant(generator, kind)
+    opt_out_plans = _plans_for_variant(
+        generator, tmp_path, generator.without_load_format(variant), f"default-argv-optout-{kind}"
+    )
+    default_plans = _plans_for_variant(generator, tmp_path, variant, f"default-argv-{kind}")
+
+    for opt_out_plan, default_plan in zip(opt_out_plans, default_plans, strict=True):
+        expected = list(opt_out_plan.argv)
+        expected.extend((LOAD_FORMAT_ARG_FLAG, DEFAULT_LOAD_FORMAT_VALUE))
+
+        kept = [arg for arg in expected if not arg.startswith(f"{LABEL_CONFIG_SHA256}=")]
+        actual = [arg for arg in default_plan.argv if not arg.startswith(f"{LABEL_CONFIG_SHA256}=")]
+        assert kept == actual
+        assert opt_out_plan.labels[LABEL_CONFIG_SHA256] != default_plan.labels[LABEL_CONFIG_SHA256]
+
+
+def test_full_default_load_format_keeps_the_config_and_container_names(
+    generator: Any, tmp_path: Path
+) -> None:
+    """既定の付与で構成名とコンテナ名は変わらず、-lf-instanttensor も現れない (C1)。"""
+    text, image = _render_default_input(generator, tmp_path)
+
+    rendered = generator.render(text, image, generator.FULL)
+
+    assert f"[configs.{FULL_TARGET_NAME}]" in rendered
+    assert f"{FULL_TARGET_NAME}{load_format_suffix(DEFAULT_LOAD_FORMAT_VALUE)}" not in rendered
+
+    head, worker = _plans_for_full_config(generator, tmp_path)
+    assert head.container_name == f"vb-{FULL_TARGET_NAME}-head"
+    assert worker.container_name == f"vb-{FULL_TARGET_NAME}-worker"
+
+
+def test_full_default_load_format_render_leaves_a_decoy_alone(
+    generator: Any, tmp_path: Path
+) -> None:
+    """同じ字面の value の囮テーブルがあっても、既定のテーブルは 1 つで囮は変わらない (C1)。"""
+    text_with_decoy = _insert_decoy_table(CONFIGS_PATH.read_text(encoding="utf-8"))
+    image = generator.load_image(_write_inspect_json(tmp_path, _inspect_item()))
+
+    rendered = generator.render(text_with_decoy, image, generator.FULL)
+
+    generated = tomllib.loads(rendered)["configs"][FULL_TARGET_NAME]
+    assert generated["args"]["decoy"]["value"] == "16"
+    assert generated["args"]["max-num-seqs"]["value"] == "16"
+    assert rendered.count(f'flag = "{LOAD_FORMAT_ARG_FLAG}"') == 1
+    assert "[configs.p1-nvfp4-tp2" not in rendered
+
+
+@pytest.mark.parametrize(
+    ("extra", "auto_sha256", "target"),
+    [
+        pytest.param(("--variant", "full"), FULL_AUTO_RENDER_SHA256, FULL_TARGET_NAME, id="full"),
+        pytest.param(
+            ("--variant", "full-mtp", "--spec-tokens", "2"),
+            MTP2_AUTO_RENDER_SHA256,
+            mtp_target_name(2),
+            id="full-mtp",
+        ),
+    ],
+)
+def test_main_load_format_auto_matches_without_load_format(
+    generator: Any, tmp_path: Path, extra: tuple[str, ...], auto_sha256: str, target: str
+) -> None:
+    """`--load-format auto` の出力は、変更前の既定 (without_load_format) と同じバイト列 (C2)。"""
+    source = _write_inspect_json(tmp_path, _inspect_item())
+    out_main = tmp_path / "auto-main.toml"
+    out_ref = tmp_path / "auto-ref.toml"
+    variant = _variant_for_extra(generator, extra)
+
+    generator.main([*extra, LOAD_FORMAT_ARG_FLAG, LOAD_FORMAT_OPT_OUT, str(source), str(out_main)])
+    generator.generate(source, out_ref, generator.without_load_format(variant))
+
+    assert out_main.read_bytes() == out_ref.read_bytes()
+    assert hashlib.sha256(out_main.read_bytes()).hexdigest() == auto_sha256
+    assert set(load_configs(out_main, REPO_ROOT)) == {target}
+
+
+@pytest.mark.parametrize(
+    ("extra", "default_sha256", "target"),
+    [
+        pytest.param(("--variant", "full"), FULL_RENDER_SHA256, FULL_TARGET_NAME, id="full"),
+        pytest.param(
+            ("--variant", "full-mtp", "--spec-tokens", "2"),
+            MTP2_RENDER_SHA256,
+            mtp_target_name(2),
+            id="full-mtp",
+        ),
+    ],
+)
+def test_main_default_load_format_reaches_the_output(
+    generator: Any, tmp_path: Path, extra: tuple[str, ...], default_sha256: str, target: str
+) -> None:
+    """`--load-format` を付けない `main` の出力に、既定の instanttensor が入る (C1)。
+
+    利用者の入口 (`main`) から、既定の `--load-format instanttensor` が出力ファイルに届くことを
+    確かめる。`render` / `generate` を直接呼ぶ試験とは別に、CLI の既定の経路を固定する。
+    """
+    source = _write_inspect_json(tmp_path, _inspect_item())
+    out_main = tmp_path / "default-main.toml"
+    out_ref = tmp_path / "default-ref.toml"
+    variant = _variant_for_extra(generator, extra)
+
+    generator.main([*extra, str(source), str(out_main)])
+    generator.generate(source, out_ref, variant)
+
+    assert out_main.read_bytes() == out_ref.read_bytes()
+    assert hashlib.sha256(out_main.read_bytes()).hexdigest() == default_sha256
+    loaded = load_configs(out_main, REPO_ROOT)
+    assert set(loaded) == {target}
+    assert loaded[target].args[LOAD_FORMAT_ARG_KEY].value == DEFAULT_LOAD_FORMAT_VALUE
+
+
+def test_load_format_auto_is_absent_from_the_args_and_the_names(
+    generator: Any, tmp_path: Path
+) -> None:
+    """auto を外した出力に `--load-format` も `-lf-auto` も現れず、名前は変わらない (C2)。"""
+    source = _write_inspect_json(tmp_path, _inspect_item())
+    output = tmp_path / "auto-mtp2.toml"
+
+    generator.main(
+        [
+            "--variant",
+            "full-mtp",
+            "--spec-tokens",
+            "2",
+            LOAD_FORMAT_ARG_FLAG,
+            LOAD_FORMAT_OPT_OUT,
+            str(source),
+            str(output),
+        ]
+    )
+
+    rendered = output.read_text(encoding="utf-8")
+    assert LOAD_FORMAT_ARG_FLAG not in rendered
+    assert LOAD_FORMAT_OPT_OUT_SUFFIX not in rendered
+    assert f"[configs.{mtp_target_name(2)}]" in rendered
+
+
+def test_load_format_auto_does_not_change_smoke(generator: Any, tmp_path: Path) -> None:
+    """`--load-format auto` は smoke では何も変えない (C2、#50 の設計判断)。"""
+    source = _write_inspect_json(tmp_path, _inspect_item())
+    out_default = tmp_path / "smoke-default.toml"
+    out_auto = tmp_path / "smoke-auto.toml"
+
+    generator.main([str(source), str(out_default)])
+    generator.main([LOAD_FORMAT_ARG_FLAG, LOAD_FORMAT_OPT_OUT, str(source), str(out_auto)])
+
+    assert out_default.read_bytes() == out_auto.read_bytes()
+    assert hashlib.sha256(out_auto.read_bytes()).hexdigest() == SMOKE_RENDER_SHA256
+
+
+@pytest.mark.parametrize(
+    ("kind", "expected", "expected_auto"),
+    [
+        pytest.param("full", FULL_RENDER_SHA256, FULL_AUTO_RENDER_SHA256, id="full"),
+        pytest.param("mtp1", MTP1_RENDER_SHA256, MTP1_AUTO_RENDER_SHA256, id="mtp1"),
+        pytest.param("mtp2", MTP2_RENDER_SHA256, MTP2_AUTO_RENDER_SHA256, id="mtp2"),
+    ],
+)
+def test_default_load_format_output_is_derived_from_the_opt_out(
+    generator: Any, tmp_path: Path, kind: str, expected: str, expected_auto: str
+) -> None:
+    """既定つきの出力は、opt-out の出力にテーブル 1 つを挿入したものとバイト単位で同じ (C3)。"""
+    text, image = _render_default_input(generator, tmp_path)
+    variant = _base_variant(generator, kind)
+
+    actual = generator.render(text, image, variant)
+    derived = derive_default_load_format(generator, text, image, variant)
+
+    assert actual == derived
+    assert hashlib.sha256(actual.encode("utf-8")).hexdigest() == expected
+    assert (
+        hashlib.sha256(
+            generator.render(text, image, generator.without_load_format(variant)).encode("utf-8")
+        ).hexdigest()
+        == expected_auto
+    )
+
+
+def test_thread_names_default_load_format_output_is_derived_from_the_opt_out(
+    generator: Any, tmp_path: Path
+) -> None:
+    """full-tn でも、既定つきの出力は opt-out にテーブル 1 つを挿入したものと同じ (C3)。"""
+    text, image = _render_default_input(generator, tmp_path)
+    variant = generator.with_thread_names(generator.FULL)
+
+    actual = generator.render(text, image, variant)
+    derived = derive_default_load_format(generator, text, image, variant)
+
+    assert actual == derived
+    assert hashlib.sha256(actual.encode("utf-8")).hexdigest() == FULL_TN_RENDER_SHA256
+    assert (
+        hashlib.sha256(
+            generator.render(text, image, generator.without_load_format(variant)).encode("utf-8")
+        ).hexdigest()
+        == FULL_TN_AUTO_RENDER_SHA256
+    )
+
+
+def test_explicit_load_format_replaces_the_default(generator: Any, tmp_path: Path) -> None:
+    """既定を持つ full に別の値を明示すると、既定を置き換えて 1 つだけ入る (C4)。"""
+    text, image = _render_default_input(generator, tmp_path)
+    variant = generator.with_load_format(generator.FULL, "fastsafetensors")
+
+    rendered = generator.render(text, image, variant)
+
+    assert variant.name == f"{FULL_TARGET_NAME}-lf-fastsafetensors"
+    generated = tomllib.loads(rendered)["configs"][variant.name]
+    assert generated["args"][LOAD_FORMAT_ARG_KEY]["value"] == "fastsafetensors"
+    assert rendered.count(f'flag = "{LOAD_FORMAT_ARG_FLAG}"') == 1
+
+
+def test_default_and_explicit_load_format_do_not_double_up_in_the_argv(
+    generator: Any, tmp_path: Path
+) -> None:
+    """既定と明示が並んで 2 つ入らず、argv の値は明示で置き換わる (C4)。"""
+    variant = generator.with_load_format(generator.mtp_variant(2), "runai_streamer")
+    plans = _plans_for_variant(generator, tmp_path, variant, "default-lf-argv")
+
+    for plan in plans:
+        argv = list(plan.argv)
+        assert argv.count(LOAD_FORMAT_ARG_FLAG) == 1
+        assert argv[argv.index(LOAD_FORMAT_ARG_FLAG) + 1] == "runai_streamer"
+        assert DEFAULT_LOAD_FORMAT_VALUE not in argv
+
+
+def test_load_format_auto_with_load_strategy_has_no_load_format(
+    generator: Any, tmp_path: Path
+) -> None:
+    """`--load-format auto` と `-sls prefetch` を組にすると、strategy だけ入る (C4)。"""
+    source = _write_inspect_json(tmp_path, _inspect_item())
+    output = tmp_path / "auto-sls.toml"
+
+    generator.main(
+        [
+            "--variant",
+            "full",
+            LOAD_FORMAT_ARG_FLAG,
+            LOAD_FORMAT_OPT_OUT,
+            LOAD_STRATEGY_ARG_FLAG,
+            "prefetch",
+            str(source),
+            str(output),
+        ]
+    )
+
+    name = f"{FULL_TARGET_NAME}{load_strategy_suffix('prefetch')}"
+    loaded = load_configs(output, REPO_ROOT)
+    assert set(loaded) == {name}
+    assert LOAD_FORMAT_ARG_KEY not in loaded[name].args
+    assert loaded[name].args[LOAD_STRATEGY_ARG_KEY].value == "prefetch"
+
+
+@pytest.mark.parametrize(
+    ("extra", "value"),
+    [
+        pytest.param(("--variant", "full"), "prefetch", id="full"),
+        pytest.param(("--variant", "full-mtp", "--spec-tokens", "2"), "eager", id="full-mtp"),
+    ],
+)
+def test_main_refuses_a_load_strategy_without_a_load_format_on_a_variant_with_a_default(
+    generator: Any, tmp_path: Path, extra: tuple[str, ...], value: str
+) -> None:
+    """既定の `--load-format instanttensor` を持つ full / full-mtp で、`--load-format` を付けずに
+    `--safetensors-load-strategy` だけを指定すると、生成の前に断り、出力ファイルを作らない (#50)。
+
+    strategy が効くのは `--load-format` を付けない読み方だけである。既定を黙って外さず、
+    `-sls-<値>` の名前が、strategy の効かない (load-format つきの) 中身を指す構成も作らない。
+    `--load-format auto` と組にした同じ引数は受け付ける (下の、各 `--variant` に付ける試験)。
+    """
+    source = _write_inspect_json(tmp_path, _inspect_item())
+    output = tmp_path / "refused-load-strategy.toml"
+
+    with pytest.raises(SystemExit):
+        generator.main([*extra, LOAD_STRATEGY_ARG_FLAG, value, str(source), str(output)])
+
+    assert not output.exists()
+
+
+def test_main_accepts_an_explicit_load_format_with_a_load_strategy(
+    generator: Any, tmp_path: Path
+) -> None:
+    """明示の `--load-format instanttensor` (既定と同じ値) と `--safetensors-load-strategy` の組は、
+    これまでどおり受け付ける (#50)。
+
+    明示の `--load-format` は既定を置き換えるので、名前は `-lf-<値>-sls-<値>` になり、
+    args の末尾 2 鍵は load-format → strategy の順になる。
+    """
+    source = _write_inspect_json(tmp_path, _inspect_item())
+    output = tmp_path / "explicit-lf-sls.toml"
+    name = (
+        f"{FULL_TARGET_NAME}{load_format_suffix(DEFAULT_LOAD_FORMAT_VALUE)}"
+        f"{load_strategy_suffix('prefetch')}"
+    )
+
+    generator.main(
+        [
+            "--variant",
+            "full",
+            LOAD_FORMAT_ARG_FLAG,
+            DEFAULT_LOAD_FORMAT_VALUE,
+            LOAD_STRATEGY_ARG_FLAG,
+            "prefetch",
+            str(source),
+            str(output),
+        ]
+    )
+
+    loaded = load_configs(output, REPO_ROOT)
+    assert set(loaded) == {name}
+    assert list(loaded[name].args)[-2:] == [LOAD_FORMAT_ARG_KEY, LOAD_STRATEGY_ARG_KEY]
+    assert loaded[name].args[LOAD_FORMAT_ARG_KEY].value == DEFAULT_LOAD_FORMAT_VALUE
+    assert loaded[name].args[LOAD_STRATEGY_ARG_KEY].value == "prefetch"
 
 
 # --- 重みの読み込み方を選ぶ構成の生成 (C1、C2、C3、C4、C5、C6) -------------
@@ -1600,7 +2118,10 @@ def test_load_format_config_adds_only_the_arg_and_the_name(
     assert added.flag == LOAD_FORMAT_ARG_FLAG
     assert added.value == value
     rest = {key: setting for key, setting in config.args.items() if key != LOAD_FORMAT_ARG_KEY}
-    assert rest == baseline.args
+    baseline_rest = {
+        key: setting for key, setting in baseline.args.items() if key != LOAD_FORMAT_ARG_KEY
+    }
+    assert rest == baseline_rest
 
     assert config.description != baseline.description
     for field in (
@@ -1622,8 +2143,12 @@ def test_load_format_config_adds_only_the_arg_and_the_name(
 def test_load_strategy_config_adds_only_the_arg_and_the_name(
     generator: Any, tmp_path: Path, kind: str, value: str
 ) -> None:
-    """`--safetensors-load-strategy` は、名前 (`-sls-<値>`) と args 1 つだけを足す (C2)。"""
-    base = _base_variant(generator, kind)
+    """`--safetensors-load-strategy` は、名前 (`-sls-<値>`) と args 1 つだけを足す (C2)。
+
+    strategy が効くのは `--load-format` を付けない読み方だけなので、基は既定の
+    `--load-format instanttensor` を外した変種 (`main` でいう `--load-format auto`) にする。
+    """
+    base = generator.without_load_format(_base_variant(generator, kind))
     loaded = generator.with_load_strategy(base, value)
     baseline = load_configs(
         _generate_variant(generator, tmp_path, base, f"base-sls-{kind}"), REPO_ROOT
@@ -1662,10 +2187,11 @@ def test_load_strategy_config_adds_only_the_arg_and_the_name(
 def test_load_format_argv_matches_base_argv_plus_the_arg_pair(
     generator: Any, tmp_path: Path, kind: str, value: str
 ) -> None:
-    """`--load-format` の列は、基の列の末尾に `--load-format <値>` の 2 語を足したもの (C1)。
+    """`--load-format` の列は、基の列の末尾の `--load-format` を明示の値に替えたもの (C1、C4)。
 
-    コンテナ名と `config` のラベルだけ置き換える。`config-sha256` は中身が変わるので、
-    両者で違うのが正しいため比較から除く。
+    基が既定を持つ (full / mtp) ときは、`--load-format <値>` の組の値だけを置き換える。
+    基が既定を持たない (smoke) ときは、末尾に 2 語を足す。コンテナ名と `config` のラベル
+    だけ置き換える。`config-sha256` は中身が変わるので、両者で違うのが正しいため比較から除く。
     """
     base = _base_variant(generator, kind)
     loaded = generator.with_load_format(base, value)
@@ -1681,7 +2207,10 @@ def test_load_format_argv_matches_base_argv_plus_the_arg_pair(
         expected[expected.index(f"vllm-baseline.config={base.name}")] = (
             f"vllm-baseline.config={loaded.name}"
         )
-        expected.extend((LOAD_FORMAT_ARG_FLAG, value))
+        if LOAD_FORMAT_ARG_FLAG in expected:
+            expected[expected.index(LOAD_FORMAT_ARG_FLAG) + 1] = value
+        else:
+            expected.extend((LOAD_FORMAT_ARG_FLAG, value))
 
         kept = [arg for arg in expected if not arg.startswith(f"{LABEL_CONFIG_SHA256}=")]
         actual = [arg for arg in loaded_plan.argv if not arg.startswith(f"{LABEL_CONFIG_SHA256}=")]
@@ -1694,8 +2223,12 @@ def test_load_format_argv_matches_base_argv_plus_the_arg_pair(
 def test_load_strategy_argv_matches_base_argv_plus_the_arg_pair(
     generator: Any, tmp_path: Path, kind: str, value: str
 ) -> None:
-    """`--safetensors-load-strategy` の列は、基の列の末尾にその 2 語を足したもの (C2)。"""
-    base = _base_variant(generator, kind)
+    """`--safetensors-load-strategy` の列は、基の列の末尾にその 2 語を足したもの (C2)。
+
+    基は、既定の `--load-format instanttensor` を外した変種にする (strategy が効くのは
+    `--load-format` を付けない読み方だけ)。
+    """
+    base = generator.without_load_format(_base_variant(generator, kind))
     loaded = generator.with_load_strategy(base, value)
     base_plans = _plans_for_variant(generator, tmp_path, base, f"argv-base-sls-{kind}")
     loaded_plans = _plans_for_variant(
@@ -1791,7 +2324,14 @@ def test_load_option_provenance_is_the_pinned_vllm_source(
             id="smoke-load-format",
         ),
         pytest.param(
-            ("--variant", "full"),
+            (),
+            LOAD_STRATEGY_ARG_FLAG,
+            "prefetch",
+            f"{TARGET_NAME}{load_strategy_suffix('prefetch')}",
+            id="smoke-load-strategy",
+        ),
+        pytest.param(
+            ("--variant", "full", LOAD_FORMAT_ARG_FLAG, LOAD_FORMAT_OPT_OUT),
             LOAD_STRATEGY_ARG_FLAG,
             "prefetch",
             f"{FULL_TARGET_NAME}{load_strategy_suffix('prefetch')}",
@@ -1805,7 +2345,14 @@ def test_load_option_provenance_is_the_pinned_vllm_source(
             id="full-mtp-load-format",
         ),
         pytest.param(
-            ("--variant", "full-mtp", "--spec-tokens", "2"),
+            (
+                "--variant",
+                "full-mtp",
+                "--spec-tokens",
+                "2",
+                LOAD_FORMAT_ARG_FLAG,
+                LOAD_FORMAT_OPT_OUT,
+            ),
             LOAD_STRATEGY_ARG_FLAG,
             "eager",
             f"{mtp_target_name(2)}{load_strategy_suffix('eager')}",
@@ -1821,7 +2368,9 @@ def test_main_accepts_load_options_with_each_variant(
     value: str,
     expected_name: str,
 ) -> None:
-    """読み込み方の 2 つの選択肢は、どの `--variant` にも付けられる (C4)。"""
+    """`--load-format` はどの `--variant` にも付けられる。`--safetensors-load-strategy` は、
+    既定を持たない smoke には単独で、既定を持つ full / full-mtp には `--load-format auto`
+    と組で付けられ、args に strategy だけが入る (C4、#50)。"""
     source = _write_inspect_json(tmp_path, _inspect_item())
     output = tmp_path / f"{expected_name}.toml"
 
@@ -1831,6 +2380,8 @@ def test_main_accepts_load_options_with_each_variant(
     assert set(loaded) == {expected_name}
     key = LOAD_FORMAT_ARG_KEY if option_flag == LOAD_FORMAT_ARG_FLAG else LOAD_STRATEGY_ARG_KEY
     assert loaded[expected_name].args[key].value == value
+    if option_flag == LOAD_STRATEGY_ARG_FLAG:
+        assert LOAD_FORMAT_ARG_KEY not in loaded[expected_name].args
 
 
 def test_combined_load_options_names_and_arg_order(generator: Any, tmp_path: Path) -> None:
@@ -1893,25 +2444,47 @@ def test_combined_load_options_names_and_arg_order(generator: Any, tmp_path: Pat
 def test_load_strategy_prefetch_is_appended_after_the_speculative_arg(
     generator: Any, tmp_path: Path
 ) -> None:
-    """mtp2 に `prefetch` を足すと、args の末尾 2 鍵が投機のあとに続く (C2)。"""
-    variant = generator.with_load_strategy(generator.mtp_variant(2), "prefetch")
+    """既定を外した mtp2 に `prefetch` を足すと、末尾 2 鍵が投機 → strategy の順になる (C4)。
+
+    strategy が効くのは `--load-format` を付けない読み方だけなので、基は既定を外した変種に
+    する。load-format の鍵はない。
+    """
+    variant = generator.with_load_strategy(
+        generator.without_load_format(generator.mtp_variant(2)), "prefetch"
+    )
     generated = load_configs(
         _generate_variant(generator, tmp_path, variant, "sls-after-spec"), REPO_ROOT
     )
 
     assert variant.name == f"{mtp_target_name(2)}{load_strategy_suffix('prefetch')}"
-    assert list(generated[variant.name].args)[-2:] == ["speculative-config", LOAD_STRATEGY_ARG_KEY]
+    assert list(generated[variant.name].args)[-2:] == [
+        "speculative-config",
+        LOAD_STRATEGY_ARG_KEY,
+    ]
+    assert LOAD_FORMAT_ARG_KEY not in generated[variant.name].args
 
 
 def test_load_options_output_without_the_flags_is_unchanged(generator: Any, tmp_path: Path) -> None:
-    """付けない 5 形の出力が不変で、読み込み方の印が現れない (C5)。"""
+    """既定を外した 5 形の出力が、変更前の固定値と一致し、読み込み方の印が現れない (C2、C3)。"""
     text, image = _render_default_input(generator, tmp_path)
     cases = (
         ("smoke", generator.SMOKE, SMOKE_RENDER_SHA256),
-        ("full", generator.FULL, FULL_RENDER_SHA256),
-        ("full-tn", generator.with_thread_names(generator.FULL), FULL_TN_RENDER_SHA256),
-        ("mtp1", generator.mtp_variant(1), MTP1_RENDER_SHA256),
-        ("mtp2", generator.mtp_variant(2), MTP2_RENDER_SHA256),
+        ("full", generator.without_load_format(generator.FULL), FULL_AUTO_RENDER_SHA256),
+        (
+            "full-tn",
+            generator.without_load_format(generator.with_thread_names(generator.FULL)),
+            FULL_TN_AUTO_RENDER_SHA256,
+        ),
+        (
+            "mtp1",
+            generator.without_load_format(generator.mtp_variant(1)),
+            MTP1_AUTO_RENDER_SHA256,
+        ),
+        (
+            "mtp2",
+            generator.without_load_format(generator.mtp_variant(2)),
+            MTP2_AUTO_RENDER_SHA256,
+        ),
     )
 
     for label, variant, expected in cases:
@@ -1927,9 +2500,12 @@ def test_load_options_output_without_the_flags_is_unchanged(generator: Any, tmp_
     assert f"{FULL_TARGET_NAME}{load_strategy_suffix('prefetch')}" not in existing
 
 
-@pytest.mark.parametrize("bad", ["auto", "safetensors", "dummy", ""])
+@pytest.mark.parametrize("bad", ["safetensors", "dummy", ""])
 def test_main_refuses_a_bad_load_format(generator: Any, tmp_path: Path, bad: str) -> None:
-    """許さない `--load-format` の値は、生成の前に断り、出力ファイルを作らない (C6)。"""
+    """許さない `--load-format` の値は、生成の前に断り、出力ファイルを作らない (C5)。
+
+    `auto` は既定を外す値として受けるので、ここには含めない。
+    """
     source = _write_inspect_json(tmp_path, _inspect_item())
     output = tmp_path / "bad-load-format.toml"
 

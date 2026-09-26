@@ -31,7 +31,7 @@ uv run --directory serving serve check p2-nope-tp2-mtp1 \
   --configs var/nope-build-0961bbae/tp2-mtp1.toml
 ```
 
-`--spec-tokens` は 1 以上の整数だけを受け、`--variant full-mtp` のときだけ使えます。生成した構成は、`p2-nope-tp2-full` と同じ構成に、最上位の `allow_speculative = true` と、`args` の末尾の `--speculative-config '{"method":"mtp","num_speculative_tokens":N}'`（根拠つき）を足したものです。`serve check` は `patched-tp2-procedure.md` §6 と同じ 8 関門です。**前の N で通ったことを根拠に省かず、N ごとに全関門をもう一度検査します。**
+`--spec-tokens` は 1 以上の整数だけを受け、`--variant full-mtp` のときだけ使えます。生成した構成は、`p2-nope-tp2-full` と同じ構成に、最上位の `allow_speculative = true` と、`args` の `--speculative-config '{"method":"mtp","num_speculative_tokens":N}'`（根拠つき）を足したものです。`p2-nope-tp2-full` と同じく、args の末尾には既定の `--load-format instanttensor`（#50。根拠つき）が入ります。#37 の実測では、これで起動が約 11 分から約 3 分になりました。既定を外すには `--load-format auto` を付けます（出力は #50 より前と同じ、名前は変わりません）。`serve check` は `patched-tp2-procedure.md` §6 と同じ 8 関門です。**前の N で通ったことを根拠に省かず、N ごとに全関門をもう一度検査します。**
 
 N = 2、3、5 も同じ形で作り、それぞれ `p2-nope-tp2-mtp2` / `mtp3` / `mtp5` を `serve check` します。
 

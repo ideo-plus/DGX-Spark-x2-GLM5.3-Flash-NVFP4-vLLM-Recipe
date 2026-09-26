@@ -13,6 +13,7 @@
 7. 文脈が 2048 を超える条件の確認 (`#58454`) がある (C8)
 8. 上限 (1800・3000) の確かめ方がある (C8)
 9. 相対リンクの道筋が、すべて実在する (C8)
+10. 本文に、既定の重みの読み込み方 (`instanttensor`、#50) と起動の目安 (`約 3 分`) がある (C6)
 
 RED: 文書がなければ、`_read_text` で `pytest.fail` する。
 """
@@ -139,6 +140,15 @@ def test_the_procedure_explains_how_to_check_the_caps(marker: str) -> None:
 def test_the_procedure_marks_the_mutating_blocks() -> None:
     """状態を変えるコマンドの塊に、⚠ の印がある (C8)。"""
     assert "⚠" in _read_text(DOC_PATH)
+
+
+# --- C6: 既定の重みの読み込み ---------------------------------------------
+
+
+@pytest.mark.parametrize("marker", ["instanttensor", "約 3 分"])
+def test_the_procedure_states_the_default_weight_load_format(marker: str) -> None:
+    """本文に、既定の重みの読み込み方 (#50) と起動の目安がある (C6)。"""
+    assert marker in _read_text(DOC_PATH)
 
 
 # --- C8: 相対リンクの実在 --------------------------------------------------
