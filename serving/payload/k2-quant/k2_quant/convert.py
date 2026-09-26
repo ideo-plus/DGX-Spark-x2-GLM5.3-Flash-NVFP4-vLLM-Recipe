@@ -19,6 +19,7 @@ import torch
 
 from k2_quant import TOOL_NAME, TOOL_VERSION
 from k2_quant.fp8 import FP8_DTYPE_NAME, SCALE_DTYPE_NAME, quantize_per_channel
+from k2_quant.presets import resolve_preset_pattern
 from k2_quant.quant_config import add_fp8_channel_group
 from k2_quant.safetensors_file import (
     DTYPE_ITEMSIZE,
@@ -31,7 +32,13 @@ from k2_quant.safetensors_file import (
     tensor_to_chunks,
     write_shard,
 )
-from k2_quant.selection import WEIGHT_SUFFIX, module_name, select_modules, validate_targets
+from k2_quant.selection import (
+    WEIGHT_SUFFIX,
+    module_name,
+    select_modules,
+    validate_fused_groups,
+    validate_targets,
+)
 
 INDEX_NAME: Final = "model.safetensors.index.json"
 CONFIG_NAME: Final = "config.json"
@@ -81,8 +88,12 @@ def _original_reader(
     return read
 
 
-def plan_conversion(source: Path, *, pattern: str) -> ConversionPlan:
-    """入力を読み、対象を選び、検証し、新しい config を組み立てる。書き込みはしない。"""
+def plan_conversion(source: Path, *, pattern: str | None, preset: str) -> ConversionPlan:
+    """入力を読み、対象を選び、検証し、新しい config を組み立てる。書き込みはしない。
+
+    `pattern` があればそれを、無ければ `preset` を、入力の `config.json` から正規表現に解決して
+    使う。計画と manifest には、解決後の正規表現を持たせる。
+    """
     config_path = source / CONFIG_NAME
     index_path = source / INDEX_NAME
     if not config_path.is_file():
@@ -106,8 +117,10 @@ def plan_conversion(source: Path, *, pattern: str) -> ConversionPlan:
     tensors: dict[str, TensorInfo] = {}
     for header in headers.values():
         tensors.update(header.tensors)
-    modules = select_modules(tensors, pattern)
+    resolved_pattern = pattern if pattern is not None else resolve_preset_pattern(preset, config)
+    modules = select_modules(tensors, resolved_pattern)
     validate_targets(modules, tensors)
+    validate_fused_groups(modules, tensors)
     shards = tuple(
         ShardPlan(
             name=name,
@@ -135,7 +148,7 @@ def plan_conversion(source: Path, *, pattern: str) -> ConversionPlan:
         other_files.append(name)
     return ConversionPlan(
         source=source,
-        pattern=pattern,
+        pattern=resolved_pattern,
         modules=tuple(modules),
         shards=shards,
         indexed_shards=indexed_shards,

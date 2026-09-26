@@ -1,8 +1,12 @@
-# k2-quant: 共有の専門家・dense を FP8 (重みだけ、チャネルごと) にする変換の道具
+# k2-quant: 選んだモジュールを FP8 (重みだけ、チャネルごと) にする変換の道具 (K2 の第 1 段・第 2a 段)
 
-K2 の第 1 段 (Issue #56)。vLLM を直さずに量子化できる部分を、FP8 E4M3 の重みと、出力チャネルごとの
-対称スケールに変換する。この段の目的は、「変換 → vLLM で読み込み → Marlin FP8 で読む」の流れを確かめること。
-見込みの短縮は、投機なしで約 6 ms (推定。Issue の記載)。
+K2 の第 1 段 (Issue #56)。vLLM を直さずに量子化できる部分 (共有の専門家・dense) を、FP8 E4M3 の重みと、
+出力チャネルごとの対称スケールに変換する。この段の目的は、「変換 → vLLM で読み込み → Marlin FP8 で読む」の
+流れを確かめること。見込みの短縮は、投機なしで約 6 ms (推定。Issue の記載)。
+
+第 2a 段 (Issue #74、`docs/decisions/0007-k2-stage2.md`) は、同じ道具に `--preset k2s2a` を足して、MLA の射影、
+KDA のまとめていない射影、`lm_head` も選べるようにしたもの (下の「第 2a 段 (`--preset k2s2a`)」)。既定
+(`--preset` を渡さない、または `--preset k2s1`) は、第 1 段のままである。
 
 この道具は、CPU だけで動く。GPU もネットワークも使わない。実機での実行と、vLLM での読み込みは対話側が行う
 (この README を書いた時点では、どちらも未確認)。
@@ -47,7 +51,61 @@ K2 の第 1 段 (Issue #56)。vLLM を直さずに量子化できる部分を、
   placeholder の `shared_head.head` が量子化されて落ちる不具合 (#55442) は、RedHatAI の重み
   (`compressed-tensors`、量子化の対象は experts だけ) には当たらない) は、既定の変換では前提が変わらない
   (`shared_head.head` を変換しない)。`--pattern` で足したときだけ、前提が変わる。
-- KDA と MLA の射影: vLLM の側で BF16 に固定されている。この段では触らない。
+- KDA と MLA の射影: vLLM の側で BF16 に固定されている。既定 (第 1 段) では触らない。第 2a 段
+  (`--preset k2s2a`。下の節) で、一部だけを選べる。
+
+### 第 2a 段 (`--preset k2s2a`)
+
+`--preset k2s2a` は、次の名前を選ぶ (接頭辞は `model.language_model.`。`--pattern` とは同時に使えない)。
+第 1 段の既定の対象も含む (道具は元の重み (`/origin`) から変換し、第 1 段の結果から連鎖させる経路は無いので、
+第 1 段の対象を含めた 1 回の変換にする)。
+
+| 対象 | 名前 |
+|---|---|
+| 第 1 段の既定の対象 | 上の表 (dense の MLP、共有の専門家) |
+| MLA の層の射影 | `layers.N.self_attn.{q_a_proj,kv_a_proj_with_mqa,q_b_proj,o_proj}` |
+| KDA の層のまとめていない射影 | `layers.N.self_attn.{o_proj,forget_gate.f_b_proj,g_b_proj}` |
+| `lm_head` | `lm_head` |
+
+- **どの層が MLA でどの層が KDA かは、入力の `config.json` の `text_config.layer_types` (層番号の順の種類の
+  並び) から決める。** `deepseek_sparse_attention` の層が MLA、`linear_attention` の層が KDA。層番号を
+  手で並べない。KDA と MLA の `o_proj` は同じ名前の形だが、層番号で見分ける (並びの索引で、それぞれの層に
+  当たる分岐を作る)。
+- `text_config.layer_types` が無い、空、最上位にしか無い、知らない種類を含む、のいずれかなら、層を推測せず、
+  何も書かずに終了 1 で止まる (「全部 KDA」などへは倒さない)。
+- 選ばない: KDA のまとめた層 (q・k・v・b・f_a・g_a。vLLM の `in_proj_qkvbfg_a`。第 2b 段の対象)、MLA の
+  `kv_b_proj` と indexer (`indexer.wq_b`)、`layer_types` に載らない層 (MTP の層 45) の attention、専門家、
+  `eh_proj`、`shared_head.head`。`layer_types` は本体の層だけの並びなので、MTP の attention は選ばれない
+  (MTP の attention の量子化の扱いは未確認。調査と ADR は MLA を「11 層」と数え、MTP を含めていない)。
+- 選ばれた名前は、`--preset` を渡さない変換と同じ経路で変換する。manifest の `pattern` と `args` には、
+  **解決後の正規表現**を `--pattern` として書き、`--preset` は書かない (下の §3)。
+- 変換の結果を vLLM で読み込むには、#73 の vLLM の修正が前提 (`lm_head` は #68 のとおり、修正が無いと
+  FP8 では読めない)。この README では、読めることを確かめていない (未確認)。
+
+```bash
+uv run --directory experiments/k2-quant python -m k2_quant --preset k2s2a \
+  --source <入力の重み> --output <出力> \
+  --source-repo RedHatAI/GLM-5.3-Flash-NVFP4 --source-revision 18d55bfd5a2194887738da73753975c9d3842f46
+```
+
+### まとめた層の整合の検査
+
+vLLM で 1 つの線形層にまとまる組は、組の一部だけが FP8 になると、FP8 の重みと BF16 の重みが 1 つの線形層に
+混ざる。そのため、道具は変換の前に、選ばれたモジュールが組の一部で、組のうち checkpoint に `.weight` として
+実在する相手が選ばれていないときは、何も書かずに終了 1 で止まる。標準エラーに、選ばれていない相手の
+名前が出る。組は次の 3 つで、定義の正本は `k2_quant/selection.py` の `FUSED_GROUPS` (ここに写しているのは
+説明)。
+
+| 組 | vLLM でまとまる線形層 |
+|---|---|
+| `q_a_proj` と `kv_a_proj_with_mqa` (MLA) | `fused_qkv_a_proj` |
+| `gate_proj` と `up_proj` (dense の MLP、共有の専門家) | `gate_up_proj` |
+| `q_proj`・`k_proj`・`v_proj`・`b_proj`・`forget_gate.f_a_proj`・`g_a_proj` (KDA) | `in_proj_qkvbfg_a` |
+
+- 組は同じ親 (`layers.N.self_attn`、`layers.N.mlp` など) の下だけで数える。相手の `.weight` が checkpoint に
+  無ければ通す (混ざらないので)。
+- `--pattern` で選ぶときも同じ。たとえば `q_a_proj` を選ぶなら、`kv_a_proj_with_mqa` も選ぶ。
+  `--preset k2s2a` は、組の全員か、組のどれも選ばない形にしてある。
 
 ### `--pattern` の書き方
 
@@ -134,8 +192,9 @@ vLLM の側 (ソースで確かめたと Issue に書いてある。この READM
 
 `conversion.args` は、道具に渡した引数のうち、**変換の結果を決めるもの**だけの列で、
 `["--source-repo", <repo>, "--source-revision", <revision>, "--pattern", <実際に使った pattern>]` になる
-(`--pattern` を渡さなくても、既定の値を書く)。`--source` と `--output` はマウントの位置に依存し、`--link` は
-出力のバイト列を変えないので、書かない (書くと、2 台の manifest が一致しなくなる)。serving の
+(`--pattern` を渡さなくても、既定の値を書く。`--preset` を渡したときも、`--preset` は書かず、解決後の正規表現を
+`--pattern` として書く。`args` だけで、同じ出力を再現できる)。`--source` と `--output` はマウントの位置に依存し、
+`--link` は出力のバイト列を変えないので、書かない (書くと、2 台の manifest が一致しなくなる)。serving の
 `serve derived-import` は、この列をそのまま派生のマニフェストの `derivation.conversion.args` にする。
 `args` のない manifest (0.1.0 までの形) は、`serve derived-import` が断る。
 
@@ -185,7 +244,7 @@ Mac への取り込み、照合) は、`docs/vllm-baseline/k2-derived-weights-pr
 道具は、推論用のイメージ (`serve` が使うイメージと同じもの) のコンテナの中で、CPU だけで動かす。
 `<remote_root>` は、実機の作業ディレクトリ (`serving/config/nodes.toml` の `remote_root`)。
 
-1. 道具を実機へ配る。道具の写し (`experiments/k2-quant/k2_quant/` と同じ 7 ファイル) は
+1. 道具を実機へ配る。道具の写し (`experiments/k2-quant/k2_quant/` と同じ 8 ファイル) は
    `serving/payload/k2-quant/k2_quant/` に置いてあり、`serve push` が実機の `<remote_root>/payload/` の
    下へ配る (実機に GitHub の認証情報は置かない)。写しが道具と同じバイト列であることは、
    `serving/tests/unit/test_payload.py` が固定している。道具を変えたら、写しも同じ変更で更新する。
@@ -226,6 +285,9 @@ docker run --rm --network none \
   項目が、標準出力に出る。書き直した shard の大きさが、`--link` のときに増えるディスクの目安になる。
 - 2 台それぞれで同じコマンドを流すと、同じ `manifest.json` (バイト単位で同じ) ができる。それを Mac に
   写して `serve derived-import` に渡す (手順書 §2)。
+- 第 2a 段は、上のコマンドの `-m k2_quant` の引数に `--preset k2s2a` を足し、置き場所を別の名前にする
+  (手順書の「第 2a 段」の節)。2 台の manifest が一致する条件は、第 1 段と同じ (入力が同じなら、
+  `layer_types` から解決した正規表現も同じ)。
 
 ### メモリ・ディスク・所要時間の目安
 
@@ -271,3 +333,16 @@ docker run --rm --network none \
 - 変換した重みを vLLM (0961bbae) が読み込めるか、Marlin FP8 で読まれるか、短縮が約 6 ms になるか
   (この段の本来の確認事項。ローカルの試験では確かめられない)。
 - 実機の shard の名前・個数、対象の個数 (138 個)、所要時間、メモリのピーク。
+- 第 2a 段 (`--preset k2s2a`):
+  - 実機の `config.json` の層種の鍵が `text_config.layer_types` で、値が `linear_attention` (KDA)・
+    `deepseek_sparse_attention` (MLA) であること。この repo に実機の `config.json` の写しは無い。根拠は
+    `serving/config/configs.toml` の `probe-pinned` の注記 (実機の先頭 4 層をそのまま取ったと書いてある)
+    と、`.kiro/specs/vllm-baseline/research.md` の 34 / 11 の記載だけで、直接は確かめていない。違えば、
+    道具は終了 1 で止まる (初回の実機の実行で分かる)。
+  - 2a の射影に、`.weight` 以外のパラメータ (`.bias` など) が実機にあるか。あれば、対象の検査が
+    `unexpected parameter` で終了 1 にする。
+  - MTP の層 45 の attention を、2a に含めなくてよいか (含めていない)。
+  - vLLM 側の実行時の名前 (`forget_gate.f_b_proj` が実行時にも `forget_gate` の下か) と、まとめた層の
+    対応 (`packed_modules_mapping`) が、組を覆うか。これは #73 の範囲。道具は、既存のとおり
+    checkpoint の名前の末尾から target を作る。
+  - 変換した重みを vLLM (#73 の修正を当てたもの) が読み込めるか、精度と速度への影響。

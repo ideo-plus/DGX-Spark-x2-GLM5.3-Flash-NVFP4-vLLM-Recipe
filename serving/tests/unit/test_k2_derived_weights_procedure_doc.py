@@ -95,6 +95,7 @@ REQUIRED_MARKERS: Final[tuple[str, ...]] = (
     "readonly",
     "serve derived-import",
     "-m k2_quant",
+    "--preset k2s2a",
     "payload/k2-quant",
     "serve push",
     "--network none",

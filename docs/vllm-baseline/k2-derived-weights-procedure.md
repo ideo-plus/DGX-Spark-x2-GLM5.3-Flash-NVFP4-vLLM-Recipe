@@ -4,6 +4,8 @@
 
 この文書に書かないこと: **送った内容**と応答の本文、**認証の情報**、`exl3-tp2` の中身。変換は手元のコンテナの中で完結し、Hub から何も取りません (匿名のままです)。`exl3-tp2` は別の計測者の構成なので調べません。この文書は手順であって記録ではないので、実機で成功したとは書きません (実機で分かったことは、日付を付けて §8 に足します)。**⚠ の付いた操作は、計測者に了承を得てから行います。**
 
+第 2a 段 (`k2s2a`。MLA の射影と KDA のまとめていない射影、`lm_head` も FP8 にする) は、§1〜§7 と同じ流れで、変換の引数と名前だけが違います。差分は §9 に書きます。
+
 ## 0. 前提: 道具が書くマニフェストと、serving が読むマニフェスト
 
 #56 の変換の道具 (`experiments/k2-quant`。`python3 -m k2_quant`) は、変換の終わりに、変換の結果の置き場所へ `manifest.json` を書きます。道具が書く形は次のとおりです。**`generated_at` も `commit` も書きません** (同じ入力から同じバイト列にするためと、コンテナの中の写しからは分からないためです)。
@@ -110,7 +112,7 @@ diff \
 
 変換は、**推論用のイメージ `sha256:9df45888d2d726a1818be1005ace819808d4a1e8b4ec01a3efa7bc7f10a40c90` のコンテナの中**で行います。GPU は渡しません (`--gpus` も `--runtime nvidia` も付けません)。ネットワークも切ります (`--network none`。Hub から何も取らないことを、コマンドで保証します)。このイメージの既定の起動は `vllm serve` なので、`--entrypoint python3` で差し替え、道具を `python3 -m k2_quant` として動かします (`configs.toml` の取得・計測の構成が `--entrypoint` で差し替えているのと同じ理由です。`python3` は、[パッチ版のビルドの手順書](patched-build-procedure.md) がこのイメージの中で使っています)。
 
-道具の写しは `/tools/k2-quant` に、元の重みは `/origin` に、それぞれ**読み取り専用**で結び付け、変換の結果は `/derived` (Spark の `/home/j5ik2o/vllm-baseline/models/k2s1`。構成の中では `{remote_root}/models/k2s1`) に書きます。作業ディレクトリを `-w /tools/k2-quant` にするので、`-m k2_quant` が写しの `k2_quant` パッケージを読みます。道具の引数は、実際の CLI (`python3 -m k2_quant --help`) のとおり、`--source`・`--output`・`--source-repo`・`--source-revision` が必須で、`--pattern` は既定の範囲 (第 1 段のうち、dense と共有の専門家。`lm_head` と MTP の `shared_head.head` は、vLLM 0961bbae が FP8 (W8A16) の `ParallelLMHead` を読めない (#68。§8) ので、既定から外しています) を使うので渡しません。
+道具の写しは `/tools/k2-quant` に、元の重みは `/origin` に、それぞれ**読み取り専用**で結び付け、変換の結果は `/derived` (Spark の `/home/j5ik2o/vllm-baseline/models/k2s1`。構成の中では `{remote_root}/models/k2s1`) に書きます。作業ディレクトリを `-w /tools/k2-quant` にするので、`-m k2_quant` が写しの `k2_quant` パッケージを読みます。道具の引数は、実際の CLI (`python3 -m k2_quant --help`) のとおり、`--source`・`--output`・`--source-repo`・`--source-revision` が必須で、`--pattern` は既定の範囲 (第 1 段のうち、dense と共有の専門家。`lm_head` と MTP の `shared_head.head` は、vLLM 0961bbae が FP8 (W8A16) の `ParallelLMHead` を読めない (#68。§8) ので、既定から外しています) を使うので渡しません (第 2a 段は、`--preset k2s2a` を足します。§9)。
 
 `--link` は付けません。`--link` は、写さずにハードリンクにする option ですが、元の重み (`/origin`) と出力 (`/derived`) は**別々の bind mount** です。同じファイルシステムの上でも、マウントの境界をまたぐハードリンクは `EXDEV` で失敗します。したがって、対象を含まない shard も写すので、`models/` には写しのぶん (約 184 GiB) の空きが要ります。実機の空きは未確認です (§8)。
 
@@ -245,3 +247,63 @@ uv run --directory serving serve stop --yes
 - 匿名のまま Hub に触れずに、`serve check` と `serve verify` が通るか。
 - **2026-09-26 に分かった**: `lm_head` を含めた変換の結果 (旧 `k2s1`) は、vLLM 0961bbae が FP8 (W8A16、compressed-tensors) の `ParallelLMHead` を humming の線形カーネルで読めず、`AttributeError: 'ParallelLMHead' object has no attribute 'output_partition_sizes'` で起動できなかった (#68)。MTP の `shared_head.head` も、`SharedHead` の中の同じ `ParallelLMHead` である。そのため、`lm_head` と `shared_head.head` を、道具の既定の対象から外した (Issue #69)。例外を出したカーネルのファイルと行は、この repo の記録に無く、未確認。
 - **2026-09-26 に分かった**: 変換と照合の直後は、ページキャッシュが埋まっていて、`--load-format instanttensor` での起動が `buffer_size ... exceeds device memory budget` で落ちた。`--load-format auto` なら読めた (`configure_tp2.py` の `--load-format auto`。[全コンテキストの手順書](full-context-procedure.md) を参照。§3 の `--weights k2s1` と組み合わせて生成できるかは未確認)。
+
+## 9. ⚠ 第 2a 段 (`k2s2a`): MLA の射影と KDA のまとめていない射影、`lm_head` も FP8 にする
+
+第 2a 段 ([ADR 0007](../decisions/0007-k2-stage2.md)。Issue #74) は、同じ道具に `--preset k2s2a` を付けて、第 1 段の対象 (dense と共有の専門家) に、次を足して FP8 にします。使い方と、選ばない名前の詳細は、[道具の README](../../experiments/k2-quant/README.md) にあります。
+
+- MLA の層の `self_attn.q_a_proj`・`kv_a_proj_with_mqa`・`q_b_proj`・`o_proj`
+- KDA の層の `self_attn.o_proj`・`forget_gate.f_b_proj`・`g_b_proj`
+- `lm_head`
+
+どの層が MLA でどの層が KDA かは、入力の `config.json` の `text_config.layer_types` から決まります (層番号を手で並べません)。KDA のまとめた層 (q・k・v・b・f_a・g_a)、MLA の `kv_b_proj` と indexer は、この段では対象にしません。並びが無い config では、道具は何も書かずに終了 1 で止まります。
+
+**この重みを vLLM で読むには、#73 の vLLM の修正が前提です。** 修正を当てない構成では、`lm_head` を FP8 にした重みは、#68 のとおり読めずに起動できません (§8)。変換・取り込み・照合は、vLLM に触れないので、修正の前でも進められます。起動 (§6 と同じ) は、修正を当てた構成でだけ行います。修正を当てた構成をこの手順の `--weights k2s2a` と組み合わせて生成できるかは、未確認です。
+
+§1〜§7 との差分は、次のとおりです。それ以外 (道具の配り方、`--network none`、GPU を渡さないこと、`--link` を付けないこと、2 台の一致の確認、関門、記録の回収) は同じです。
+
+- **§1 (道具の配布)**: 道具の写しは、`presets.py` が増えて 8 ファイルになります。`serve push` と、配ったあとの `*.py` の `sha256sum` の突き合わせは、§1 のままです。
+- **§1 (変換)**: 置き場所を `/home/j5ik2o/vllm-baseline/models/k2s2a` (構成の中では `{remote_root}/models/k2s2a`) にし、`-m k2_quant` の引数に `--preset k2s2a` を足します。`--pattern` とは同時に使えません。
+- **§2 (取り込み)**: `--name k2s2a`、写す先は `serving/var/k2s2a/`、コミットする派生のマニフェストは `serving/weights/k2s2a.manifest.json` です。道具の manifest の `pattern` と `args` には、`--preset` ではなく、`layer_types` から解決した正規表現が `--pattern` として入ります。入力が同じなら、2 台の manifest は一致します。
+- **§3 (構成の生成)**: `--weights k2s2a` を付け、出力は `tp2-full-k2s2a.toml` にそろえます。構成の名前は `p2-nope-tp2-full-k2s2a` になります。
+- **§4〜§7**: 構成の名前を `p2-nope-tp2-full-k2s2a`、`--configs` を `tp2-full-k2s2a.toml` にします。照合の記録は `state/k2s2a.derived.verified.json` です。
+
+⚠ 了承を得てから実行する。置き場所を作り、2 台それぞれで、`--preset k2s2a` を付けて変換する。
+
+```bash
+# 変換の結果の置き場所を、2 台に、空で作る
+ssh spark-153d mkdir -p /home/j5ik2o/vllm-baseline/models/k2s2a
+ssh spark-5083 mkdir -p /home/j5ik2o/vllm-baseline/models/k2s2a
+
+# head (spark-153d)。CPU だけで変換する。--gpus も --runtime nvidia も付けない
+# --link は付けない (別々の bind mount の間のハードリンクは EXDEV で失敗する)
+ssh spark-153d docker run --rm --network none \
+  --entrypoint python3 \
+  --mount type=bind,source=/home/j5ik2o/vllm-baseline/payload/k2-quant,target=/tools/k2-quant,readonly \
+  --mount type=bind,source=/home/j5ik2o/vllm-baseline/models/glm-5-3-flash-nvfp4,target=/origin,readonly \
+  --mount type=bind,source=/home/j5ik2o/vllm-baseline/models/k2s2a,target=/derived \
+  -w /tools/k2-quant \
+  sha256:9df45888d2d726a1818be1005ace819808d4a1e8b4ec01a3efa7bc7f10a40c90 \
+  -m k2_quant --preset k2s2a --source /origin --output /derived \
+  --source-repo RedHatAI/GLM-5.3-Flash-NVFP4 --source-revision 18d55bfd5a2194887738da73753975c9d3842f46
+
+# worker (spark-5083)。同じ道具、同じ引数で、2 台それぞれのマニフェストを作る
+ssh spark-5083 docker run --rm --network none \
+  --entrypoint python3 \
+  --mount type=bind,source=/home/j5ik2o/vllm-baseline/payload/k2-quant,target=/tools/k2-quant,readonly \
+  --mount type=bind,source=/home/j5ik2o/vllm-baseline/models/glm-5-3-flash-nvfp4,target=/origin,readonly \
+  --mount type=bind,source=/home/j5ik2o/vllm-baseline/models/k2s2a,target=/derived \
+  -w /tools/k2-quant \
+  sha256:9df45888d2d726a1818be1005ace819808d4a1e8b4ec01a3efa7bc7f10a40c90 \
+  -m k2_quant --preset k2s2a --source /origin --output /derived \
+  --source-repo RedHatAI/GLM-5.3-Flash-NVFP4 --source-revision 18d55bfd5a2194887738da73753975c9d3842f46
+```
+
+変換が終わると、標準出力に、変換したモジュールの一覧が出ます。まとめた層の組 (`q_a_proj` と `kv_a_proj_with_mqa`、`gate_proj` と `up_proj`、KDA の q・k・v・b・f_a・g_a) の一部だけが選ばれる変換は、道具が何も書かずに終了 1 で断り、標準エラーに選ばれていない相手の名前を出します (`--preset k2s2a` の対象は、組の全員を選ぶか、組のどれも選ばない形にしています)。`--preset` の代わりに `--pattern` を自分で書いたときに断られたら、その名前を選びに足すか、組の全員を外します。
+
+第 2a 段で、実機でしか分からないこと (分かったら、日付を付けて §8 に足します):
+
+- 実機の `config.json` の層種の鍵が `text_config.layer_types` で、値が `linear_attention` (KDA)・`deepseek_sparse_attention` (MLA) であること。この repo に実機の `config.json` の写しは無く、`serving/config/configs.toml` の注記などが根拠です。違えば、道具は終了 1 で止まります。
+- 2a の射影に、`.weight` 以外のパラメータ (`.bias` など) があるか。あれば、道具は `unexpected parameter` で終了 1 になります。
+- 変換した名前の数 (`converted modules: N`)。所要時間。Spark の `models/` の空き (`--link` を使えないので、`models/k2s1` などとは別に、変換の結果のぶんが要ります。大きさは未確認)。
+- #73 の修正を当てた vLLM が、この重みを読み込めるか。FP8 にした層が、期待した層だけか。精度と速度への影響。

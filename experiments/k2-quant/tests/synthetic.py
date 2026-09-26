@@ -13,6 +13,10 @@
   カーネルで読めない (#68) ため、既定の対象から外れる負例として、テンソルは残したまま
   `DEFAULT_TARGET_MODULES` から除いている。
 
+第 2a 段の合成 checkpoint (`build_stage2_checkpoint`) は、KDA の層 0 と MLA の層 3、`lm_head`、
+`layer_types` に載らない層 45 (MTP) を持ち、`config.json` に `text_config.layer_types` を持つ。
+同じ字面 (`o_proj`、`gate_proj`) が、層種や親の名前によって対象・非対象に分かれる。
+
 書き込みは `safetensors.torch.save_file` (参照実装) で行う。
 """
 
@@ -76,6 +80,76 @@ SHARED_HEAD_MODULE: str = "model.language_model.layers.45.shared_head.head"
 既定では変換しない (#68) 負例として、`--pattern` で明示したときだけ変換する正例として使う。"""
 
 ARCHITECTURES: tuple[str, ...] = ("Glm5NextForConditionalGeneration",)
+
+KDA_LAYER_TYPE: str = "linear_attention"
+MLA_LAYER_TYPE: str = "deepseek_sparse_attention"
+"""実機 `config.json` の `text_config.layer_types` の値 (`serving/config/configs.toml` の
+`probe-pinned` の注記が、先頭 4 層をそのまま取ったものとして示している)。"""
+
+STAGE2_LAYER_TYPES: tuple[str, ...] = (
+    KDA_LAYER_TYPE,
+    KDA_LAYER_TYPE,
+    KDA_LAYER_TYPE,
+    MLA_LAYER_TYPE,
+)
+"""第 2a 段の合成 checkpoint の層種の並び。層 0〜2 が KDA、層 3 が MLA。層 45 (MTP) は
+並びに載らない。"""
+
+_STAGE2_PREFIX: str = "model.language_model"
+_KDA_LAYER: str = f"{_STAGE2_PREFIX}.layers.0"
+_MLA_LAYER: str = f"{_STAGE2_PREFIX}.layers.3"
+_MTP_LAYER: str = f"{_STAGE2_PREFIX}.layers.45"
+
+STAGE2A_TARGET_MODULES: tuple[str, ...] = (
+    # 第 2a 段の MLA の射影 (層 3)
+    f"{_MLA_LAYER}.self_attn.q_a_proj",
+    f"{_MLA_LAYER}.self_attn.kv_a_proj_with_mqa",
+    f"{_MLA_LAYER}.self_attn.q_b_proj",
+    f"{_MLA_LAYER}.self_attn.o_proj",
+    # 第 2a 段の KDA のまとめていない射影 (層 0)
+    f"{_KDA_LAYER}.self_attn.o_proj",
+    f"{_KDA_LAYER}.self_attn.forget_gate.f_b_proj",
+    f"{_KDA_LAYER}.self_attn.g_b_proj",
+    # lm_head
+    "lm_head",
+    # 第 1 段の既定の対象 (dense と共有の専門家)
+    f"{_KDA_LAYER}.mlp.gate_proj",
+    f"{_KDA_LAYER}.mlp.up_proj",
+    f"{_KDA_LAYER}.mlp.down_proj",
+    f"{_MLA_LAYER}.mlp.shared_experts.gate_proj",
+    f"{_MLA_LAYER}.mlp.shared_experts.up_proj",
+    f"{_MLA_LAYER}.mlp.shared_experts.down_proj",
+    f"{_MTP_LAYER}.mlp.shared_experts.down_proj",
+)
+"""第 2a 段の選び方が拾うモジュール名 (15 個)。"""
+
+STAGE2_UNTOUCHED_MODULES: tuple[str, ...] = (
+    # KDA のまとめた層 (vLLM で 1 つの線形層にまとまる q・k・v・b・f_a・g_a)
+    f"{_KDA_LAYER}.self_attn.q_proj",
+    f"{_KDA_LAYER}.self_attn.k_proj",
+    f"{_KDA_LAYER}.self_attn.v_proj",
+    f"{_KDA_LAYER}.self_attn.b_proj",
+    f"{_KDA_LAYER}.self_attn.forget_gate.f_a_proj",
+    f"{_KDA_LAYER}.self_attn.g_a_proj",
+    # MLA の kv_b_proj と indexer
+    f"{_MLA_LAYER}.self_attn.kv_b_proj",
+    f"{_MLA_LAYER}.self_attn.indexer.wq_b",
+    # `layer_types` に載らない層 (MTP の層 45) の、KDA・MLA どちらの射影とも同じ名前の形
+    f"{_MTP_LAYER}.self_attn.o_proj",
+    f"{_MTP_LAYER}.eh_proj",
+    f"{_STAGE2_PREFIX}.embed_tokens",
+    f"{_STAGE2_PREFIX}.norm",
+)
+"""第 2a 段の選び方が拾わないモジュール名。同じ字面 (`o_proj`) が層種によって対象・非対象に
+分かれるので、層 45 の `o_proj` を含める。"""
+
+STAGE2_IGNORE_NAMES: tuple[str, ...] = STAGE2A_TARGET_MODULES + STAGE2_UNTOUCHED_MODULES
+"""第 2a 段の合成 checkpoint の `config.json` の `ignore` に置く名前 (変換の前は、BF16 の
+モジュールがすべて `ignore` にある)。"""
+
+STAGE2_EXPERT_MODULE: str = f"{_MLA_LAYER}.mlp.experts.0.gate_proj"
+"""層 3 の専門家 (NVFP4)。`weight_packed`・`weight_scale`・`weight_global_scale` だけを持ち、
+`.weight` が無いので、選び方の候補にならない。"""
 
 
 def _matrix(rows: int, cols: int, *, seed: int) -> torch.Tensor:
@@ -160,12 +234,15 @@ def _group_1() -> dict[str, Any]:
 def _config(
     config_groups_extra: Mapping[str, Any] | None,
     ignore_extra: Sequence[str],
+    *,
+    ignore_base: Sequence[str] = IGNORE_NAMES,
+    layer_types: Sequence[str] | None = None,
 ) -> dict[str, Any]:
     groups: dict[str, Any] = {"group_0": _group_0(), "group_1": _group_1()}
     if config_groups_extra:
         groups.update(config_groups_extra)
-    ignore = list(IGNORE_NAMES) + list(ignore_extra)
-    return {
+    ignore = list(ignore_base) + list(ignore_extra)
+    config: dict[str, Any] = {
         "architectures": list(ARCHITECTURES),
         "model_type": "glm5next",
         "quantization_config": {
@@ -180,6 +257,9 @@ def _config(
             "version": "0.17.2.dev32+g46196ce",
         },
     }
+    if layer_types is not None:
+        config["text_config"] = {"layer_types": list(layer_types)}
+    return config
 
 
 def _shard_tensors(*, include_shared_head: bool) -> dict[str, dict[str, torch.Tensor]]:
@@ -219,6 +299,87 @@ def _shard_tensors(*, include_shared_head: bool) -> dict[str, dict[str, torch.Te
     return shards
 
 
+def _stage2_shard_tensors() -> dict[str, dict[str, torch.Tensor]]:
+    """第 2a 段の合成 checkpoint のテンソル。KDA の層 0 と MLA の層 3、`lm_head`、
+    `layer_types` に載らない層 45 を持つ。形は小さい BF16 の 2 次元 (1 次元は `norm` だけ)。"""
+    kda = f"{_KDA_LAYER}.self_attn"
+    mla = f"{_MLA_LAYER}.self_attn"
+    shared = f"{_MLA_LAYER}.mlp.shared_experts"
+    mtp = _MTP_LAYER
+    return {
+        SHARD_NAMES[0]: {
+            f"{kda}.q_proj.weight": _matrix(4, 4, seed=21),
+            f"{kda}.k_proj.weight": _matrix(4, 4, seed=22),
+            f"{kda}.v_proj.weight": _matrix(4, 4, seed=23),
+            f"{kda}.b_proj.weight": _matrix(2, 4, seed=24),
+            f"{kda}.forget_gate.f_a_proj.weight": _matrix(2, 4, seed=25),
+            f"{kda}.forget_gate.f_b_proj.weight": _matrix(4, 2, seed=26),
+            f"{kda}.g_a_proj.weight": _matrix(2, 4, seed=27),
+            f"{kda}.g_b_proj.weight": _matrix(4, 2, seed=28),
+            f"{kda}.o_proj.weight": _matrix(4, 4, seed=29),
+            f"{_KDA_LAYER}.mlp.gate_proj.weight": _matrix(8, 4, seed=30),
+            f"{_KDA_LAYER}.mlp.up_proj.weight": _matrix(8, 4, seed=31),
+            f"{_KDA_LAYER}.mlp.down_proj.weight": _matrix(4, 8, seed=32),
+        },
+        SHARD_NAMES[1]: {
+            f"{mla}.q_a_proj.weight": _matrix(4, 4, seed=33),
+            f"{mla}.kv_a_proj_with_mqa.weight": _matrix(6, 4, seed=34),
+            f"{mla}.q_b_proj.weight": _matrix(4, 4, seed=35),
+            f"{mla}.kv_b_proj.weight": _matrix(6, 4, seed=36),
+            f"{mla}.o_proj.weight": _matrix(4, 4, seed=37),
+            f"{mla}.indexer.wq_b.weight": _matrix(4, 4, seed=38),
+            f"{shared}.gate_proj.weight": _matrix(6, 4, seed=39),
+            f"{shared}.up_proj.weight": _matrix(6, 4, seed=40),
+            f"{shared}.down_proj.weight": _matrix(4, 6, seed=41),
+            f"{STAGE2_EXPERT_MODULE}.weight_packed": torch.arange(16, dtype=torch.uint8).reshape(
+                4, 4
+            ),
+            f"{STAGE2_EXPERT_MODULE}.weight_scale": torch.ones(4, 1).to(torch.float8_e4m3fn),
+            f"{STAGE2_EXPERT_MODULE}.weight_global_scale": torch.tensor([1.0], dtype=torch.float32),
+        },
+        SHARD_NAMES[2]: {
+            "lm_head.weight": _matrix(16, 4, seed=42),
+            f"{_STAGE2_PREFIX}.embed_tokens.weight": _matrix(16, 4, seed=43),
+            f"{_STAGE2_PREFIX}.norm.weight": _vector(4, seed=44),
+            f"{mtp}.eh_proj.weight": _matrix(4, 8, seed=45),
+        },
+        NON_INDEXED_SHARD: {
+            f"{mtp}.self_attn.o_proj.weight": _matrix(4, 4, seed=46),
+            f"{mtp}.mlp.shared_experts.down_proj.weight": _matrix(4, 6, seed=47),
+        },
+    }
+
+
+def _write_checkpoint(
+    root: Path,
+    shards: Mapping[str, Mapping[str, torch.Tensor]],
+    config: Mapping[str, Any],
+) -> None:
+    """shard・index (索引外の shard は載せない)・`config.json`・通常ファイル・飛ばす
+    サブディレクトリを `root` に書く。"""
+    root.mkdir(parents=True, exist_ok=True)
+    weight_map: dict[str, str] = {}
+    total_size = 0
+    for shard_name, tensors in shards.items():
+        save_file(dict(tensors), str(root / shard_name), metadata={"format": "pt"})
+        if shard_name == NON_INDEXED_SHARD:
+            continue
+        for tensor_name, tensor in tensors.items():
+            weight_map[tensor_name] = shard_name
+            total_size += tensor.numel() * tensor.element_size()
+
+    index = {"metadata": {"total_size": total_size}, "weight_map": weight_map}
+    (root / INDEX_NAME).write_text(json.dumps(index, indent=2) + "\n", encoding="utf-8")
+    (root / CONFIG_NAME).write_text(
+        json.dumps(config, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+    )
+    (root / OTHER_FILE_NAMES[0]).write_text('{"dummy": true}\n', encoding="utf-8")
+    (root / OTHER_FILE_NAMES[1]).write_text('{"dummy": true}\n', encoding="utf-8")
+    cache = root / SKIPPED_DIR_NAME
+    cache.mkdir(exist_ok=True)
+    (cache / "junk.bin").write_bytes(b"junk")
+
+
 def build_checkpoint(
     root: Path,
     *,
@@ -233,28 +394,19 @@ def build_checkpoint(
     (`SHARED_HEAD_MODULE`) の重みを足し、その名前を `ignore` にも置く (実機の `ignore` と
     同じく、変換の前は `ignore` にある)。
     """
-    root.mkdir(parents=True, exist_ok=True)
     shards = _shard_tensors(include_shared_head=include_shared_head)
     if include_shared_head:
         ignore_extra = (*ignore_extra, SHARED_HEAD_MODULE)
-    weight_map: dict[str, str] = {}
-    total_size = 0
-    for shard_name, tensors in shards.items():
-        save_file(tensors, str(root / shard_name), metadata={"format": "pt"})
-        if shard_name == NON_INDEXED_SHARD:
-            continue
-        for tensor_name, tensor in tensors.items():
-            weight_map[tensor_name] = shard_name
-            total_size += tensor.numel() * tensor.element_size()
+    _write_checkpoint(root, shards, _config(config_groups_extra, ignore_extra))
 
-    index = {"metadata": {"total_size": total_size}, "weight_map": weight_map}
-    (root / INDEX_NAME).write_text(json.dumps(index, indent=2) + "\n", encoding="utf-8")
-    (root / CONFIG_NAME).write_text(
-        json.dumps(_config(config_groups_extra, ignore_extra), indent=2, ensure_ascii=False) + "\n",
-        encoding="utf-8",
-    )
-    (root / OTHER_FILE_NAMES[0]).write_text('{"dummy": true}\n', encoding="utf-8")
-    (root / OTHER_FILE_NAMES[1]).write_text('{"dummy": true}\n', encoding="utf-8")
-    cache = root / SKIPPED_DIR_NAME
-    cache.mkdir(exist_ok=True)
-    (cache / "junk.bin").write_bytes(b"junk")
+
+def build_stage2_checkpoint(root: Path) -> None:
+    """第 2a 段の合成 checkpoint を `root` に作る (既存なら上書き)。
+
+    KDA の層 0 (9 つの射影と dense の MLP)、MLA の層 3 (5 つの射影、indexer、共有の専門家、
+    NVFP4 の専門家)、`lm_head`、`layer_types` に載らない層 45 (`o_proj`、`eh_proj`、共有の
+    専門家) を持つ。`config.json` は `text_config.layer_types` に `STAGE2_LAYER_TYPES` を持ち、
+    変換の前の BF16 のモジュール (`STAGE2_IGNORE_NAMES`) をすべて `ignore` に置く。
+    """
+    config = _config(None, (), ignore_base=STAGE2_IGNORE_NAMES, layer_types=STAGE2_LAYER_TYPES)
+    _write_checkpoint(root, _stage2_shard_tensors(), config)
