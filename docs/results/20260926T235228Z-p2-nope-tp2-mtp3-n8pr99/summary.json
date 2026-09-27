@@ -1,0 +1,372 @@
+{
+  "schema_version": 1,
+  "conditions": {
+    "schema_version": 1,
+    "run_id": "20260926T235228Z-p2-nope-tp2-mtp3-n8pr99",
+    "status": "completed",
+    "target": {
+      "name": "p2-nope-tp2-mtp3",
+      "base_url": "http://10.0.1.60:8000/",
+      "model": "glm-5-3-flash",
+      "notes": "MTP を下書き 3 トークンで有効にした full と同じ構成の計測 (起動側の構成名も p2-nope-tp2-mtp3)。実機では未確認",
+      "api_key_env": null,
+      "metrics_url": null,
+      "max_context_tokens": 163840,
+      "metric_map": {},
+      "tool_markup_markers": [
+        "<tool_call>",
+        "</tool_call>",
+        "<arg_key>",
+        "<arg_value>"
+      ]
+    },
+    "server_model": "glm-5-3-flash",
+    "server_version": "0.1.dev1+g0961bbae2.d20260922",
+    "started_at": "2026-09-26T23:52:28.595507Z",
+    "finished_at": "2026-09-26T23:55:34.500089Z",
+    "suites": [
+      "decode"
+    ],
+    "profile_name": "probe",
+    "profile": {
+      "name": "probe",
+      "seed": 0,
+      "sampling": {
+        "temperature": 0.0,
+        "top_p": null,
+        "top_k": null,
+        "thinking": "server_default"
+      },
+      "chars_per_token": {
+        "prose_en": 4.831,
+        "prose_ja": 1.794,
+        "code": 3.505,
+        "log": 2.316
+      },
+      "timeout": {
+        "connect_s": 10.0,
+        "first_event_s": 120.0,
+        "idle_s": 60.0,
+        "total_s": 900.0
+      },
+      "min_successes": 5,
+      "max_consecutive_failures": 5,
+      "length_tolerance": 0.05,
+      "compare_tolerance": 0.02,
+      "metrics_interval_s": 1.0,
+      "output_sanity": {
+        "repeat_min_chars": 12,
+        "repeat_min_count": 8
+      },
+      "sandbox": {
+        "runtime": "auto",
+        "image": "bench-sandbox:py3.13-numpy2.5.3",
+        "image_digest": "sha256:f75a1d43009306248ecbe68c0cc992b700a472037ba6ea336e519404ec1d1de6",
+        "timeout_s": 20.0,
+        "memory_mb": 512,
+        "cpus": 1.0,
+        "pids_limit": 64
+      },
+      "decode": {
+        "trials": 10,
+        "warmup_trials": 1,
+        "max_tokens": 128
+      },
+      "prefill": {
+        "trials": 5,
+        "warmup_trials": 1,
+        "max_tokens": 16,
+        "target_input_tokens": [
+          8000,
+          32000,
+          128000
+        ]
+      },
+      "concurrency": {
+        "levels": [
+          1,
+          2,
+          4,
+          8
+        ],
+        "rounds": 5,
+        "max_tokens": 256,
+        "input_tokens": 2000
+      },
+      "quality": {
+        "toolcall_tasks": 5,
+        "needle_lengths": [
+          8000
+        ],
+        "needle_depths": [
+          50
+        ],
+        "trials_per_cell": 1,
+        "code_max_tokens": 1024,
+        "code_problem_limit": 1
+      },
+      "agent": {
+        "start_tokens": 20000,
+        "end_tokens": 120000,
+        "step_tokens": 20000,
+        "trials_per_stage": 50,
+        "conversations_per_stage": 5,
+        "threshold": 0.01,
+        "max_tokens": 256
+      }
+    },
+    "harness_version": "0.1.0+g8d3baa07.dirty",
+    "generator_version": 1,
+    "context_limit": 163840,
+    "warnings": [],
+    "skipped": [],
+    "datasets": []
+  },
+  "incomplete": false,
+  "results": [
+    {
+      "condition": "decode/code/en",
+      "metric": "decode_tps",
+      "tier": "primary",
+      "continuous": {
+        "n": 10,
+        "mean": 38.91228051837944,
+        "median": 38.85114663612521,
+        "min": 37.052362062553286,
+        "max": 40.664444757562805,
+        "stdev": 1.2998406036306014,
+        "iqr": 1.8926659136427588,
+        "cv": 0.033404379962172805
+      },
+      "proportion": null,
+      "failures": 0,
+      "flags": [],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0
+      }
+    },
+    {
+      "condition": "decode/code/en",
+      "metric": "ttft_s",
+      "tier": "primary",
+      "continuous": {
+        "n": 10,
+        "mean": 0.5515010918,
+        "median": 0.5583663125,
+        "min": 0.4946915,
+        "max": 0.651375625,
+        "stdev": 0.048968387470537666,
+        "iqr": 0.06927250024999998,
+        "cv": 0.08879109796630447
+      },
+      "proportion": null,
+      "failures": 0,
+      "flags": [],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0
+      }
+    },
+    {
+      "condition": "decode/code/ja",
+      "metric": "decode_tps",
+      "tier": "primary",
+      "continuous": {
+        "n": 10,
+        "mean": 34.99085620368162,
+        "median": 34.27230032970697,
+        "min": 32.78731940807721,
+        "max": 38.9798148590282,
+        "stdev": 2.0371464338891703,
+        "iqr": 2.892284894439449,
+        "cv": 0.05821939371906048
+      },
+      "proportion": null,
+      "failures": 0,
+      "flags": [],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0
+      }
+    },
+    {
+      "condition": "decode/code/ja",
+      "metric": "ttft_s",
+      "tier": "primary",
+      "continuous": {
+        "n": 10,
+        "mean": 0.5519113709,
+        "median": 0.5530050415,
+        "min": 0.498427625,
+        "max": 0.577321292,
+        "stdev": 0.02114691845171184,
+        "iqr": 0.008744020500000116,
+        "cv": 0.03831578685763917
+      },
+      "proportion": null,
+      "failures": 0,
+      "flags": [],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0
+      }
+    },
+    {
+      "condition": "decode/prose/en",
+      "metric": "decode_tps",
+      "tier": "primary",
+      "continuous": {
+        "n": 10,
+        "mean": 34.83006314366522,
+        "median": 35.90459312518293,
+        "min": 26.324636629852627,
+        "max": 38.63492027155633,
+        "stdev": 3.625362775784779,
+        "iqr": 1.8899482748770424,
+        "cv": 0.10408717207405202
+      },
+      "proportion": null,
+      "failures": 0,
+      "flags": [],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0
+      }
+    },
+    {
+      "condition": "decode/prose/en",
+      "metric": "ttft_s",
+      "tier": "primary",
+      "continuous": {
+        "n": 10,
+        "mean": 0.5574415082999999,
+        "median": 0.5279456874999999,
+        "min": 0.450568083,
+        "max": 0.894537333,
+        "stdev": 0.12840020482147974,
+        "iqr": 0.07045271875000003,
+        "cv": 0.23033843535092155
+      },
+      "proportion": null,
+      "failures": 0,
+      "flags": [],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0
+      }
+    },
+    {
+      "condition": "decode/prose/ja",
+      "metric": "decode_tps",
+      "tier": "primary",
+      "continuous": {
+        "n": 10,
+        "mean": 33.28852735959839,
+        "median": 33.42924956404051,
+        "min": 30.8917850255187,
+        "max": 35.86646519966703,
+        "stdev": 1.4997388779899863,
+        "iqr": 0.6344085130737653,
+        "cv": 0.045052725276462334
+      },
+      "proportion": null,
+      "failures": 0,
+      "flags": [],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0
+      }
+    },
+    {
+      "condition": "decode/prose/ja",
+      "metric": "ttft_s",
+      "tier": "primary",
+      "continuous": {
+        "n": 10,
+        "mean": 0.5444369622,
+        "median": 0.5380568125,
+        "min": 0.480855708,
+        "max": 0.628417458,
+        "stdev": 0.049160621414316964,
+        "iqr": 0.08221940674999995,
+        "cv": 0.09029625985654095
+      },
+      "proportion": null,
+      "failures": 0,
+      "flags": [],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0
+      }
+    }
+  ],
+  "agent": null,
+  "server_metrics": {
+    "decode/code/en": {
+      "spec_acceptance_rate": 0.8766066838046273,
+      "mean_acceptance_length": 3.6298200514138816,
+      "decode_steps": 400.0,
+      "tokens_per_step": 3.52,
+      "prefix_cache_hit_rate": 0.0,
+      "kv_usage_peak": 0.04105571847507328,
+      "preemptions": 0.0,
+      "missing": []
+    },
+    "decode/code/ja": {
+      "spec_acceptance_rate": 0.7252252252252253,
+      "mean_acceptance_length": 3.175675675675676,
+      "decode_steps": 455.0,
+      "tokens_per_step": 3.0945054945054946,
+      "prefix_cache_hit_rate": 0.0,
+      "kv_usage_peak": 0.04105571847507328,
+      "preemptions": 0.0,
+      "missing": []
+    },
+    "decode/prose/en": {
+      "spec_acceptance_rate": 0.7854315122723674,
+      "mean_acceptance_length": 3.356294536817102,
+      "decode_steps": 432.0,
+      "tokens_per_step": 3.259259259259259,
+      "prefix_cache_hit_rate": 0.0,
+      "kv_usage_peak": 0.04105571847507328,
+      "preemptions": 0.0,
+      "missing": []
+    },
+    "decode/prose/ja": {
+      "spec_acceptance_rate": 0.6890817064352857,
+      "mean_acceptance_length": 3.067245119305857,
+      "decode_steps": 472.0,
+      "tokens_per_step": 2.983050847457627,
+      "prefix_cache_hit_rate": 0.0,
+      "kv_usage_peak": 0.04105571847507328,
+      "preemptions": 0.0,
+      "missing": []
+    }
+  },
+  "datasets": []
+}
