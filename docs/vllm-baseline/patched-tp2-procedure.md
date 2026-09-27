@@ -38,7 +38,7 @@ uv run --directory serving serve check p2-nope-tp2-smoke --configs var/nope-buil
 - `image_digest`（worker）: 自前イメージが未移送の場合。§3 で解消します。
 - `weights_verified`（両台）: 実重みをまだ取得・照合していない場合。§5 で解消します。
 
-不通過の詳細を確認し、上記に該当する場合だけ準備を進めます。親の `models`、`cache`、`logs` の欠落、接続失敗、他の関門の不通過はここで止めて調べます。全 8 関門の通過は §6 の起動条件です。
+不通過の詳細を確認し、上記に該当する場合だけ準備を進めます。親の `models`、`cache`、`logs` の欠落、接続失敗、他の関門の不通過はここで止めて調べます。全 9 関門の通過は §6 の起動条件です。
 
 ## 3. Mac を経由してイメージを移す
 
@@ -104,13 +104,15 @@ uv run --directory serving serve stop --yes
 
 8 時間で終えるための目安は、1 台あたり 197,881,153,655 B / 28,800 s ≈ 6.87 MB/s 以上です。これは仮定からの計算であり、実測ではありません。`mismatched=` が空でなければ停止し、別の重みを黙って取得し直しません。照合記録は重みの slug で参照されるため、TP=2 の起動構成の関門にも使われます。
 
-## 6. 起動前の 8 関門と起動
+## 6. 起動前の 9 関門と起動
 
 ```bash
 uv run --directory serving serve check p2-nope-tp2-smoke --configs var/nope-build-0961bbae/tp2.toml
 ```
 
-出力の `gate.N.name` が `reachable` / `own_state` / `gpu_idle` / `layout` / `image_digest` / `weights_verified` / `disk_space` / `ports_free` の 8 種であること、head・worker とも `gate.N.passed` がすべて `true`、`gates_failed=0`、`status=passed` であることを確認します。構成のハッシュ (`config-sha256`) の照合は、この `serve check` の確認項目ではなく、次の `serve start` が同名で中身の違うコンテナを見つけたときに別途行う判定です。
+出力の `gate.N.name` が `reachable` / `own_state` / `gpu_idle` / `layout` / `image_digest` / `weights_verified` / `disk_space` / `memory_free` / `ports_free` の 9 種であること、head・worker とも `gate.N.passed` がすべて `true`、`gates_failed=0`、`status=passed` であることを確認します。構成のハッシュ (`config-sha256`) の照合は、この `serve check` の確認項目ではなく、次の `serve start` が同名で中身の違うコンテナを見つけたときに別途行う判定です。
+
+起動の前の空きは、`MemFree` を読んで確かめます。`--load-format instanttensor` の構成なら下限を確かめます (issue #84。断られたときの対処は `ops/spark-drop-caches/README.md`)。
 
 ⚠ 起動による GPU プロセス、コンテナ、ログの状態変更を了承した後、初回だけ次を実行します。
 
@@ -157,7 +159,7 @@ uv run --directory serving serve smoke p2-nope-tp2-smoke --configs var/nope-buil
 
 確認し直すときは、§8 で停止したうえで、別の試行としてやり直します。⚠ この別試行には §6 の起動と §8 の停止が含まれます。状態を変えるので、それぞれの節に書いた了承の条件をそのまま満たしてから進みます。前の試行の結果を根拠に、次の 3 つを省きません。
 
-1. §6 の `serve check` を流し直し、`gate.N.name` が 8 種そろい、head・worker とも `gate.N.passed` がすべて `true`、`gates_failed=0`、`status=passed` であることを確認する。
+1. §6 の `serve check` を流し直し、`gate.N.name` が 9 種そろい、head・worker とも `gate.N.passed` がすべて `true`、`gates_failed=0`、`status=passed` であることを確認する。
 2. §6 の `serve start` を、同じ構成・同じ重み・同じイメージで実行する。進む条件は `status=ready` だけです。`already_running`、`refused`、`failed` の扱いは §6 のとおりです。
 3. §7 の手順で、今回のコンテナに帰属する NCCL 記録だけを選び直し、少なくとも 1 行の `Using network IB` があること、今回分にある経路確定行がすべて IB であることを確認する。前の試行のファイルを今回分として使いません。
 

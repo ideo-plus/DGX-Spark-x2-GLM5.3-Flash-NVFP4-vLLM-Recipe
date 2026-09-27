@@ -1,0 +1,5 @@
+# /etc/sudoers.d/spark-drop-caches: ページキャッシュを捨てる、引数なしのこの 1 コマンドだけ
+# を、パスワードなしで許す (visudo -cf で検査してから置く)。issue #84。
+# 末尾の "" は、引数を付けない呼び方だけを許す形 (試験用の --target を sudo 経由で使えなく
+# し、root で任意のファイルに書けないようにする)。
+j5ik2o ALL=(root) NOPASSWD: /usr/local/sbin/spark-drop-caches ""

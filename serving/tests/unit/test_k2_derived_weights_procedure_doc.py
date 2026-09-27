@@ -42,6 +42,9 @@
     既存の項目を残したまま述べる
 13. §9 が、第 2b 段 (`--preset k2s2b`。#79) の読み替え (足す KDA のまとめた層の 6 射影、置き場所、
     取り込みの名前とマニフェスト、構成の名前とファイル名、起動に要る #79 の重ね) を述べる
+14. §5 が 9 つの関門と `memory_free` を述べ、§6 の `serve start` の前に、⚠ と「了承を得てから」の
+    直後に、両台でページキャッシュを捨てる固定のコマンド
+    (`ssh … 'sudo /usr/local/sbin/spark-drop-caches'`) の塊がある。§8 が、この対策 (#84) を指す
 
 RED: 文書がなければ、`read_text` で `pytest.fail` する。道具の写しや `derived-import` が
 まだなければ、その理由を示して落とす。
@@ -67,6 +70,7 @@ from procedure_doc_kit import (
     code_blocks,
     command_lines,
     lines_inside,
+    preceding_paragraph,
     read_text,
     relative_link_targets,
     subparser_map,
@@ -885,19 +889,31 @@ def test_the_manifest_sample_modules_are_selected_by_the_sample_pattern() -> Non
 # --- 12. §8 実機でしか分からないこと -----------------------------------
 
 
-def _section_8(text: str) -> str:
-    """`## 8.` の見出しから、次の `## ` の見出し (なければ末尾) の手前まで (コード塊の中は除く)。"""
+def _section(text: str, number: int) -> str:
+    """`## <number>.` の見出しから、次の `## ` の見出し (なければ末尾) の手前まで
+    (コード塊の中は除く)。"""
     lines = text.splitlines()
     inside = lines_inside(code_blocks(text))
     headings = [
-        number
-        for number, line in enumerate(lines, start=1)
-        if number not in inside and line.startswith("## ")
+        line_number
+        for line_number, line in enumerate(lines, start=1)
+        if line_number not in inside and line.startswith("## ")
     ]
-    begin = next((number for number in headings if lines[number - 1].startswith("## 8.")), None)
-    assert begin is not None, f"`## 8.` の見出しがない: {DOC_PATH}"
-    end = next((number for number in headings if number > begin), len(lines) + 1)
+    begin = next(
+        (
+            line_number
+            for line_number in headings
+            if lines[line_number - 1].startswith(f"## {number}.")
+        ),
+        None,
+    )
+    assert begin is not None, f"`## {number}.` の見出しがない: {DOC_PATH}"
+    end = next((line_number for line_number in headings if line_number > begin), len(lines) + 1)
     return "\n".join(lines[begin - 1 : end - 1])
+
+
+def _section_8(text: str) -> str:
+    return _section(text, 8)
 
 
 SECTION_8_NEW_MARKERS: Final[tuple[str, ...]] = (
@@ -951,18 +967,7 @@ STAGE_2B_MARKERS: Final[tuple[str, ...]] = (
 
 
 def _section_9(text: str) -> str:
-    """`## 9.` の見出しから、次の `## ` の見出し (なければ末尾) の手前まで (コード塊の中は除く)。"""
-    lines = text.splitlines()
-    inside = lines_inside(code_blocks(text))
-    headings = [
-        number
-        for number, line in enumerate(lines, start=1)
-        if number not in inside and line.startswith("## ")
-    ]
-    begin = next((number for number in headings if lines[number - 1].startswith("## 9.")), None)
-    assert begin is not None, f"`## 9.` の見出しがない: {DOC_PATH}"
-    end = next((number for number in headings if number > begin), len(lines) + 1)
-    return "\n".join(lines[begin - 1 : end - 1])
+    return _section(text, 9)
 
 
 @pytest.mark.parametrize("marker", STAGE_2B_MARKERS)
@@ -989,3 +994,72 @@ def test_section_9_names_the_kda_merged_projections_that_the_stage_2b_preset_add
     assert describing, (
         "`--preset k2s2b` と、まとめた層の射影 (f_a・g_a) を同じ段落に書いた説明がない"
     )
+
+
+# --- 14. 関門 `memory_free` と、ページキャッシュを捨てる固定のコマンド (#84) -----------
+
+DROP_CACHES_COMMAND: Final[str] = "sudo /usr/local/sbin/spark-drop-caches"
+"""`ops/spark-drop-caches/` の固定のコマンド (sudoers が、引数なしのこの 1 つだけを許す)。"""
+
+_NODE_HOSTS: Final[tuple[str, ...]] = ("spark-153d", "spark-5083")
+
+_DROP_CACHES_FIXED_FORM: Final[re.Pattern[str]] = re.compile(
+    r"sudo /usr/local/sbin/spark-drop-caches['\"]?\s*$"
+)
+"""`sudo` を含む行の終わり方 (固定のコマンドのあとに、引数を続けない)。"""
+
+SECTION_8_FIX_MARKERS: Final[tuple[str, ...]] = ("#84", "memory_free", "ops/spark-drop-caches")
+"""§8 の、ページキャッシュで起動が落ちた項目が指す、対策の印 (既存の印は、上で残す)。"""
+
+
+def test_section_5_describes_nine_gates_including_memory_free() -> None:
+    """§5 は、関門を 9 つと述べ、起動の前のメモリの空きを見る `memory_free` に触れる。"""
+    section = _section(read_text(DOC_PATH), 5)
+
+    assert "9 つの関門" in section
+    assert "memory_free" in section
+
+
+def _drop_caches_block_in_section_6() -> tuple[CodeBlock, list[str], CodeBlock]:
+    """§6 の、ページキャッシュを捨てる塊と、§6 の行と、その後ろの最初の `serve start` の塊。"""
+    section = _section(read_text(DOC_PATH), 6)
+    blocks = code_blocks(section)
+    drops = [block for block in blocks if DROP_CACHES_COMMAND in block.commands]
+    starts = [block for block in blocks if MACHINE_CALLS["serve start"].search(block.commands)]
+    assert drops, (
+        f"§6 に、ページキャッシュを捨てる固定のコマンド ({DROP_CACHES_COMMAND}) の塊がない"
+    )
+    assert starts, "§6 に `serve start` の塊がない"
+    return drops[0], section.splitlines(), starts[0]
+
+
+def test_section_6_drops_the_page_cache_before_the_start_after_asking() -> None:
+    """§6 で、ページキャッシュを捨てる塊は `serve start` の塊より前にあり、その直前の段落に
+    ⚠ と「了承を得てから」がある (root の操作は、了承を得てから)。"""
+    drop, lines, start = _drop_caches_block_in_section_6()
+
+    assert drop.open_line < start.open_line
+    paragraph = preceding_paragraph(lines, drop.open_line)
+    assert "⚠" in paragraph
+    assert "了承を得てから" in paragraph
+
+
+def test_section_6_drops_the_page_cache_on_both_nodes_with_the_fixed_command_only() -> None:
+    """ページキャッシュを捨てる塊は、両台に `ssh` で、固定のコマンドだけを流す (引数を続けない)。"""
+    drop, _, _ = _drop_caches_block_in_section_6()
+    commands = drop.commands.splitlines()
+
+    for host in _NODE_HOSTS:
+        assert any(
+            "ssh" in line and host in line and DROP_CACHES_COMMAND in line for line in commands
+        ), f"{host} に、固定のコマンドを流す ssh の行がない"
+    root_lines = [line for line in commands if "sudo" in line]
+    assert root_lines
+    assert all(_DROP_CACHES_FIXED_FORM.search(line) for line in root_lines), root_lines
+
+
+@pytest.mark.parametrize("marker", SECTION_8_FIX_MARKERS)
+def test_section_8_points_to_the_fix_for_the_page_cache_failure(marker: str) -> None:
+    """§8 の、ページキャッシュで `instanttensor` の起動が落ちた項目が、対策 (#84。関門
+    `memory_free` と、`ops/spark-drop-caches/`) を指す。"""
+    assert marker in _section_8(read_text(DOC_PATH))

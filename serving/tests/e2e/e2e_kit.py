@@ -22,6 +22,7 @@ import httpx
 
 from fake_runner import FakeRunner, Reply, Rule
 from fake_vllm import FakeVllm
+from meminfo_sample import meminfo_rule
 from serving_kit import cli
 from serving_kit import config as config_mod
 from serving_kit import guards as g
@@ -430,9 +431,9 @@ def gate_rules(
     avail: str = DF_AVAIL,
     listening: str = "",
 ) -> tuple[Rule, ...]:
-    """8 つの関門のうち、読み取りを要るものを、すべて通す台本 (`test_cli.py` の `gate_rules`
+    """9 つの関門のうち、読み取りを要るものを、すべて通す台本 (`test_cli.py` の `gate_rules`
     と同じ考え方: 重みを持つ構成では、`cat` の 2 つの規則で、`.probe.verified.json` かどうかで
-    読み分ける)。
+    読み分ける。`/proc/meminfo` の規則は、それらより前に置く)。
     """
     rows = {} if listing is None else listing
     rules: list[Rule] = []
@@ -440,6 +441,7 @@ def gate_rules(
         rules.append(
             Rule(prefix=OWN_CONTAINERS_ARGV, node=role, replies=(Reply(stdout=rows.get(role, "")),))
         )
+        rules.append(meminfo_rule(node=role))
         rules.append(
             Rule(
                 prefix=("cat",),

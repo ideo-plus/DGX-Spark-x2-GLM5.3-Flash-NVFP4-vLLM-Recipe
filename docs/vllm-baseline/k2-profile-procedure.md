@@ -33,7 +33,7 @@ uv run --directory serving serve check p2-nope-tp2-full-prof \
   --configs var/nope-build-0961bbae/tp2-full-prof.toml
 ```
 
-`--torch-profiler` は、どの `--variant` にも付けられます。付けたときだけ、`args` の末尾に `--profiler-config '{"profiler":"torch","torch_profiler_dir":"/logs/torch-profile","torch_profiler_with_stack":false,"torch_profiler_dump_cuda_time_total":false}'`（根拠つき）が入り、構成の名前が `-prof` 付きになります。2 つの `false` は #48 で足したもので、trace の書き出しのメモリを減らすために、スタックの記録と、worker の `key_averages` の表（GPU の時間の表）の書き出しを切ります（根拠は `vllm/config/profiler.py` の docstring）。`/logs/torch-profile` は、`mount-logs` で結び付けた `/logs` の下なので、`serve logs` で回収できます。`--nccl-thread-names` と併用すると `p2-nope-tp2-full-tn-prof` になります。MTP と併用するときは `--variant full-mtp --spec-tokens 3 --torch-profiler` で `p2-nope-tp2-mtp3-prof` になります。付けないときの出力は、1 バイトも変わりません。`serve check` は `patched-tp2-procedure.md` §6 と同じ 8 関門です。**前の試行で通ったことを根拠に省かず、全関門をもう一度検査します。**
+`--torch-profiler` は、どの `--variant` にも付けられます。付けたときだけ、`args` の末尾に `--profiler-config '{"profiler":"torch","torch_profiler_dir":"/logs/torch-profile","torch_profiler_with_stack":false,"torch_profiler_dump_cuda_time_total":false}'`（根拠つき）が入り、構成の名前が `-prof` 付きになります。2 つの `false` は #48 で足したもので、trace の書き出しのメモリを減らすために、スタックの記録と、worker の `key_averages` の表（GPU の時間の表）の書き出しを切ります（根拠は `vllm/config/profiler.py` の docstring）。`/logs/torch-profile` は、`mount-logs` で結び付けた `/logs` の下なので、`serve logs` で回収できます。`--nccl-thread-names` と併用すると `p2-nope-tp2-full-tn-prof` になります。MTP と併用するときは `--variant full-mtp --spec-tokens 3 --torch-profiler` で `p2-nope-tp2-mtp3-prof` になります。付けないときの出力は、1 バイトも変わりません。`serve check` は `patched-tp2-procedure.md` §6 と同じ 9 関門です。**前の試行で通ったことを根拠に省かず、全関門をもう一度検査します。**
 
 ## 2. 起動、IB の確認、短い応答
 

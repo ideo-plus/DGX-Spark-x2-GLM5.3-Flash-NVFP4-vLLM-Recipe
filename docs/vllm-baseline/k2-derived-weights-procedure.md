@@ -205,7 +205,7 @@ uv run --directory serving serve verify p2-nope-tp2-full-k2s1 \
 
 ## 5. 関門をすべて通す (`serve check`)
 
-`serve check` は、まず `load_configs` で構成を読み (マニフェストの実在と、元の重みのマニフェストの中身。§0)、そのあと 8 つの関門を流します。派生の重みでも、Hub の重みと同じ厳しさです。関門 `weights_verified` は、構成の `derivation` とマニフェストの `derivation` の一致と、照合の記録の一致 (記録の `manifest_sha256` が、いまのマニフェストと同じことを含む) を確かめます (§0)。
+`serve check` は、まず `load_configs` で構成を読み (マニフェストの実在と、元の重みのマニフェストの中身。§0)、そのあと 9 つの関門を流します。派生の重みでも、Hub の重みと同じ厳しさです。関門 `weights_verified` は、構成の `derivation` とマニフェストの `derivation` の一致と、照合の記録の一致 (記録の `manifest_sha256` が、いまのマニフェストと同じことを含む) を確かめます (§0)。変換・照合の直後はページキャッシュが埋まっているので、関門 `memory_free` は `MemFree` を読み、`--load-format instanttensor` の起動なら下限 (8 GiB) を見ます (issue #84)。
 
 ```bash
 uv run --directory serving serve check p2-nope-tp2-full-k2s1 \
@@ -213,6 +213,13 @@ uv run --directory serving serve check p2-nope-tp2-full-k2s1 \
 ```
 
 ## 6. ⚠ 起動と短い確認 (`serve start` と `serve smoke`)
+
+変換・照合の直後は、ページキャッシュが埋まっていて、`--load-format instanttensor` の起動が関門 `memory_free` で断られることがある (issue #84)。⚠ 了承を得てから、起動の前に両台でページキャッシュを捨てる (詳しくは [`ops/spark-drop-caches/README.md`](../../ops/spark-drop-caches/README.md))。
+
+```sh
+ssh -o BatchMode=yes -o ConnectTimeout=5 spark-153d 'sudo /usr/local/sbin/spark-drop-caches'
+ssh -o BatchMode=yes -o ConnectTimeout=5 spark-5083 'sudo /usr/local/sbin/spark-drop-caches'
+```
 
 ⚠ 了承を得てから実行する。`serve start` は、2 台でコンテナを起こす。`serve smoke` は、短い要求を 1 つずつ送る (応答の本文は画面に出すだけで、どこにも残さない)。
 
@@ -246,7 +253,7 @@ uv run --directory serving serve stop --yes
 - 派生の重みを読み込んだときの、vLLM の起動の時間と GPU のメモリ。FP8 にした層が、期待した層だけか。
 - 匿名のまま Hub に触れずに、`serve check` と `serve verify` が通るか。
 - **2026-09-26 に分かった**: `lm_head` を含めた変換の結果 (旧 `k2s1`) は、vLLM 0961bbae が FP8 (W8A16、compressed-tensors) の `ParallelLMHead` を humming の線形カーネルで読めず、`AttributeError: 'ParallelLMHead' object has no attribute 'output_partition_sizes'` で起動できなかった (#68)。MTP の `shared_head.head` も、`SharedHead` の中の同じ `ParallelLMHead` である。そのため、`lm_head` と `shared_head.head` を、道具の既定の対象から外した (Issue #69)。例外を出したカーネルのファイルと行は、この repo の記録に無く、未確認。
-- **2026-09-26 に分かった**: 変換と照合の直後は、ページキャッシュが埋まっていて、`--load-format instanttensor` での起動が `buffer_size ... exceeds device memory budget` で落ちた。`--load-format auto` なら読めた (`configure_tp2.py` の `--load-format auto`。[全コンテキストの手順書](full-context-procedure.md) を参照。§3 の `--weights k2s1` と組み合わせて生成できるかは未確認)。
+- **2026-09-26 に分かった**: 変換と照合の直後は、ページキャッシュが埋まっていて、`--load-format instanttensor` での起動が `buffer_size ... exceeds device memory budget` で落ちた。`--load-format auto` なら読めた (`configure_tp2.py` の `--load-format auto`。[全コンテキストの手順書](full-context-procedure.md) を参照。§3 の `--weights k2s1` と組み合わせて生成できるかは未確認)。対策 (#84): 起動の前の関門 `memory_free` が `MemFree` を見て起動せずに断り、[`ops/spark-drop-caches/`](../../ops/spark-drop-caches/README.md) の固定コマンドでページキャッシュを捨てる (§6)。
 
 ## 9. ⚠ 第 2a 段 (`k2s2a`): MLA の射影と KDA のまとめていない射影、`lm_head` も FP8 にする
 

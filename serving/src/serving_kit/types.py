@@ -808,6 +808,10 @@ class LaunchRecord(_Frozen):
     config_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     repo_commit: str = Field(min_length=1)
     repo_dirty: bool
+    gates: tuple[GateResult, ...]
+    """起動の直前に通った関門の結果 (issue #84)。`memory_free` の `detail` に、起動前の
+    `MemFree`/`MemAvailable`/`Cached` が残るので、instanttensor の起動が落ちた回の、直前の
+    空きを後から読める。"""
 
 
 class StartOutcome(_Frozen):

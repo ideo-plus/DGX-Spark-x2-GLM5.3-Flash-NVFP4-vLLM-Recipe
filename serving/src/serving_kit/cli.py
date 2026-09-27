@@ -10,7 +10,7 @@
 
 | コマンド | すること | 状態を変えるか |
 |---|---|---|
-| `serve check <構成>` | 構成の検査と、8 つの関門を流して結果を並べる | 変えない |
+| `serve check <構成>` | 構成の検査と、9 つの関門を流して結果を並べる | 変えない |
 | `serve push` | 2 台に 6 つの置き場所を作り、`payload/` を配る | 変える |
 | `serve pull-image <構成>` | イメージを、ダイジェストで 2 台に取得する | 変える |
 | `serve image-licenses <構成>` | イメージの中のライセンスの表記を読んで出す | 変える |
@@ -770,7 +770,7 @@ def _add_thinking(subparsers: argparse._SubParsersAction[argparse.ArgumentParser
 
 
 def _cmd_check(ctx: _Context) -> int:
-    """構成の検査と、8 つの関門の結果を並べる (requirements 3.7、2.2、2.5)。"""
+    """構成の検査と、9 つの関門の結果を並べる (requirements 3.7、2.2、2.5)。"""
     config, nodes = ctx.selected()
     plans = plan.build_plans(config, nodes, ctx.now())
     manifest = ctx.manifest(config)

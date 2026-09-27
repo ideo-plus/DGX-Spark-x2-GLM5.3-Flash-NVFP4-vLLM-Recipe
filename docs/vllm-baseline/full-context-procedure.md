@@ -16,7 +16,7 @@ uv run --directory serving serve check p2-nope-tp2-full \
   --configs var/nope-build-0961bbae/tp2-full.toml
 ```
 
-生成はネットワークや `subprocess` を使わず、既存出力があれば上書きしません。`--max-model-len` と `--max-num-seqs` の値と根拠は `p1-nvfp4-tp2` のままです。`full` と `full-mtp` の args の末尾には、既定で `--load-format instanttensor`（#50。根拠は vLLM の `LoadConfig` の docstring）が入ります。`serve check` は `patched-tp2-procedure.md` §6 と同じ 8 関門です。**前の試行で通ったことを根拠に省かず、全関門をもう一度検査します。**
+生成はネットワークや `subprocess` を使わず、既存出力があれば上書きしません。`--max-model-len` と `--max-num-seqs` の値と根拠は `p1-nvfp4-tp2` のままです。`full` と `full-mtp` の args の末尾には、既定で `--load-format instanttensor`（#50。根拠は vLLM の `LoadConfig` の docstring）が入ります。`serve check` は `patched-tp2-procedure.md` §6 と同じ 9 関門です。**前の試行で通ったことを根拠に省かず、全関門をもう一度検査します。**
 
 #17 の確認（張り付くスレッドが NCCL の proxy か）のために、`--nccl-thread-names` を付けた構成も生成できます。これはどの `--variant` にも付けられ、付けたときだけ env に `NCCL_SET_THREAD_NAME=1`（NCCL の公式文書を `source` と `quote` に持つ）が入り、構成の名前が `-tn` 付きになります。付けないときの出力は変わりません。
 
@@ -28,7 +28,7 @@ uv run --directory serving serve check p2-nope-tp2-full-tn \
   --configs var/nope-build-0961bbae/tp2-full-tn.toml
 ```
 
-`p2-nope-tp2-full` との違いは、env の `NCCL_SET_THREAD_NAME=1`（根拠つき）と、構成の名前だけです。`--variant full-mtp --spec-tokens 1 --nccl-thread-names` なら `p2-nope-tp2-mtp1-tn` になります。以降の §3・§7 のコマンドは、構成名を `p2-nope-tp2-full-tn`、`--configs` を `tp2-full-tn.toml` に読み替えます（`serve check` の 8 関門は同じです）。
+`p2-nope-tp2-full` との違いは、env の `NCCL_SET_THREAD_NAME=1`（根拠つき）と、構成の名前だけです。`--variant full-mtp --spec-tokens 1 --nccl-thread-names` なら `p2-nope-tp2-mtp1-tn` になります。以降の §3・§7 のコマンドは、構成名を `p2-nope-tp2-full-tn`、`--configs` を `tp2-full-tn.toml` に読み替えます（`serve check` の 9 関門は同じです）。
 
 #37 の調査で、起動の約 7 分を占める重みの読み込みは、ディスクではなく vLLM の既定の読み方（mmap で必要なところを少しずつ読む）が律速と分かりました。その後の #37 の実測（2026-09-26）で、`--load-format instanttensor` にすると重みの読み込みが 363 秒（head）から 32 秒になり、起動全体が約 11 分から約 3 分になりました。同じ構成の `probe` の decode の tok/s・toolcall 5/5・needle 8k は、既定の読み方と同じ範囲で、壊れの印は 0 件でした。これを受けて #50 で、`full` と `full-mtp` の args には `--load-format instanttensor`（根拠は vLLM の `LoadConfig` の docstring）が既定で入ります。既定を外すには `--load-format auto` を付けます。出力は #50 より前の既定とバイト単位で同じになり、構成の名前は `p2-nope-tp2-full` のままです。
 
@@ -46,7 +46,14 @@ uv run --directory serving serve check p2-nope-tp2-full \
 
 読み込み方を比べるときは、1 構成ずつ §3 の `serve start` → `serve logs`、§7 の停止を行い、回収した起動の記録の `Loading weights took` と `Model loading took` の行を、既定（`instanttensor`）の `p2-nope-tp2-full` と `--load-format auto` で作った構成で比べます。ただし、固定した vLLM では `Loading weights took` の行を出すのは `default_loader.py` と `sharded_state_loader.py` だけで、`--load-format runai_streamer` の構成（`RunaiModelStreamerLoader`）はこの行を出しません。その構成は `Model loading took` の行で比べます。
 
-2 回目以降の起動は、重みがページキャッシュに乗っているぶん速く読めるので、比べる前に両台のページキャッシュの状態をそろえます。ページキャッシュを捨てる操作（両台で `sync && echo 3 | sudo tee /proc/sys/vm/drop_caches`）は実機の状態を変えるので、⚠ **了承を得てから**行います。この操作には root 権限が要り、Spark で `sudo` がパスワードなしで使えるかは未確認です。`--safetensors-load-strategy` が効くのは、`--load-format` を付けない既定の読み方だけです（固定した vLLM で strategy を使うのは `default_loader.py` の `safetensors_weights_iterator` だけで、`instanttensor`・`fastsafetensors`・`runai_streamer` の読み方は strategy を受け取りません）。そのため `full` と `full-mtp` では、`--safetensors-load-strategy` を `--load-format auto` と組で使い（例: `--load-format auto --safetensors-load-strategy prefetch` → `p2-nope-tp2-full-sls-prefetch`）、`auto` の構成と比べます。`--load-format` を付けずに `--safetensors-load-strategy` だけを指定すると、既定の `--load-format instanttensor` が残り、strategy が効かない構成（名前は `-sls-<値>` なのに、中身は `--load-format instanttensor` つき）になってしまうので、生成器は生成の前に断ります（既定を黙って外すこともしません）。明示の `--load-format` と重ねた構成も作れますが、strategy は効かないので、比べる対象にしません。`smoke` は既定を持たないので、`--safetensors-load-strategy` だけで作れます。
+2 回目以降の起動は、重みがページキャッシュに乗っているぶん速く読めるので、比べる前に両台のページキャッシュの状態をそろえます。ページキャッシュを捨てる操作（両台で `drop_caches` へ書く）は実機の状態を変えるので、⚠ **了承を得てから**行います。この操作には root 権限が要るので、`ops/spark-drop-caches/README.md` の手順で設置した固定のコマンドを使います（issue #84）。
+
+```sh
+ssh -o BatchMode=yes -o ConnectTimeout=5 spark-153d 'sudo /usr/local/sbin/spark-drop-caches'
+ssh -o BatchMode=yes -o ConnectTimeout=5 spark-5083 'sudo /usr/local/sbin/spark-drop-caches'
+```
+
+`--safetensors-load-strategy` が効くのは、`--load-format` を付けない既定の読み方だけです（固定した vLLM で strategy を使うのは `default_loader.py` の `safetensors_weights_iterator` だけで、`instanttensor`・`fastsafetensors`・`runai_streamer` の読み方は strategy を受け取りません）。そのため `full` と `full-mtp` では、`--safetensors-load-strategy` を `--load-format auto` と組で使い（例: `--load-format auto --safetensors-load-strategy prefetch` → `p2-nope-tp2-full-sls-prefetch`）、`auto` の構成と比べます。`--load-format` を付けずに `--safetensors-load-strategy` だけを指定すると、既定の `--load-format instanttensor` が残り、strategy が効かない構成（名前は `-sls-<値>` なのに、中身は `--load-format instanttensor` つき）になってしまうので、生成器は生成の前に断ります（既定を黙って外すこともしません）。明示の `--load-format` と重ねた構成も作れますが、strategy は効かないので、比べる対象にしません。`smoke` は既定を持たないので、`--safetensors-load-strategy` だけで作れます。
 
 ## 2. GPU と X925 の上限の確認
 
@@ -70,7 +77,7 @@ uv run --directory serving serve start p2-nope-tp2-full \
   --configs var/nope-build-0961bbae/tp2-full.toml --timeout 3h --yes
 ```
 
-進む条件は `status=ready` だけです。`already_running`／`refused`／`failed` の扱いは `patched-tp2-procedure.md` §6 と同じです。続けてログを回収します。
+進む条件は `status=ready` だけです。`already_running`／`refused`／`failed` の扱いは `patched-tp2-procedure.md` §6 と同じです。関門 `memory_free` が `MemFree` の不足を理由に断ることもあります (issue #84)。断られたら、⚠ 了承を得てから両台で `sudo /usr/local/sbin/spark-drop-caches` を実行してページキャッシュを捨て (`ops/spark-drop-caches/README.md`)、`serve start` をやり直します。続けてログを回収します。
 
 ```bash
 uv run --directory serving serve logs p2-nope-tp2-full \

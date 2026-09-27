@@ -301,6 +301,7 @@ LAUNCH_RECORD = t.LaunchRecord(
     config_sha256=CONFIG_SHA,
     repo_commit="0966d11",
     repo_dirty=False,
+    gates=(),
 )
 START_OUTCOME = t.StartOutcome(
     status="ready",
@@ -1081,6 +1082,28 @@ def test_container_name_is_alphanumeric_and_hyphens(bad: str) -> None:
 def test_container_plan_needs_an_argv() -> None:
     with pytest.raises(ValidationError, match="argv"):
         t.ContainerPlan(node="head", container_name=HEAD_CONTAINER, labels={}, argv=())
+
+
+# --- 起動の記録 ---------------------------------------------------------
+
+
+def test_a_launch_record_needs_the_gates() -> None:
+    """`gates` を書かない起動の記録は、`ValidationError` になる (必須の項目。issue #84)。"""
+    without_gates = LAUNCH_RECORD.model_dump(mode="json")
+    del without_gates["gates"]
+
+    with pytest.raises(ValidationError, match="gates"):
+        t.LaunchRecord.model_validate(without_gates)
+
+
+def test_a_launch_record_keeps_the_gates_through_json() -> None:
+    """起動の直前に通った関門の結果が、記録の JSON を通っても、そのまま残る。"""
+    passed = GATE_REFUSED.model_copy(update={"passed": True, "detail": "空いている"})
+    record = LAUNCH_RECORD.model_copy(update={"gates": (passed,)})
+
+    restored = t.LaunchRecord.model_validate_json(record.model_dump_json())
+
+    assert restored.gates == (passed,)
 
 
 # --- 記録からの読み取り -------------------------------------------------

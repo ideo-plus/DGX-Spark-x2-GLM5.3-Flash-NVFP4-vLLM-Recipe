@@ -495,6 +495,7 @@ def run_probe(
             config,
             nodes,
             plans,
+            gates,
             controls,
             sender,
             base_url=base_url,
@@ -517,6 +518,7 @@ def _probe(
     config: ConfigDef,
     nodes: Mapping[NodeRole, NodeDef],
     plans: Sequence[ContainerPlan],
+    gates: Sequence[GateResult],
     controls: lifecycle.Controls,
     sender: httpx.Client,
     *,
@@ -537,7 +539,7 @@ def _probe(
     ない)。置けなかったことは、縮小の確認そのものができなかったこと (`inconclusive`) にする。
     """
     record = lifecycle.launch_record(
-        config, plans, started_at, repo_commit=repo_commit, repo_dirty=repo_dirty
+        config, plans, started_at, repo_commit=repo_commit, repo_dirty=repo_dirty, gates=gates
     )
     try:
         lifecycle.push_launch_records(runner, config, nodes, record, record_dir)

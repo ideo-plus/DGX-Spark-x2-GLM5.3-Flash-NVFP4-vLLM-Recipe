@@ -40,6 +40,18 @@ import pytest
 from pydantic import HttpUrl
 
 from fake_runner import FakeRunner, Reply, Rule
+from meminfo_sample import (
+    EXHAUSTED_AVAILABLE_KB,
+    EXHAUSTED_CACHED_KB,
+    EXHAUSTED_FREE_KB,
+    EXHAUSTED_MEMINFO,
+    HEALTHY_AVAILABLE_KB,
+    HEALTHY_CACHED_KB,
+    HEALTHY_FREE_KB,
+    HEALTHY_MEMINFO,
+    MEMINFO_PATH,
+    kb_in_bytes_text,
+)
 from serving_kit import guards as g
 from serving_kit import types as kit_types
 from serving_kit.plan import (
@@ -236,6 +248,14 @@ def probe_config() -> ConfigDef:
     )
 
 
+def instanttensor_config() -> ConfigDef:
+    """`--load-format instanttensor` を持つ 2 台の構成 (`serve_config` に読み込み方を足す)。"""
+    config = serve_config()
+    return config.model_copy(
+        update={"args": {**config.args, "load-format": _setting("--load-format", "instanttensor")}}
+    )
+
+
 def fetch_config() -> ConfigDef:
     """重みの取得の構成 (動いている取得を見つける試験に使う)。"""
     return ConfigDef(
@@ -385,6 +405,12 @@ class Script:
     digests: tuple[str, ...] = (OTHER_REF, IMAGE_REF)
     records: dict[NodeRole, dict[str, str]] = field(default_factory=_all_records)
     """台ごとの、照合の記録 (道筋 → 中身)。書いていない道筋は、ファイルがない。"""
+    meminfo: dict[NodeRole, str] = field(
+        default_factory=lambda: dict.fromkeys(ROLES, HEALTHY_MEMINFO)
+    )
+    """台ごとの `/proc/meminfo` の本文 (既定は、空きが十分ある台。合成で、実機の見本ではない)。"""
+    meminfo_unreadable: tuple[NodeRole, ...] = ()
+    """`cat /proc/meminfo` が失敗する台。"""
     missing_dirs: tuple[str, ...] = ()
     unreachable: tuple[NodeRole, ...] = ()
 
@@ -413,6 +439,13 @@ class Script:
                     Rule(prefix=("ss",), node=role, replies=(Reply(stdout=self.ss[role]),)),
                 )
             )
+            # `/proc/meminfo` は、照合の記録の規則より前に置く (`cat` の規則は何にでも当たる)
+            meminfo = (
+                Reply(exit_code=1, stderr="cat: /proc/meminfo: Input/output error")
+                if role in self.meminfo_unreadable
+                else Reply(stdout=self.meminfo[role])
+            )
+            rules.append(Rule(prefix=("cat", MEMINFO_PATH), node=role, replies=(meminfo,)))
             # 道筋まで見て返す (範囲ごとに別のファイル)。書いていない道筋は、ない
             rules.extend(
                 Rule(
@@ -483,6 +516,14 @@ def passed_of(results: Sequence[GateResult], gate: str, node: NodeRole = "head")
     raise AssertionError(f"{node} の関門 {gate} の結果がない")
 
 
+def cat_paths(runner: FakeRunner) -> list[str]:
+    """`cat` に渡った道筋のうち、照合の記録を読んだもの (どこから読んだか)。
+
+    関門 `memory_free` の `/proc/meminfo` の読み取りは、記録の読み取りではないので入れない。
+    """
+    return [argv[1] for argv in runner.argvs if argv[0] == "cat" and argv[1:] != (MEMINFO_PATH,)]
+
+
 def gates_for(
     tmp_path: Path, config: ConfigDef, script: Script | None = None
 ) -> tuple[FakeRunner, tuple[GateResult, ...]]:
@@ -510,6 +551,7 @@ def test_the_gates_run_in_the_designed_order_on_every_node(tmp_path: Path) -> No
         "image_digest",
         "weights_verified",
         "disk_space",
+        "memory_free",
         "ports_free",
     )
     assert order == g.GATE_ORDER
@@ -546,7 +588,7 @@ def test_an_unreachable_node_skips_the_rest_of_its_gates(tmp_path: Path) -> None
     worker = [result for result in results if result.node == "worker"]
     assert [result.gate for result in worker] == ["reachable"]
     assert not worker[0].passed
-    assert [result.passed for result in results if result.node == "head"] == [True] * 8
+    assert [result.passed for result in results if result.node == "head"] == [True] * 9
 
 
 # --- 自分のコンテナと、GPU ----------------------------------------------
@@ -793,7 +835,7 @@ def test_a_config_without_weights_passes_the_weights_gate(tmp_path: Path) -> Non
     runner = runner_of(tmp_path, Script(records=empty))
     results = g.run_gates(runner, config, NODES, plans_of(config), manifest=None)
     assert passed_of(results, "weights_verified", "head")
-    assert [argv for argv in runner.argvs if argv[0] == "cat"] == []
+    assert cat_paths(runner) == []
 
 
 # --- 照合の記録は、範囲ごとに別のファイル --------------------------------
@@ -876,6 +918,99 @@ def test_the_required_space_is_the_manifest_plus_ten_percent(tmp_path: Path) -> 
     assert g.required_free_bytes(inspect_config(), None) == IMAGE.size_bytes
 
 
+# --- メモリの空き (`--load-format instanttensor` の起動の前) ----------------
+
+INSTANTTENSOR_FREE_FLOOR_BYTES = 8 * 1024**3
+"""`--load-format instanttensor` の構成が要る `MemFree` の下限 (8 GiB)。"""
+
+
+def _assert_the_three_values_and_the_floor(
+    detail: str, *, free: int, available: int, cached: int
+) -> None:
+    """`detail` に、`MemFree`・`MemAvailable`・`Cached` (バイトにした数) と、下限がある。"""
+    assert kb_in_bytes_text(free) in detail
+    assert kb_in_bytes_text(available) in detail
+    assert kb_in_bytes_text(cached) in detail
+    assert f"{INSTANTTENSOR_FREE_FLOOR_BYTES:,}" in detail
+
+
+def test_an_instanttensor_config_passes_with_enough_free_memory_and_records_the_values(
+    tmp_path: Path,
+) -> None:
+    runner, results = gates_for(tmp_path, instanttensor_config())
+
+    assert refused(results) == (), [(r.node, r.gate, r.detail) for r in refused(results)]
+    for role in ROLES:
+        _assert_the_three_values_and_the_floor(
+            detail_of(results, "memory_free", role),
+            free=HEALTHY_FREE_KB,
+            available=HEALTHY_AVAILABLE_KB,
+            cached=HEALTHY_CACHED_KB,
+        )
+    # 1 台につき 1 回だけ、状態を変えない `cat` で読む (読んだ値を `detail` に残す)
+    reads = [call for call in runner.runs if call.argv == ("cat", MEMINFO_PATH)]
+    assert sorted(call.node for call in reads) == ["head", "worker"]
+    assert [call for call in reads if call.mutating] == []
+
+
+def test_a_config_without_instanttensor_passes_and_still_records_memfree(tmp_path: Path) -> None:
+    # `--load-format dummy` の構成は、空きが少なくても止めない (値は記録する)
+    script = Script(records=_probe_records(), meminfo=dict.fromkeys(ROLES, EXHAUSTED_MEMINFO))
+    _, results = gates_for(tmp_path, probe_config(), script)
+
+    assert refused(results) == (), [(r.node, r.gate, r.detail) for r in refused(results)]
+    assert kb_in_bytes_text(EXHAUSTED_FREE_KB) in detail_of(results, "memory_free", "head")
+
+
+def test_an_instanttensor_config_is_refused_with_little_free_memory_and_the_remedy(
+    tmp_path: Path,
+) -> None:
+    script = Script(meminfo=dict.fromkeys(ROLES, EXHAUSTED_MEMINFO))
+    _, results = gates_for(tmp_path, instanttensor_config(), script)
+
+    assert [(r.node, r.gate) for r in refused(results)] == [
+        ("head", "memory_free"),
+        ("worker", "memory_free"),
+    ]
+    for role in ROLES:
+        detail = detail_of(results, "memory_free", role)
+        _assert_the_three_values_and_the_floor(
+            detail,
+            free=EXHAUSTED_FREE_KB,
+            available=EXHAUSTED_AVAILABLE_KB,
+            cached=EXHAUSTED_CACHED_KB,
+        )
+        # 対処: ページキャッシュを捨てる固定のコマンド (⚠ 了承のあと) か、`auto` の構成
+        assert "spark-drop-caches" in detail
+        assert "--load-format auto" in detail
+        assert "⚠" in detail
+
+
+@pytest.mark.parametrize(
+    "script",
+    [
+        Script(meminfo_unreadable=("head",)),
+        Script(
+            meminfo={
+                "head": "MemTotal:   131072000 kB\nMemAvailable:   100663296 kB\n"
+                "Cached:   31457280 kB\n",
+                "worker": HEALTHY_MEMINFO,
+            }
+        ),
+    ],
+    ids=["cat-fails", "no-memfree-line"],
+)
+def test_an_unreadable_meminfo_refuses_the_gate_of_that_node_only(
+    tmp_path: Path, script: Script
+) -> None:
+    # 例外は外に出ない (`gates_for` が結果を返す)。読めた台の関門は、そのまま通る
+    _, results = gates_for(tmp_path, instanttensor_config(), script)
+
+    assert not passed_of(results, "memory_free", "head")
+    assert detail_of(results, "memory_free", "head")
+    assert passed_of(results, "memory_free", "worker")
+
+
 def test_a_busy_port_is_refused_with_the_port_number(tmp_path: Path) -> None:
     # 見本の `ss -ltnH` は、8080 を待ち受けている (この道具のものではない)
     _, results = gates_for(tmp_path, serve_config(port="8080"))
@@ -906,7 +1041,7 @@ def test_a_probe_config_passes_with_only_the_config_and_tokenizer_verified(tmp_p
     runner = runner_of(tmp_path, Script(records=_probe_records()))
     results = g.run_gates(runner, config, NODES, plans_of(config), manifest=MANIFEST)
     assert refused(results) == (), [(r.gate, r.detail) for r in refused(results)]
-    assert [result.node for result in results] == ["head"] * 8
+    assert [result.node for result in results] == ["head"] * 9
 
 
 def test_the_probe_config_needs_only_tens_of_mib(tmp_path: Path) -> None:
@@ -1041,11 +1176,6 @@ def derived_gates_for(
     runner = runner_of(tmp_path, script or Script(records=_derived_records()))
     results = g.run_gates(runner, config, NODES, plans_of(config), manifest=manifest)
     return runner, results
-
-
-def cat_paths(runner: FakeRunner) -> list[str]:
-    """`cat` に渡った道筋の全部 (照合の記録を、どこから読んだか)。"""
-    return [argv[1] for argv in runner.argvs if argv[0] == "cat"]
 
 
 def test_a_derived_config_passes_the_weights_gate_and_reads_only_the_derived_record(
@@ -1724,6 +1854,7 @@ def _direct_gates(runner: FakeRunner) -> dict[str, Callable[[], GateResult]]:
         "image_digest": lambda: g.gate_image_digest(runner, HEAD, config),
         "weights_verified": lambda: g.gate_weights_verified(runner, HEAD, config, MANIFEST),
         "disk_space": lambda: g.gate_disk_space(runner, HEAD, MANIFEST.total_bytes),
+        "memory_free": lambda: g.gate_memory_free(runner, HEAD, config),
         "ports_free": lambda: g.gate_ports_free(runner, HEAD, config),
     }
 
@@ -1735,9 +1866,17 @@ DIRECT_GATES = (
     "image_digest",
     "weights_verified",
     "disk_space",
+    "memory_free",
     "ports_free",
 )
-PARSING_GATES = ("gpu_idle", "image_digest", "weights_verified", "disk_space", "ports_free")
+PARSING_GATES = (
+    "gpu_idle",
+    "image_digest",
+    "weights_verified",
+    "disk_space",
+    "memory_free",
+    "ports_free",
+)
 """出力を読む関門 (`layout` は `test -e` の終了コードだけ、`reachable` は名前を見ない)。"""
 
 

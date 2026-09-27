@@ -11,7 +11,7 @@
    名前・構成の名前・イメージのダイジェスト・`config-sha256` が 2 台とも一致して動いていれば、
    **関門も了承も通さずに** `already_running` (終了コード 0)。名前が同じで中身が違うときは、
    違う項目を示して `refused` (終了コード 1。`serve stop` を促す)
-2. 関門 (`guards.run_gates` の 8 つ)。1 つでも落ちたら `refused` で、了承も、状態を変える
+2. 関門 (`guards.run_gates` の 9 つ)。1 つでも落ちたら `refused` で、了承も、状態を変える
    呼び出しも、1 つも出さない
 3. 計画 (`plan.build_plans`) を `guards.build_approved_plan` にかけ、`guards.request_approval`
    で了承を得る。断られたら `guards.ApprovalError` (終了コード 1)
@@ -986,11 +986,16 @@ def launch_record(
     *,
     repo_commit: str,
     repo_dirty: bool,
+    gates: Sequence[GateResult],
 ) -> LaunchRecord:
     """起動の記録を Mac で作る (requirements 3.10)。
 
     リポジトリの commit と、未コミットの変更の有無は**引数で受ける**。この module の中で
     `git` を呼ばない (Spark に触る道具が、Mac のリポジトリの状態を自分で調べに行かない)。
+
+    `gates` は、起動の直前に通った関門の結果 (issue #84)。`serve start` は落ちた関門だけを
+    標準出力に出すので、通った関門の値 (`memory_free` の `MemFree` など) は、ここに残さないと
+    あとから読めない。
     """
     labels = plans[0].labels
     weights = config.weights
@@ -1003,6 +1008,7 @@ def launch_record(
         config_sha256=labels[LABEL_CONFIG_SHA256],
         repo_commit=repo_commit,
         repo_dirty=repo_dirty,
+        gates=tuple(gates),
     )
 
 
@@ -1733,7 +1739,7 @@ def _launch(
     ない)。置けなかったことは、そのまま `LifecycleError` になる。
     """
     record = launch_record(
-        config, plans, started_at, repo_commit=repo_commit, repo_dirty=repo_dirty
+        config, plans, started_at, repo_commit=repo_commit, repo_dirty=repo_dirty, gates=gates
     )
     push_launch_records(runner, config, nodes, record, record_dir)
 

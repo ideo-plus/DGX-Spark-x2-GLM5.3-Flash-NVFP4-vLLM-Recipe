@@ -48,6 +48,7 @@ import pytest
 
 from fake_runner import FakeRunner, Reply, Rule
 from fake_vllm import FakeVllm, Fault
+from meminfo_sample import meminfo_rule
 from serving_kit import cli
 from serving_kit import config as config_mod
 from serving_kit import guards as g
@@ -270,11 +271,11 @@ def own_row(plan: ContainerPlan, *, container_id: str, state: str = "running") -
 
 
 def passing_gate_rules(role: NodeRole) -> tuple[Rule, ...]:
-    """1 台ぶんの、8 つの関門のうち、読み取りを要る 6 つを、すべて通す台本。
+    """1 台ぶんの、9 つの関門のうち、読み取りを要る 7 つを、すべて通す台本。
 
     重みを持たない構成なので `gate_weights_verified` は呼び出しなしで通り、
     `gate_own_state` は `list_own_containers` の 1 回の読み取りを使い回す
-    (Implementation Notes 2.3)。残り 6 つが、ここで読み取りを要る関門である。
+    (Implementation Notes 2.3)。残り 7 つが、ここで読み取りを要る関門である。
     """
     return (
         Rule(prefix=("uname",), node=role, replies=(Reply(stdout="e2e-host\n"),)),
@@ -286,6 +287,7 @@ def passing_gate_rules(role: NodeRole) -> tuple[Rule, ...]:
             replies=(Reply(stdout=json.dumps([IMAGE_REF]) + "\n"),),
         ),
         Rule(prefix=("df",), node=role, replies=(Reply(stdout="Avail\n999999999999999\n"),)),
+        meminfo_rule(node=role),
         Rule(prefix=("ss",), node=role, replies=(Reply(stdout=""),)),
     )
 

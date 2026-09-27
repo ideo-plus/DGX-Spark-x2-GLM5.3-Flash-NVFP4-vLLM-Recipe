@@ -44,6 +44,7 @@ import pytest
 from pydantic import HttpUrl
 
 from fake_runner import FakeRunner, RecordedCall, Reply, Rule
+from meminfo_sample import meminfo_rule
 from serving_kit import image as im
 from serving_kit.config import ConfigError
 from serving_kit.guards import ApprovalError
@@ -318,6 +319,7 @@ class LicenseScript:
                 replies=(Reply(stdout=sample("head", "nvidia-smi-compute-apps.txt")),),
             ),
             Rule(prefix=("df",), replies=(Reply(stdout=sample("head", "df-avail.txt")),)),
+            meminfo_rule(),
             Rule(prefix=("ss",), replies=(Reply(stdout=sample("head", "ss-ltnH.txt")),)),
             Rule(
                 prefix=("docker", "image", "inspect"),

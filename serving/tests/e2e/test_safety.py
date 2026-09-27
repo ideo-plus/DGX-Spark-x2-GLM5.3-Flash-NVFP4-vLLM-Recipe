@@ -30,7 +30,7 @@
 `test_probe_watch.py` に書く。ここでは、安全の決まりを確かめるのに要る分だけを流す。
 
 置き場所の決まりにより、触ってよいのは `serving/tests/e2e/` の下の新規ファイルだけである。
-共通の下ごしらえ (構成の TOML、`Repo`、`invoke()`、8 つの関門を通す台本) は `e2e_kit.py`
+共通の下ごしらえ (構成の TOML、`Repo`、`invoke()`、9 つの関門を通す台本) は `e2e_kit.py`
 (このディレクトリの新規モジュール) に置き、ここと `test_probe_watch.py` の両方から使う。
 """
 
@@ -49,6 +49,7 @@ import pytest
 
 from fake_runner import FakeRunner, RecordedCall, Reply, Rule
 from fake_vllm import FakeVllm, Fault, MessagesReply
+from meminfo_sample import meminfo_rule
 from serving_kit import cli
 from serving_kit import netcheck as netcheck_mod
 from serving_kit import plan as plan_mod
@@ -345,6 +346,8 @@ class JobRound:
 def _job_rounds_script(rounds: Sequence[JobRound]) -> tuple[Rule, ...]:
     """通信の確認のジョブの台本 (`JobScript.rules()` と同じ考え方: 一覧は、最初の空に、
     回ごとの running → exited → exited を連ねた、1 つながりの列にする)。
+
+    関門 `memory_free` の `/proc/meminfo` の読み取りにも答える (issue #84)。
     """
     rules: list[Rule] = []
     for role in k.ROLES:
@@ -396,6 +399,7 @@ def _job_rounds_script(rounds: Sequence[JobRound]) -> tuple[Rule, ...]:
                 replies=(Reply(stdout=json.dumps([k.IMAGE_REF]) + "\n"),),
             ),
             Rule(prefix=("df",), replies=(Reply(stdout=k.DF_AVAIL),)),
+            meminfo_rule(),
             Rule(prefix=("ss",), replies=(Reply(stdout=""),)),
             Rule(prefix=("docker", "run"), replies=(Reply(stdout="aaaa1111\n"),)),
             Rule(prefix=("docker", "stop"), replies=(Reply(),)),
@@ -509,6 +513,7 @@ def _probe_script(plan: Any, *, states: tuple[Reply, ...], tails: str) -> tuple[
         ),
         Rule(prefix=("docker", "container", "inspect"), node=role, replies=states),
         Rule(prefix=("docker", "logs", "--timestamps"), node=role, replies=(Reply(stdout=tails),)),
+        meminfo_rule(node=role),
         Rule(
             prefix=("cat",),
             node=role,
