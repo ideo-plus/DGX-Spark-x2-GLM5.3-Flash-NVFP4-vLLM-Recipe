@@ -23,6 +23,7 @@
       "--pattern", ".*\\.layers\\.(?:0|1|2)\\.mlp\\.(?:gate|up|down)_proj$|.*\\.layers\\.\\d+\\.mlp\\.shared_experts\\.(?:gate|up|down)_proj$"
     ],
     "modules": ["model.language_model.layers.0.mlp.gate_proj"],
+    "format": "fp8",
     "weight_dtype": "F8_E4M3",
     "scale_dtype": "F32",
     "strategy": "channel"
@@ -32,7 +33,7 @@
 }
 ```
 
-`conversion.args` は、道具に渡した引数のうち、**変換の結果を決めるもの**だけです (`--source-repo`、`--source-revision`、`--pattern`。`--pattern` は渡さなくても、実際に使った既定の値を書きます)。`--source` と `--output` はマウントの位置に依存し、`--link` は出力のバイト列を変えないので、書きません。`modules` は、実際には、選ばれたモジュールの名前がすべて、名前順に並びます (見本は 1 つだけです)。
+`conversion.args` は、道具に渡した引数のうち、**変換の結果を決めるもの**だけです (`--source-repo`、`--source-revision`、`--pattern`。`--pattern` は渡さなくても、実際に使った既定の値を書きます)。`--source` と `--output` はマウントの位置に依存し、`--link` は出力のバイト列を変えないので、書きません。`modules` は、実際には、選ばれたモジュールの名前がすべて、名前順に並びます (見本は 1 つだけです)。`format` は変換の数値形式 (`fp8` か `nvfp4a16`) を常に書き、`nvfp4a16` のときは `args` の末尾に `--format nvfp4a16` を足します (第 3 段 (`k2s3`) の詳しい形は §9)。
 
 `serving` が読む形は、`serving/weights/k2s1.manifest.json` の、次の派生のマニフェストです。**道具の manifest から `serve derived-import` が作ります。手で書きません。**
 
@@ -336,3 +337,13 @@ ssh spark-5083 docker run --rm --network none \
 - **§4〜§7**: 構成の名前を `p2-nope-tp2-full-k2s2b`、`--configs` を `tp2-full-k2s2b.toml` にします。照合の記録は `state/k2s2b.derived.verified.json` です。
 
 **この重みを vLLM で読むには、#79 の vLLM の修正 (重ね合わせ `k2s2b`) が前提です。** 起動は、`--weights k2s2b --vllm-overlay k2s2b` で生成した構成でだけ行います ([重ねて起こす手順書](k2-vllm-overlay-procedure.md) の §9)。第 2a 段の重ね (`--vllm-overlay k2s2a`) は、まとめた層を BF16 のまま作るので、この重みを読めません。
+
+**第 3 段 (`k2s3`。Issue #95):** 同じ道具に `--preset k2s3` を付けると、`k2s2b` と同じ対象 (KDA のまとめた層の 6 射影、MLA の `q_a_proj`・`kv_a_proj_with_mqa`・`q_b_proj`・`o_proj`、KDA の `o_proj`・`f_b_proj`・`g_b_proj`、`lm_head`、第 1 段の対象) を、FP8 ではなく **NVFP4A16** (重みだけ NVFP4。4 bit の E2M1 を 2 つずつ詰めた `weight_packed`、16 要素ごとの FP8 E4M3 の `weight_scale`、テンソルごとの FP32 の `weight_global_scale`) にします。まとめた層の組 (KDA の 6 射影、MLA の `q_a_proj`+`kv_a_proj_with_mqa`、層ごとの dense/shared の `gate_proj`+`up_proj`) では、`weight_global_scale` を組の中で同じ値にします。手順は、上の第 2b 段の読み替えの `k2s2b` を `k2s3` にしたものです。
+
+- **§1 (道具の配布)**: 道具の写しは、`nvfp4.py` が増えて 9 ファイルになります。
+- **§1 (変換)**: 置き場所を `/home/j5ik2o/vllm-baseline/models/k2s3` (構成の中では `{remote_root}/models/k2s3`) にし、`-m k2_quant` の引数を `--preset k2s3` にします。上のコード塊の `k2s2a`/`k2s2b` の置き場所と `--preset` を、すべて `k2s3` に読み替えます。
+- **§2 (取り込み)**: `--name k2s3`、写す先は `serving/var/k2s3/`、コミットする派生のマニフェストは `serving/weights/k2s3.manifest.json` です。道具の manifest の `format` は `nvfp4a16`、`args` の末尾に `--format nvfp4a16` が入ります。
+- **§3 (構成の生成)**: `--weights k2s3` を付け、出力は `tp2-full-k2s3.toml` にそろえます。構成の名前は `p2-nope-tp2-full-k2s3` になります。
+- **§4〜§7**: 構成の名前を `p2-nope-tp2-full-k2s3`、`--configs` を `tp2-full-k2s3.toml` にします。照合の記録は `state/k2s3.derived.verified.json` です。
+
+**この重みを vLLM で読むには、#79 の vLLM の修正 (重ね合わせ `k2s2b`) が前提です (未確認)。** 起動は、`--weights k2s3 --vllm-overlay k2s2b` で生成した構成で行う想定ですが、NVFP4A16 の scheme が `k2s2b` の重ね合わせ (KDA の複製分割 `f_a`/`g_a`、MLA の `fused_qkv_a_proj`) に正しく当たるか、Marlin NVFP4 で 32 行の分割が動くかは、実機での確認事項です。読めなかった場合は、Issue #95 のとおり、vLLM の重ね合わせを別に扱います。

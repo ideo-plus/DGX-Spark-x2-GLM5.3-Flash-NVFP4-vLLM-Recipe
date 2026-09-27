@@ -1,4 +1,4 @@
-"""`quantization_config` に FP8 のチャネルごと group を足す。
+"""`quantization_config` に FP8 のチャネルごと group、または NVFP4A16 の group を足す。
 
 入力の `config.json` は変えず、新しい dict を返す。既存の group と、それ以外の
 `ignore` はそのまま残す。対象が既存 group の target に当たる場合は、変換の前に
@@ -9,6 +9,10 @@
 target とは名前の形が違う (`--pattern '.*gate_proj$'` は、実行時には専門家にも当たる)。
 変換していない実行時のモジュールに target が当たると、その重みを FP8 として読もうとして
 起動が壊れる。
+
+`add_fp8_channel_group` と `add_nvfp4a16_group` (Issue #95) は、この検証・`targets` の
+組み立て・`ignore` の更新を `_add_weight_only_group` として共有し、group の `format` と
+`weights` だけが違う。
 """
 
 from __future__ import annotations
@@ -96,8 +100,34 @@ def _target_for(modules: Sequence[str]) -> str:
     return f"re:(?:.*\\.)?(?:{alternatives})$"
 
 
-def add_fp8_channel_group(config: Mapping[str, Any], *, modules: Sequence[str]) -> dict[str, Any]:
-    """FP8 (`strategy=channel`, `symmetric`, `dynamic=false`) の group を 1 つ足す。
+NVFP4_PACK_QUANTIZED: Final = "nvfp4-pack-quantized"
+
+NVFP4_TENSOR_GROUP_WEIGHTS: Final[Mapping[str, object]] = {
+    "actorder": None,
+    "block_structure": None,
+    "dynamic": False,
+    "group_size": 16,
+    "num_bits": 4,
+    "observer": "memoryless_minmax",
+    "observer_kwargs": {},
+    "scale_dtype": "torch.float8_e4m3fn",
+    "strategy": "tensor_group",
+    "symmetric": True,
+    "type": "float",
+    "zp_dtype": None,
+}
+"""元の重みの専門家 (NVFP4) の group の `weights`。2026-09-27 に HF の rev `18d55bfd…` の
+`config.json` の `group_0.weights` から逐語で確認した値。"""
+
+
+def _add_weight_only_group(
+    config: Mapping[str, Any],
+    *,
+    modules: Sequence[str],
+    group_format: str,
+    weights: Mapping[str, object],
+) -> dict[str, Any]:
+    """重みだけの量子化の group を 1 つ足す (`input_activations`/`output_activations` は null)。
 
     `targets` は、`modules` (変換したモジュール) の実行時の名前にだけ当たる 1 つの target。
     """
@@ -123,14 +153,39 @@ def add_fp8_channel_group(config: Mapping[str, Any], *, modules: Sequence[str]) 
                 raise ConfigError(f"{module}: already matched by existing target {target}")
     name = next_group_name(config_groups)
     config_groups[name] = {
-        "format": FLOAT_QUANTIZED,
+        "format": group_format,
         "input_activations": None,
         "output_activations": None,
         "targets": [_target_for(modules)],
-        "weights": dict(FP8_CHANNEL_WEIGHTS),
+        "weights": dict(weights),
     }
     ignore = quantization_config.get("ignore")
     if isinstance(ignore, list):
         converted = set(modules)
         quantization_config["ignore"] = [item for item in ignore if item not in converted]
     return result
+
+
+def add_fp8_channel_group(config: Mapping[str, Any], *, modules: Sequence[str]) -> dict[str, Any]:
+    """FP8 (`strategy=channel`, `symmetric`, `dynamic=false`) の group を 1 つ足す。
+
+    `targets` は、`modules` (変換したモジュール) の実行時の名前にだけ当たる 1 つの target。
+    """
+    return _add_weight_only_group(
+        config, modules=modules, group_format=FLOAT_QUANTIZED, weights=FP8_CHANNEL_WEIGHTS
+    )
+
+
+def add_nvfp4a16_group(config: Mapping[str, Any], *, modules: Sequence[str]) -> dict[str, Any]:
+    """NVFP4A16 (重みだけ NVFP4。`strategy=tensor_group`) の group を 1 つ足す (Issue #95)。
+
+    `format`・`weights` は、元の重みの専門家の NVFP4 の group (`group_0`) と同じ形。
+    `input_activations`/`output_activations` は null (重みだけの量子化のため、`group_0` の
+    W4A4 とは異なる)。
+    """
+    return _add_weight_only_group(
+        config,
+        modules=modules,
+        group_format=NVFP4_PACK_QUANTIZED,
+        weights=NVFP4_TENSOR_GROUP_WEIGHTS,
+    )

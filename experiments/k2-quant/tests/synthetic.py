@@ -164,6 +164,25 @@ STAGE2B_UNTOUCHED_MODULES: tuple[str, ...] = tuple(
 """第 2b 段の選び方が拾わないモジュール名。第 2a 段の拾わない名前から、KDA のまとめた層を除いたもの
 (`kv_b_proj`・indexer・`layer_types` に載らない層 45・`embed_tokens`・`norm`・`eh_proj`)。"""
 
+STAGE3_SHARED_SCALE_GROUPS: tuple[tuple[str, ...], ...] = (
+    KDA_MERGED_MODULES,
+    (f"{_MLA_LAYER}.self_attn.q_a_proj", f"{_MLA_LAYER}.self_attn.kv_a_proj_with_mqa"),
+    (f"{_KDA_LAYER}.mlp.gate_proj", f"{_KDA_LAYER}.mlp.up_proj"),
+    (f"{_MLA_LAYER}.mlp.shared_experts.gate_proj", f"{_MLA_LAYER}.mlp.shared_experts.up_proj"),
+)
+"""第 3 段 (`--preset k2s3`) の対象 (`STAGE2B_TARGET_MODULES`) のうち、`selection.FUSED_GROUPS` の
+組に丸ごと当たる 4 組 (KDA のまとめた層、MLA の `q_a_proj`+`kv_a_proj_with_mqa`、層 0 dense の
+`gate_proj`+`up_proj`、層 3 shared の `gate_proj`+`up_proj`)。組の全員は、`weight_global_scale`
+を同じ値で共有する (#95)。"""
+
+STAGE3_SINGLETON_SCALE_MODULES: tuple[str, ...] = tuple(
+    module
+    for module in STAGE2B_TARGET_MODULES
+    if not any(module in group for group in STAGE3_SHARED_SCALE_GROUPS)
+)
+"""第 3 段の対象のうち、`STAGE3_SHARED_SCALE_GROUPS` のどの組にも属さない、単独で
+`weight_global_scale` を持つモジュール (9 個)。"""
+
 STAGE2_KDA_GATE_IGNORE_NAMES: Mapping[str, str] = {
     f"{_KDA_LAYER}.self_attn.f_a_proj": f"{_KDA_LAYER}.self_attn.forget_gate.f_a_proj",
     f"{_KDA_LAYER}.self_attn.f_b_proj": f"{_KDA_LAYER}.self_attn.forget_gate.f_b_proj",
@@ -206,7 +225,11 @@ def _vector(length: int, *, seed: int) -> torch.Tensor:
 
 
 def _group_0() -> dict[str, Any]:
-    """層 3〜44 の専門家 (NVFP4) の group。"""
+    """層 3〜44 の専門家 (NVFP4、W4A4) の group。
+
+    `format`・`weights`・`input_activations` は、2026-09-27 に HF の rev `18d55bfd…` の
+    `config.json` から逐語で確認した値 (Issue #95 の計画「参照資料の調査結果」)。
+    """
     return {
         "format": "nvfp4-pack-quantized",
         "targets": [
@@ -216,17 +239,30 @@ def _group_0() -> dict[str, Any]:
             "actorder": None,
             "block_structure": None,
             "dynamic": False,
-            "group_size": None,
+            "group_size": 16,
             "num_bits": 4,
             "observer": "memoryless_minmax",
             "observer_kwargs": {},
-            "scale_dtype": None,
+            "scale_dtype": "torch.float8_e4m3fn",
             "strategy": "tensor_group",
             "symmetric": True,
             "type": "float",
             "zp_dtype": None,
         },
-        "input_activations": None,
+        "input_activations": {
+            "actorder": None,
+            "block_structure": None,
+            "dynamic": "local",
+            "group_size": 16,
+            "num_bits": 4,
+            "observer": "static_minmax",
+            "observer_kwargs": {},
+            "scale_dtype": "torch.float8_e4m3fn",
+            "strategy": "tensor_group",
+            "symmetric": True,
+            "type": "float",
+            "zp_dtype": None,
+        },
         "output_activations": None,
     }
 
@@ -338,36 +374,41 @@ def _shard_tensors(*, include_shared_head: bool) -> dict[str, dict[str, torch.Te
 
 def _stage2_shard_tensors() -> dict[str, dict[str, torch.Tensor]]:
     """第 2a 段の合成 checkpoint のテンソル。KDA の層 0 と MLA の層 3、`lm_head`、
-    `layer_types` に載らない層 45 を持つ。形は小さい BF16 の 2 次元 (1 次元は `norm` だけ)。"""
+    `layer_types` に載らない層 45 を持つ。形は小さい BF16 の 2 次元 (1 次元は `norm` だけ)。
+
+    列数 (入力の次元) は、すべて 16 の倍数にする (`--preset k2s3` の NVFP4A16 は、対象の入力の
+    次元が 16 の倍数であることを要求する。#95)。`norm` だけ 1 次元のまま。専門家の
+    `weight_packed` 等の形は変えない。`_matrix` の性質 (全 0 の行、1 要素だけ 100 倍) は維持する。
+    """
     kda = f"{_KDA_LAYER}.self_attn"
     mla = f"{_MLA_LAYER}.self_attn"
     shared = f"{_MLA_LAYER}.mlp.shared_experts"
     mtp = _MTP_LAYER
     return {
         SHARD_NAMES[0]: {
-            f"{kda}.q_proj.weight": _matrix(4, 4, seed=21),
-            f"{kda}.k_proj.weight": _matrix(4, 4, seed=22),
-            f"{kda}.v_proj.weight": _matrix(4, 4, seed=23),
-            f"{kda}.b_proj.weight": _matrix(2, 4, seed=24),
-            f"{kda}.f_a_proj.weight": _matrix(2, 4, seed=25),
-            f"{kda}.f_b_proj.weight": _matrix(4, 2, seed=26),
-            f"{kda}.g_a_proj.weight": _matrix(2, 4, seed=27),
-            f"{kda}.g_b_proj.weight": _matrix(4, 2, seed=28),
-            f"{kda}.o_proj.weight": _matrix(4, 4, seed=29),
-            f"{_KDA_LAYER}.mlp.gate_proj.weight": _matrix(8, 4, seed=30),
-            f"{_KDA_LAYER}.mlp.up_proj.weight": _matrix(8, 4, seed=31),
-            f"{_KDA_LAYER}.mlp.down_proj.weight": _matrix(4, 8, seed=32),
+            f"{kda}.q_proj.weight": _matrix(4, 32, seed=21),
+            f"{kda}.k_proj.weight": _matrix(4, 32, seed=22),
+            f"{kda}.v_proj.weight": _matrix(4, 32, seed=23),
+            f"{kda}.b_proj.weight": _matrix(2, 32, seed=24),
+            f"{kda}.f_a_proj.weight": _matrix(2, 32, seed=25),
+            f"{kda}.f_b_proj.weight": _matrix(4, 16, seed=26),
+            f"{kda}.g_a_proj.weight": _matrix(2, 32, seed=27),
+            f"{kda}.g_b_proj.weight": _matrix(4, 16, seed=28),
+            f"{kda}.o_proj.weight": _matrix(4, 32, seed=29),
+            f"{_KDA_LAYER}.mlp.gate_proj.weight": _matrix(8, 32, seed=30),
+            f"{_KDA_LAYER}.mlp.up_proj.weight": _matrix(8, 32, seed=31),
+            f"{_KDA_LAYER}.mlp.down_proj.weight": _matrix(4, 32, seed=32),
         },
         SHARD_NAMES[1]: {
-            f"{mla}.q_a_proj.weight": _matrix(4, 4, seed=33),
-            f"{mla}.kv_a_proj_with_mqa.weight": _matrix(6, 4, seed=34),
-            f"{mla}.q_b_proj.weight": _matrix(4, 4, seed=35),
-            f"{mla}.kv_b_proj.weight": _matrix(6, 4, seed=36),
-            f"{mla}.o_proj.weight": _matrix(4, 4, seed=37),
-            f"{mla}.indexer.wq_b.weight": _matrix(4, 4, seed=38),
-            f"{shared}.gate_proj.weight": _matrix(6, 4, seed=39),
-            f"{shared}.up_proj.weight": _matrix(6, 4, seed=40),
-            f"{shared}.down_proj.weight": _matrix(4, 6, seed=41),
+            f"{mla}.q_a_proj.weight": _matrix(4, 32, seed=33),
+            f"{mla}.kv_a_proj_with_mqa.weight": _matrix(6, 32, seed=34),
+            f"{mla}.q_b_proj.weight": _matrix(4, 32, seed=35),
+            f"{mla}.kv_b_proj.weight": _matrix(6, 32, seed=36),
+            f"{mla}.o_proj.weight": _matrix(4, 32, seed=37),
+            f"{mla}.indexer.wq_b.weight": _matrix(4, 32, seed=38),
+            f"{shared}.gate_proj.weight": _matrix(6, 32, seed=39),
+            f"{shared}.up_proj.weight": _matrix(6, 32, seed=40),
+            f"{shared}.down_proj.weight": _matrix(4, 48, seed=41),
             f"{STAGE2_EXPERT_MODULE}.weight_packed": torch.arange(16, dtype=torch.uint8).reshape(
                 4, 4
             ),
@@ -375,14 +416,14 @@ def _stage2_shard_tensors() -> dict[str, dict[str, torch.Tensor]]:
             f"{STAGE2_EXPERT_MODULE}.weight_global_scale": torch.tensor([1.0], dtype=torch.float32),
         },
         SHARD_NAMES[2]: {
-            "lm_head.weight": _matrix(16, 4, seed=42),
-            f"{_STAGE2_PREFIX}.embed_tokens.weight": _matrix(16, 4, seed=43),
+            "lm_head.weight": _matrix(16, 32, seed=42),
+            f"{_STAGE2_PREFIX}.embed_tokens.weight": _matrix(16, 32, seed=43),
             f"{_STAGE2_PREFIX}.norm.weight": _vector(4, seed=44),
-            f"{mtp}.eh_proj.weight": _matrix(4, 8, seed=45),
+            f"{mtp}.eh_proj.weight": _matrix(4, 16, seed=45),
         },
         NON_INDEXED_SHARD: {
-            f"{mtp}.self_attn.o_proj.weight": _matrix(4, 4, seed=46),
-            f"{mtp}.mlp.shared_experts.down_proj.weight": _matrix(4, 6, seed=47),
+            f"{mtp}.self_attn.o_proj.weight": _matrix(4, 32, seed=46),
+            f"{mtp}.mlp.shared_experts.down_proj.weight": _matrix(4, 48, seed=47),
         },
     }
 

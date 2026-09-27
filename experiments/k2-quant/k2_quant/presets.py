@@ -3,7 +3,8 @@
 `k2s1` は第 1 段の既定 (`selection.DEFAULT_PATTERN`)。`k2s2a` は、第 1 段の対象に、MLA の射影・
 KDA のまとめていない射影・`lm_head` を足したもの (Issue #74、ADR 0007 の第 2a 段)。`k2s2b` は、
 `k2s2a` の対象に、KDA のまとめた層 (vLLM の `in_proj_qkvbfg_a`) の 6 射影を足したもの (Issue #79、
-ADR 0007 の第 2b 段)。読むには、vLLM の重ね合わせ `k2s2b` が前提。
+ADR 0007 の第 2b 段)。読むには、vLLM の重ね合わせ `k2s2b` が前提。`k2s3` (Issue #95) は、対象は
+`k2s2b` と同じで、形式だけを FP8 から NVFP4A16 (重みだけ NVFP4) にする。
 
 どの層が MLA でどの層が KDA かは、入力 `config.json` の `text_config.layer_types` (層ごとの種類の
 並び) から決める。層番号は手で並べない。この並びは、本体の層 (0 から) だけを持ち、MTP の層 (層 45)
@@ -26,7 +27,18 @@ from k2_quant.selection import DEFAULT_PATTERN, KDA_FUSED_GROUP, SelectionError
 DEFAULT_PRESET: Final = "k2s1"
 STAGE2A_PRESET: Final = "k2s2a"
 STAGE2B_PRESET: Final = "k2s2b"
-PRESET_NAMES: Final[tuple[str, ...]] = (DEFAULT_PRESET, STAGE2A_PRESET, STAGE2B_PRESET)
+STAGE3_PRESET: Final = "k2s3"
+PRESET_NAMES: Final[tuple[str, ...]] = (
+    DEFAULT_PRESET,
+    STAGE2A_PRESET,
+    STAGE2B_PRESET,
+    STAGE3_PRESET,
+)
+
+FORMAT_FP8: Final = "fp8"
+FORMAT_NVFP4A16: Final = "nvfp4a16"
+FORMAT_NAMES: Final[tuple[str, ...]] = (FORMAT_FP8, FORMAT_NVFP4A16)
+DEFAULT_FORMAT: Final = FORMAT_FP8
 
 TEXT_CONFIG_KEY: Final = "text_config"
 LAYER_TYPES_KEY: Final = "layer_types"
@@ -95,6 +107,11 @@ def stage2b_pattern(config: Mapping[str, Any]) -> str:
     return _stage2_pattern(config, (*KDA_UNMERGED_PROJECTIONS, *KDA_FUSED_GROUP))
 
 
+def stage3_pattern(config: Mapping[str, Any]) -> str:
+    """第 3 段の選び方。対象は第 2b 段と同じ (差は形式だけ。Issue #95)。"""
+    return stage2b_pattern(config)
+
+
 def resolve_preset_pattern(name: str, config: Mapping[str, Any]) -> str:
     """preset の名前から、モジュール名に当てる正規表現を決める。`k2s1` は config を読まない。"""
     if name == DEFAULT_PRESET:
@@ -103,4 +120,35 @@ def resolve_preset_pattern(name: str, config: Mapping[str, Any]) -> str:
         return stage2a_pattern(config)
     if name == STAGE2B_PRESET:
         return stage2b_pattern(config)
+    if name == STAGE3_PRESET:
+        return stage3_pattern(config)
     raise SelectionError(f"unknown preset: {name}")
+
+
+def resolve_preset_format(name: str) -> str:
+    """preset の名前から、数値形式を決める。`k2s3` だけ NVFP4A16、それ以外は FP8。"""
+    if name == STAGE3_PRESET:
+        return FORMAT_NVFP4A16
+    if name in (DEFAULT_PRESET, STAGE2A_PRESET, STAGE2B_PRESET):
+        return FORMAT_FP8
+    raise SelectionError(f"unknown preset: {name}")
+
+
+def resolve_selection(
+    name: str, config: Mapping[str, Any], *, pattern: str | None, weight_format: str | None
+) -> tuple[str, str]:
+    """正規表現と数値形式を、優先順位の規則ごと 1 か所で決める。
+
+    正規表現は `pattern` があればそれを、無ければ `preset` の名前から解決する。数値形式は、
+    `weight_format` が指定されていればそれを、無ければ `pattern` を明示したときは既定の
+    `FORMAT_FP8`、`preset` から選ぶときは `resolve_preset_format` の結果を使う。数値形式の
+    解決を呼び出し側 (CLI の層) に複製しない。
+    """
+    resolved_pattern = pattern if pattern is not None else resolve_preset_pattern(name, config)
+    if weight_format is not None:
+        resolved_format = weight_format
+    elif pattern is not None:
+        resolved_format = DEFAULT_FORMAT
+    else:
+        resolved_format = resolve_preset_format(name)
+    return resolved_pattern, resolved_format

@@ -1,4 +1,4 @@
-# k2-quant: 選んだモジュールを FP8 (重みだけ、チャネルごと) にする変換の道具 (K2 の第 1 段・第 2a 段・第 2b 段)
+# k2-quant: 選んだモジュールを FP8 (重みだけ、チャネルごと) か NVFP4A16 (重みだけ NVFP4) にする変換の道具 (K2 の第 1 段・第 2a 段・第 2b 段・第 3 段)
 
 K2 の第 1 段 (Issue #56)。vLLM を直さずに量子化できる部分 (共有の専門家・dense) を、FP8 E4M3 の重みと、
 出力チャネルごとの対称スケールに変換する。この段の目的は、「変換 → vLLM で読み込み → Marlin FP8 で読む」の
@@ -7,7 +7,9 @@ K2 の第 1 段 (Issue #56)。vLLM を直さずに量子化できる部分 (共�
 第 2a 段 (Issue #74、`docs/decisions/0007-k2-stage2.md`) は、同じ道具に `--preset k2s2a` を足して、MLA の射影、
 KDA のまとめていない射影、`lm_head` も選べるようにしたもの (下の「第 2a 段 (`--preset k2s2a`)」)。第 2b 段
 (Issue #79) の `--preset k2s2b` は、それに KDA のまとめた層の 6 射影を足したもの (下の「第 2b 段
-(`--preset k2s2b`)」)。既定 (`--preset` を渡さない、または `--preset k2s1`) は、第 1 段のままである。
+(`--preset k2s2b`)」)。第 3 段 (Issue #95) の `--preset k2s3` は、`k2s2b` と同じ対象を、FP8 ではなく
+NVFP4A16 (重みだけ NVFP4) にする (下の「第 3 段 (`--preset k2s3`)」)。既定 (`--preset` を渡さない、または
+`--preset k2s1`) は、第 1 段のままである。
 
 この道具は、CPU だけで動く。GPU もネットワークも使わない。実機での実行と、vLLM での読み込みは対話側が行う
 (この README を書いた時点では、どちらも未確認)。
@@ -116,6 +118,27 @@ uv run --directory experiments/k2-quant python -m k2_quant --preset k2s2b \
   --source-repo RedHatAI/GLM-5.3-Flash-NVFP4 --source-revision 18d55bfd5a2194887738da73753975c9d3842f46
 ```
 
+### 第 3 段 (`--preset k2s3`)
+
+`--preset k2s3` の対象は `--preset k2s2b` と同じ (Issue #95)。差は形式だけで、FP8 (重みだけ、チャネルごとの
+対称スケール) ではなく、**NVFP4A16** (重みだけ NVFP4。入力の量子化は無い) にする。`--pattern` とは同時に
+使えない。
+
+- 名前・dtype・形・config group は、元の重みの専門家 (層 3〜44) の NVFP4 の group と、compressed-tensors
+  (Apache-2.0) の公開の仕様に合わせた (下の「2. 方式」の NVFP4A16 の表)。他のレシピの台本は写していない。
+- まとめた層の組 (下の「まとめた層の整合の検査」の 3 つ) では、`weight_global_scale` を組の中で同じ値にする
+  (組の全員の絶対値の最大 (amax) から、`plan_conversion` の計画の段階で求める。組が複数の shard に
+  またがっても同じ値になる)。
+- 変換の結果を vLLM で読み込むには、#79 の vLLM の修正 (重ね合わせ `k2s2b`) が前提。NVFP4A16 の scheme が
+  KDA の複製分割 (`f_a_proj`・`g_a_proj`) と MLA の `fused_qkv_a_proj` に正しく当たるか、Marlin NVFP4 で
+  32 行の分割が動くかは、実機での確認事項 (未確認。下の「6. 未確認事項」)。
+
+```bash
+uv run --directory experiments/k2-quant python -m k2_quant --preset k2s3 \
+  --source <入力の重み> --output <出力> \
+  --source-repo RedHatAI/GLM-5.3-Flash-NVFP4 --source-revision 18d55bfd5a2194887738da73753975c9d3842f46
+```
+
 ### まとめた層の整合の検査
 
 vLLM で 1 つの線形層にまとまる組は、組の一部だけが FP8 になると、FP8 の重みと BF16 の重みが 1 つの線形層に
@@ -161,6 +184,13 @@ vLLM で 1 つの線形層にまとまる組は、組の一部だけが FP8 に�
   `--pattern` に渡す。ただし、vLLM は `eh_proj` を `quant_config` を受けない plain `nn.Linear` として
   実装しているため、FP8 に変換しても読み込めない (上の「既定に含めないもの」)。
 
+### `--format` (数値形式。Issue #95)
+
+`--pattern` (または `--preset`) で選んだ対象を、どの数値形式にするかを決める。`fp8` (既定) か
+`nvfp4a16` のどちらか。`--preset` とは同時に使えない (`--preset` は preset ごとの既定の形式を使う。
+`k2s1`/`k2s2a`/`k2s2b` は `fp8`、`k2s3` は `nvfp4a16`)。`--pattern` と組み合わせるときだけ、自分で
+選ぶ (既定は `fp8`)。
+
 ## 2. 方式
 
 compressed-tensors (Apache-2.0) の公開の仕様・ソースを読んで、`float-quantized` の、チャネルごとの静的な
@@ -201,6 +231,30 @@ vLLM の側 (ソースで確かめたと Issue に書いてある。この READM
   「既定に含めないもの」)。
 - 重みだけの FP8 の scheme は `compressed_tensors_w8a16_fp8.py` (`CompressedTensorsW8A16Fp8`)。
 
+### NVFP4A16 (`--format nvfp4a16`。Issue #95)
+
+`--format nvfp4a16` (`--preset k2s3` の既定) は、compressed-tensors の NVFP4 の仕様に、対象の重みだけを
+合わせる (入力の量子化は無い)。対象の 2 次元の重み `W` (out, in。`in` は 16 の倍数でなければ、書く前に
+終了 1 で断る) を、次の 3 つにする。
+
+| 名前 | dtype | 形 | 内容 |
+|---|---|---|---|
+| `<module>.weight_packed` | `U8` | `(out, in/2)` | E2M1 4 bit を 2 つずつ詰めたもの (下位 nibble が偶数列、符号は bit 3) |
+| `<module>.weight_scale` | `F8_E4M3` | `(out, in/16)` | 16 要素ごとのブロックのスケール |
+| `<module>.weight_global_scale` | `F32` | `(1,)` | テンソル (またはまとめた層の組) 全体のスケール |
+
+- 全体スケール `G = 448 * 6 / amax` (`amax` はテンソル、またはまとめた層の組の全員の絶対値の最大。
+  `amax <= 0` のときは `1.0`)。ブロックのスケールは `s8 = clamp(G * amax_block / 6, 0, 448)` を
+  F8_E4M3 に丸めたもの。逆量子化は `q * (s8.float() / G)`。
+- 誤差の上限は、試験で固定している (`tests/test_nvfp4.py`。要素ごとの誤差と、相対 Frobenius 誤差 ≤ 0.2)。
+- 入力の `W` は書き換えない。
+
+`config.json` の `quantization_config` には、FP8 と同じ形で group を 1 つ足す。`format` は
+`nvfp4-pack-quantized`、`weights` は元の重みの専門家 (層 3〜44) の NVFP4 の group と同じ (`group_size=16`、
+`num_bits=4`、`strategy=tensor_group` など)、`input_activations` と `output_activations` は
+`null` (重みだけの量子化なので、元の専門家の group とは異なり `input_activations` は無い)。`targets` の
+組み立てと `ignore` の更新は、FP8 の group と同じ仕組みを共有する。
+
 ## 3. 出力
 
 入力のディレクトリと同じ構成の、新しいディレクトリを作る。`--output` は、存在しないパスか、存在する
@@ -212,15 +266,20 @@ vLLM の側 (ソースで確かめたと Issue に書いてある。この READM
   `__metadata__` も保つ。
 - shard 以外の通常ファイル (tokenizer など。`config.json`、index、`*.safetensors` を除く): 同じ名前で写す。
   ディレクトリと、`.` で始まる項目は写さず、実行の終わりの標準出力に列挙する。
-- `model.safetensors.index.json`: 作り直す。変換したモジュールの `<module>.weight_scale` を、`weight` と
-  同じ shard に足し、`metadata.total_size` を再計算する。index に載っていない shard の中身は、index に足さない。
+- `model.safetensors.index.json`: 作り直す。FP8 は、変換したモジュールの `<module>.weight_scale` を
+  `weight` と同じ shard に足す。NVFP4A16 は、`<module>.weight` を消し、`weight_packed`・`weight_scale`・
+  `weight_global_scale` の 3 つを、元の `weight` と同じ shard に載せる。どちらも `metadata.total_size` を
+  再計算し、index に載っていない shard の中身は、index に足さない。
 - `config.json`: 上の group を足したもの。
 - `manifest.json`: 出力のすべてのファイル (manifest 自身を除く) の `path`・`size`・`sha256` (`path` 順) と、
   `total_bytes`、変換の条件 (`tool`、`tool_version`、元の repo と revision、`pattern`、`args`、変換した
-  `modules`、`weight_dtype`、`scale_dtype`、`strategy`) を書く。
+  `modules`、`format`、`weight_dtype`、`scale_dtype`、`strategy`。NVFP4A16 は `group_size`、
+  `global_scale_dtype` も) を書く。
 
-`conversion.args` は、道具に渡した引数のうち、**変換の結果を決めるもの**だけの列で、
-`["--source-repo", <repo>, "--source-revision", <revision>, "--pattern", <実際に使った pattern>]` になる
+`conversion.format` は、`fp8` か `nvfp4a16` (常に書く)。`conversion.args` は、道具に渡した引数のうち、
+**変換の結果を決めるもの**だけの列。FP8 は
+`["--source-repo", <repo>, "--source-revision", <revision>, "--pattern", <実際に使った pattern>]` (6 要素。
+`--format fp8` は足さない)、NVFP4A16 は末尾に `"--format", "nvfp4a16"` を足した 8 要素になる
 (`--pattern` を渡さなくても、既定の値を書く。`--preset` を渡したときも、`--preset` は書かず、解決後の正規表現を
 `--pattern` として書く。`args` だけで、同じ出力を再現できる)。`--source` と `--output` はマウントの位置に依存し、
 `--link` は出力のバイト列を変えないので、書かない (書くと、2 台の manifest が一致しなくなる)。serving の
@@ -273,7 +332,7 @@ Mac への取り込み、照合) は、`docs/vllm-baseline/k2-derived-weights-pr
 道具は、推論用のイメージ (`serve` が使うイメージと同じもの) のコンテナの中で、CPU だけで動かす。
 `<remote_root>` は、実機の作業ディレクトリ (`serving/config/nodes.toml` の `remote_root`)。
 
-1. 道具を実機へ配る。道具の写し (`experiments/k2-quant/k2_quant/` と同じ 8 ファイル) は
+1. 道具を実機へ配る。道具の写し (`experiments/k2-quant/k2_quant/` と同じ 9 ファイル。`nvfp4.py` を含む) は
    `serving/payload/k2-quant/k2_quant/` に置いてあり、`serve push` が実機の `<remote_root>/payload/` の
    下へ配る (実機に GitHub の認証情報は置かない)。写しが道具と同じバイト列であることは、
    `serving/tests/unit/test_payload.py` が固定している。道具を変えたら、写しも同じ変更で更新する。
@@ -386,3 +445,11 @@ docker run --rm --network none \
     組み合わせで、vLLM (#79 の修正を当てたもの) の scheme の引き当てが 6 つの分割を同じ scheme にするか
     (違えば `Found different quantization schemes` で起動が落ちる)。
   - 変換した重みを vLLM (#79 の修正を当てたもの) が読み込めるか、精度と速度への影響。
+- 第 3 段 (`--preset k2s3`。Issue #95):
+  - Marlin NVFP4 で、KDA のまとめた層の複製分割 (`f_a_proj`・`g_a_proj`。32 行の分割) が動くか。
+  - KDA の複製分割 (`f_a_proj`・`g_a_proj`) の `weight_global_scale` を、vLLM がどう読み込むか
+    (組の全員が同じ値であることを前提にしているか)。
+  - 実機での読み込み (`k2s2b` の重ね合わせで NVFP4A16 の scheme が正しく当たるか)、速度 (見込み約 13 ms
+    短縮)、品質。読めなかった場合は、Issue #95 のとおり、vLLM の重ね合わせを別に扱う。
+  - 相対 Frobenius 誤差の実機データでの実測値 (`tests/test_nvfp4.py` の合成データでの実測値は
+    0.09467066079378128。上限 0.2)。
