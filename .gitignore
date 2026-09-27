@@ -12,3 +12,6 @@ serving/.pytest_cache/
 serving/.mypy_cache/
 serving/.ruff_cache/
 serving/**/__pycache__/
+
+# Claude Code の個人の設定 (手元の許可の規則など)
+.claude/settings.local.json
