@@ -159,17 +159,21 @@ __all__ = [
     "GATE_GPU_IDLE",
     "GATE_IMAGE_DIGEST",
     "GATE_LAYOUT",
+    "GATE_MEMORY_FREE",
     "GATE_ORDER",
     "GATE_OWN_STATE",
     "GATE_PORTS_FREE",
     "GATE_REACHABLE",
     "GATE_WEIGHTS_VERIFIED",
+    "INSTANTTENSOR_MEMFREE_FLOOR_BYTES",
+    "MEMINFO_PATH",
     "READ_TIMEOUT_S",
     "SPACE_MARGIN_PERCENT",
     "STOP_TIMEOUT_S",
     "ApprovalError",
     "AssumeYesConfirmer",
     "Confirmer",
+    "HostMemory",
     "OwnContainer",
     "RunningMatch",
     "TerminalConfirmer",
@@ -181,6 +185,7 @@ __all__ = [
     "gate_gpu_idle",
     "gate_image_digest",
     "gate_layout",
+    "gate_memory_free",
     "gate_own_state",
     "gate_ports_free",
     "gate_reachable",
@@ -191,6 +196,7 @@ __all__ = [
     "mount_sources",
     "parse_gpu_apps",
     "parse_listening_ports",
+    "parse_meminfo",
     "parse_own_containers",
     "remove_argv",
     "request_approval",
@@ -198,6 +204,7 @@ __all__ = [
     "rollback_commands",
     "run_gates",
     "stop_argv",
+    "uses_instanttensor",
     "verification_record_path",
     "weights_record_path",
     "weights_ref_mismatch",
@@ -214,6 +221,7 @@ GATE_LAYOUT: Final[str] = "layout"
 GATE_IMAGE_DIGEST: Final[str] = "image_digest"
 GATE_WEIGHTS_VERIFIED: Final[str] = "weights_verified"
 GATE_DISK_SPACE: Final[str] = "disk_space"
+GATE_MEMORY_FREE: Final[str] = "memory_free"
 GATE_PORTS_FREE: Final[str] = "ports_free"
 
 GATE_ORDER: Final[tuple[str, ...]] = (
@@ -224,14 +232,34 @@ GATE_ORDER: Final[tuple[str, ...]] = (
     GATE_IMAGE_DIGEST,
     GATE_WEIGHTS_VERIFIED,
     GATE_DISK_SPACE,
+    GATE_MEMORY_FREE,
     GATE_PORTS_FREE,
 )
 """関門を流す順序 (design.md 「関門」の表と、System Flows の起動)。
 
 `gate_gpu_idle` が `gate_own_state` のあとに来るので、GPU の関門の条件は「使っている
 プロセスが 1 つでもあれば断る」だけでよい (その時点で、自分のコンテナは 1 つも動いて
-いない)。
+いない)。`gate_memory_free` は `gate_disk_space` の次にある (「要る量と空いている量を
+比べる」関門を隣に置く。issue #84)。
 """
+
+MEMINFO_PATH: Final[str] = "/proc/meminfo"
+"""ホストのメモリの空きを読む場所 (`remote._CAT_EXACT_PATHS` の完全一致で許した道筋)。"""
+
+INSTANTTENSOR_MEMFREE_FLOOR_BYTES: Final[int] = 8 * 1024**3
+"""`--load-format instanttensor` の起動が要る `MemFree` の下限 (issue #84)。
+
+観測 (2026-09-26、`docs/results/2026-09-26-k2-stage1.md`): 断りの `buffer_size (1268776960 B)
+exceeds device memory budget (649068544 B)`。InstantTensor の予算は
+`torch.cuda.mem_get_info()` の free × `max_free_mem_usage` (既定 0.5) なので、budget から
+free ≈ 649,068,544 / 0.5 ≈ 1.30 GB。通すには free ≥ buffer / 0.5 ≈ 1,268,776,960 / 0.5 ≈
+2.54 GB が要る。`/proc/meminfo` の `MemFree` は cudaMemGetInfo の free と完全には一致しない
+(読み取りから読み込みまでの消費、CUDA の初期化の分がある) ので、観測の 2.54 GB に 3 倍超の
+余裕を持たせて 8 GiB とした。`serve check`/起動記録の `memory_free` の `detail` に、毎回の
+`MemFree` が残るので、実測でこの下限を較正できる。"""
+
+_LOAD_FORMAT_FLAG: Final[str] = "--load-format"
+_LOAD_FORMAT_INSTANTTENSOR: Final[str] = "instanttensor"
 
 READ_TIMEOUT_S: Final[float] = 30.0
 """1 つの読み取りの時間切れ。どれも、すぐに返るコマンドである。"""
@@ -305,6 +333,15 @@ class ApprovalError(Exception):
 
 
 @dataclass(frozen=True)
+class HostMemory:
+    """`/proc/meminfo` から読んだ、ホストのメモリの空き (issue #84)。"""
+
+    mem_free_bytes: int
+    mem_available_bytes: int
+    cached_bytes: int
+
+
+@dataclass(frozen=True)
 class OwnContainer:
     """自分のラベルで絞った一覧の 1 件 (`docker ps -a --format json` の 1 行)。
 
@@ -375,6 +412,38 @@ def _optional_int(text: str) -> int | None:
 def _settings_of(config: ConfigDef, section: str) -> Mapping[str, Setting]:
     settings: Mapping[str, Setting] = getattr(config, section)
     return settings
+
+
+def uses_instanttensor(config: ConfigDef) -> bool:
+    """構成の `args` に `--load-format instanttensor` があるか (issue #84)。"""
+    return any(
+        setting.flag == _LOAD_FORMAT_FLAG and setting.value == _LOAD_FORMAT_INSTANTTENSOR
+        for setting in _settings_of(config, "args").values()
+    )
+
+
+def parse_meminfo(text: str) -> HostMemory:
+    """`/proc/meminfo` の本文 (`<鍵>:  <数> kB` の行) を読む (issue #84)。
+
+    3 つの鍵 (`MemFree`、`MemAvailable`、`Cached`) のどれかが無い、または整数として読めない
+    ときは `ValueError` にする (`_safely` が断りに変える)。
+    """
+    values: dict[str, int] = {}
+    for line in text.splitlines():
+        key, sep, rest = line.partition(":")
+        if not sep:
+            continue
+        digits = rest.strip().split(" ", 1)[0]
+        if digits.isdecimal():
+            values[key.strip()] = int(digits) * 1024
+    missing = [key for key in ("MemFree", "MemAvailable", "Cached") if key not in values]
+    if missing:
+        raise ValueError(f"/proc/meminfo に、項目 {missing} がない")
+    return HostMemory(
+        mem_free_bytes=values["MemFree"],
+        mem_available_bytes=values["MemAvailable"],
+        cached_bytes=values["Cached"],
+    )
 
 
 # --- 読み取りの出力を読む (入出力のない関数) ----------------------------
@@ -1202,6 +1271,77 @@ def _parse_available_bytes(text: str) -> int:
     raise ValueError(f"ディスクの空きの行が読めない: {text.strip()!r}")
 
 
+def gate_memory_free(
+    runner: RemoteRunner,
+    node: NodeDef,
+    config: ConfigDef,
+    *,
+    timeout_s: float = READ_TIMEOUT_S,
+) -> GateResult:
+    """起動の前のメモリの空き。`--load-format instanttensor` の構成だけ下限を見る (issue #84)。"""
+    return _safely(
+        GATE_MEMORY_FREE, node.role, partial(_memory_free, runner, node, config, timeout_s)
+    )
+
+
+def _memory_free(
+    runner: RemoteRunner, node: NodeDef, config: ConfigDef, timeout_s: float
+) -> GateResult:
+    """gate_memory_free の中身。読めなかったことは、`gate_memory_free` が断りに変える。"""
+    result = runner.run(node, ("cat", MEMINFO_PATH), timeout_s=timeout_s, mutating=False)
+    if result.exit_code != 0:
+        return _result(
+            GATE_MEMORY_FREE,
+            node.role,
+            passed=False,
+            detail=(
+                f"メモリの空きを読めなかった ({MEMINFO_PATH}):"
+                f" {result.stderr.strip() or result.stdout}"
+            ),
+        )
+    memory = parse_meminfo(result.stdout)
+    values = (
+        f"MemFree: {_bytes_text(memory.mem_free_bytes)}、"
+        f"MemAvailable: {_bytes_text(memory.mem_available_bytes)}、"
+        f"Cached: {_bytes_text(memory.cached_bytes)}"
+    )
+    if not uses_instanttensor(config):
+        return _result(
+            GATE_MEMORY_FREE,
+            node.role,
+            passed=True,
+            detail=(
+                f"この構成は --load-format instanttensor を使わないので、空きの下限は見ない。"
+                f"{values}"
+            ),
+        )
+    if memory.mem_free_bytes < INSTANTTENSOR_MEMFREE_FLOOR_BYTES:
+        return _result(
+            GATE_MEMORY_FREE,
+            node.role,
+            passed=False,
+            detail=(
+                f"MemFree が下限に足りない ({values}、下限:"
+                f" {_bytes_text(INSTANTTENSOR_MEMFREE_FLOOR_BYTES)})。"
+                "ページキャッシュが埋まると、GB10 は CPU と GPU がメモリを共有するので、"
+                "CUDA から見える空きが小さくなり、--load-format instanttensor の起動が"
+                "buffer_size exceeds device memory budget で落ちる。"
+                "対処: ⚠ 了承を得てから、両台で `sudo /usr/local/sbin/spark-drop-caches` を"
+                "流してから起こす (ops/spark-drop-caches/README.md)。"
+                "または --load-format auto の構成で起こす"
+            ),
+        )
+    return _result(
+        GATE_MEMORY_FREE,
+        node.role,
+        passed=True,
+        detail=(
+            f"MemFree は下限を満たす ({values}、下限: "
+            f"{_bytes_text(INSTANTTENSOR_MEMFREE_FLOOR_BYTES)})"
+        ),
+    )
+
+
 def gate_ports_free(
     runner: RemoteRunner,
     node: NodeDef,
@@ -1336,6 +1476,10 @@ def run_gates(
             (
                 GATE_DISK_SPACE,
                 partial(gate_disk_space, runner, node, required_bytes, timeout_s=timeout_s),
+            ),
+            (
+                GATE_MEMORY_FREE,
+                partial(gate_memory_free, runner, node, config, timeout_s=timeout_s),
             ),
             (GATE_PORTS_FREE, partial(gate_ports_free, runner, node, config, timeout_s=timeout_s)),
         )

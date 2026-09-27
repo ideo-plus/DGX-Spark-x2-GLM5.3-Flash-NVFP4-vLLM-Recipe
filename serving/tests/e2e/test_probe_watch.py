@@ -59,7 +59,7 @@ def _probe_plan(repo: k.Repo) -> ContainerPlan:
 
 
 def _probe_base_script(plan: ContainerPlan, *, layout_ok: bool = True) -> tuple[Rule, ...]:
-    """`serve probe` が了承の前に流す、8 つの関門のうち読み取りを要るものすべて。"""
+    """`serve probe` が了承の前に流す、9 つの関門のうち読み取りを要るものすべて。"""
     return (
         *k.gate_rules(("head",), layout_ok=layout_ok),
         Rule(

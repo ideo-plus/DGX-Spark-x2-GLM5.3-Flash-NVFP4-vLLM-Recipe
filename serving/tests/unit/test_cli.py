@@ -40,6 +40,7 @@ import pytest
 
 from fake_runner import FakeRunner, Reply, Rule
 from fake_vllm import FakeVllm, Fault, MessagesReply
+from meminfo_sample import meminfo_rule
 from serving_kit import __version__, cli
 from serving_kit import guards as g
 from serving_kit import image as im
@@ -1149,10 +1150,11 @@ def own_row(role: NodeRole) -> str:
 
 
 def gate_rules(*, listing: Mapping[NodeRole, str] | None = None) -> tuple[Rule, ...]:
-    """8 つの関門の読み取りを、すべて通す台本 (どのコマンドも、了承の段まで届く)。
+    """9 つの関門の読み取りを、すべて通す台本 (どのコマンドも、了承の段まで届く)。
 
     読み取りだけの台本なので、これで「了承の段まで届いたのに、状態を変える呼び出しが
-    1 つも出ない」ことを確かめられる。
+    1 つも出ない」ことを確かめられる。`/proc/meminfo` の規則は、照合の記録の `cat` の規則より
+    前に置く (`cat` の規則は何にでも当たる)。
     """
     rows = {} if listing is None else listing
     rules: list[Rule] = []
@@ -1164,6 +1166,7 @@ def gate_rules(*, listing: Mapping[NodeRole, str] | None = None) -> tuple[Rule, 
                 replies=(Reply(stdout=rows.get(role, "")),),
             )
         )
+        rules.append(meminfo_rule(node=role))
         rules.append(
             Rule(
                 prefix=("cat",),
@@ -1189,6 +1192,41 @@ def gate_rules(*, listing: Mapping[NodeRole, str] | None = None) -> tuple[Rule, 
         )
     )
     return tuple(rules)
+
+
+def gate_rows(out: str) -> list[dict[str, str]]:
+    """`serve check` の標準出力から、関門の結果 (`gate.N.*`) を、並んでいる順に取り出す。"""
+    pairs = kv(out)
+    rows: list[dict[str, str]] = []
+    index = 1
+    while f"gate.{index}.name" in pairs:
+        rows.append(
+            {
+                "name": pairs[f"gate.{index}.name"],
+                "node": pairs[f"gate.{index}.node"],
+                "passed": pairs[f"gate.{index}.passed"],
+            }
+        )
+        index += 1
+    return rows
+
+
+def test_check_shows_the_memory_free_gate_once_per_node(tmp_path: Path) -> None:
+    """`serve check` は、関門 `memory_free` の結果を、台ごとに 1 件並べる (読み取りだけの台本で
+    通る。状態を変える呼び出しは出ない)。"""
+    repo = make_repo(tmp_path)
+    spy = Spy(script=gate_rules(), default=Reply())
+
+    result = run(["check", SERVE_CONFIG], repo, spy=spy)
+
+    assert result.code == cli.EXIT_OK, result.out
+    shown = [
+        (row["node"], row["passed"])
+        for row in gate_rows(result.out)
+        if row["name"] == "memory_free"
+    ]
+    assert shown == [("head", "true"), ("worker", "true")]
+    assert [call for call in spy.runner.calls if call.mutating] == []
 
 
 @pytest.mark.parametrize(("name", "argv"), STATE_CHANGING, ids=[name for name, _ in STATE_CHANGING])

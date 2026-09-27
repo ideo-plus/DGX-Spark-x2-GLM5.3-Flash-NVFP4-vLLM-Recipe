@@ -63,6 +63,7 @@ import pytest
 from pydantic import HttpUrl
 
 from fake_runner import FakeRunner, RecordedCall, Reply, Rule
+from meminfo_sample import meminfo_rule
 from serving_kit import netcheck as nc
 from serving_kit.config import ConfigError
 from serving_kit.guards import ApprovalError, remove_argv, stop_argv
@@ -468,6 +469,7 @@ class JobScript:
                     replies=(Reply(stdout=json.dumps([IMAGE_REF]) + "\n"),),
                 ),
                 Rule(prefix=("df",), replies=(Reply(stdout=self.avail),)),
+                meminfo_rule(),
                 Rule(prefix=("ss",), replies=(Reply(stdout=self.listening),)),
                 Rule(prefix=("docker", "run"), replies=(Reply(stdout=f"{HEAD_ID}\n"),)),
                 Rule(prefix=("docker", "stop"), replies=(Reply(),)),

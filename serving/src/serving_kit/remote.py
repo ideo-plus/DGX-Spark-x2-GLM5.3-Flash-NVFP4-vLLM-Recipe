@@ -52,12 +52,13 @@
    `<remote_root>/` の下 (`..` を含まない)、`/sys/class/net/` の下、
    `/sys/class/infiniband/` の下、`/sys/class/thermal/` の下、`/sys/class/hwmon/` の下
    (熱区域と hwmon の温度センサーの読み取り) のどれか、または `/proc/stat` (CPU の使用率の
-   読み取り。完全一致だけで許し、`/proc` の他の場所には前方一致で届かないようにする) だけ。
+   読み取り)・`/proc/meminfo` (メモリの空きの読み取り。関門 `memory_free` が使う) のどちらか
+   (完全一致だけで許し、`/proc` の他の場所には前方一致で届かないようにする) だけ。
    加えて、`/sys/devices/system/cpu/cpu<N>/cpufreq/scaling_max_freq` (CPU コアごとの周波数の
    上限の読み取り) は、正規表現の完全一致の 1 種類だけを許す。`/sys/devices/system/cpu/` の
    前方一致は許さない (兄弟のファイルや他の cpufreq の場所には届かない)。
-   認証の情報、`/proc/stat` 以外の `/proc`、ほかのコンテナの記録には届かなくする
-   (requirements 2.4、2.6)
+   認証の情報、`/proc/stat`・`/proc/meminfo` 以外の `/proc`、ほかのコンテナの記録には
+   届かなくする (requirements 2.4、2.6)
 """
 
 from __future__ import annotations
@@ -163,9 +164,9 @@ _CAT_PREFIXES: Final[tuple[str, ...]] = (
 """`remote_root` の下のほかに、`cat` で前方一致で読める場所 (インターフェース、熱区域、
 hwmon の温度センサーの読み取り)。"""
 
-_CAT_EXACT_PATHS: Final[frozenset[str]] = frozenset({"/proc/stat"})
-"""`cat` で完全一致だけで読める場所 (CPU の使用率の読み取り)。`/proc` は他の場所に前方一致
-で広げない (認証の情報やほかのプロセスの記録に届かないようにする)。"""
+_CAT_EXACT_PATHS: Final[frozenset[str]] = frozenset({"/proc/stat", "/proc/meminfo"})
+"""`cat` で完全一致だけで読める場所 (CPU の使用率の読み取り、メモリの空きの読み取り)。
+`/proc` は他の場所に前方一致で広げない (認証の情報やほかのプロセスの記録に届かないようにする)。"""
 
 _CAT_EXACT_PATTERNS: Final[tuple[re.Pattern[str], ...]] = (
     re.compile(r"/sys/devices/system/cpu/cpu[0-9]+/cpufreq/scaling_max_freq"),
@@ -341,9 +342,10 @@ def _check_cat(node: NodeDef, rest: tuple[str, ...]) -> None:
     """`cat` の読み取り先を絞る (requirements 2.4、2.6)。
 
     引数はすべて道筋で (オプションを通さない)、`remote_root` の下、インターフェース・熱区域・
-    hwmon の読み取りの場所 (前方一致)、`/proc/stat` (完全一致)、または CPU コアごとの周波数の
-    上限 `scaling_max_freq` (正規表現の完全一致) だけを読める。認証の情報、`/proc/stat` 以外の
-    `/proc`、ほかのコンテナの記録、`/sys/devices/system/cpu/` の前方一致には届かない。
+    hwmon の読み取りの場所 (前方一致)、`/proc/stat`・`/proc/meminfo` (完全一致)、または
+    CPU コアごとの周波数の上限 `scaling_max_freq` (正規表現の完全一致) だけを読める。認証の
+    情報、`/proc/stat`・`/proc/meminfo` 以外の `/proc`、ほかのコンテナの記録、
+    `/sys/devices/system/cpu/` の前方一致には届かない。
     """
     if not rest:
         raise RuntimeError("cat には、読むファイルの道筋が要る")

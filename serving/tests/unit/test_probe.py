@@ -46,6 +46,13 @@ from pydantic import HttpUrl
 
 from fake_runner import FakeRunner, RecordedCall, Reply, Rule
 from fake_vllm import FakeVllm, Fault, MessagesReply, MetricsSample
+from meminfo_sample import (
+    HEALTHY_FREE_KB,
+    HEALTHY_MEMINFO,
+    MEMINFO_PATH,
+    kb_in_bytes_text,
+    meminfo_rule,
+)
 from serving_kit import lifecycle as lc
 from serving_kit import probe as pr
 from serving_kit.config import ConfigError
@@ -56,6 +63,7 @@ from serving_kit.types import (
     ContainerPlan,
     ImageRef,
     KnownFailure,
+    LaunchRecord,
     ManifestFile,
     NodeDef,
     NodeRole,
@@ -350,6 +358,8 @@ class ProbeScript:
 
     gpu_apps: str = ""
     avail: str = "Avail\n999999999999\n"
+    meminfo: str = HEALTHY_MEMINFO
+    """`/proc/meminfo` の本文 (合成。既定は、空きが十分ある)。"""
     listening: str = ""
     digests: str = json.dumps([IMAGE_REF]) + "\n"
     layout_ok: bool = True
@@ -382,6 +392,8 @@ class ProbeScript:
                     replies=(Reply(stdout=self.tails),),
                 )
             )
+            # `/proc/meminfo` は、照合の記録の `cat` の規則より前に置く (何にでも当たるため)
+            rules.append(meminfo_rule(self.meminfo, node=role))
             rules.append(
                 Rule(prefix=("cat",), node=role, replies=(Reply(stdout=verified_record(role)),))
             )
@@ -988,7 +1000,32 @@ def test_the_probe_reads_the_record_of_the_probe_files_only(
     outcome = run_probe(runner, config, tmp_path)
 
     assert outcome.status == "ready", outcome.detail
-    assert argv_of(runner, "cat") == (("cat", PROBE_RECORD_PATH),)
+    # 照合の記録の読み取り (`/proc/meminfo` は、関門 `memory_free` の別の読み取り)
+    record_reads = tuple(argv for argv in argv_of(runner, "cat") if argv != ("cat", MEMINFO_PATH))
+    assert record_reads == (("cat", PROBE_RECORD_PATH),)
+
+
+def test_the_launch_record_of_a_probe_carries_the_gates_that_passed(
+    tmp_path: Path, fake_vllm: FakeVllm
+) -> None:
+    """縮小の確認も、起動の記録に、起動の直前に通った関門の結果 (1 台ぶん 9 件) を残す。
+    `memory_free` の `detail` に、起動の前の `MemFree` が残る。"""
+    config = probe_config(port_of(fake_vllm))
+    runner = runner_of(tmp_path, ProbeScript(plans=plans_of(config)))
+
+    outcome = run_probe(runner, config, tmp_path)
+
+    assert outcome.status == "ready", outcome.detail
+    assert [call.node for call in runner.pushes] == ["head"]
+    call = runner.pushes[0]
+    assert call.local_dir is not None
+    written = call.local_dir / f"{CONFIG_NAME}.launch.json"
+    record = LaunchRecord.model_validate_json(written.read_text(encoding="utf-8"))
+    assert len(record.gates) == 9
+    assert all(gate.passed for gate in record.gates)
+    memory = [gate for gate in record.gates if gate.gate == "memory_free"]
+    assert [gate.node for gate in memory] == ["head"]
+    assert kb_in_bytes_text(HEALTHY_FREE_KB) in memory[0].detail
 
 
 # --- 依存の向きと、公開の口だけで書くこと ----------------------------------

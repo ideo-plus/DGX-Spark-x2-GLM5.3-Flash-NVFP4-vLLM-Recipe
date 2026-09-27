@@ -14,7 +14,7 @@
 
 ## 2. 起動し直す
 
-前の試行は §8 で停止しているので、サーバーは動いていません。`patched-tp2-procedure.md` §6 に従って全 8 関門を**もう一度**検査し、同じ構成で起動します。前の試行で通ったことを根拠に関門を省きません。
+前の試行は §8 で停止しているので、サーバーは動いていません。`patched-tp2-procedure.md` §6 に従って全 9 関門を**もう一度**検査し、同じ構成で起動します。前の試行で通ったことを根拠に関門を省きません。
 
 ```bash
 uv run --directory serving serve check p2-nope-tp2-smoke --configs var/nope-build-0961bbae/tp2.toml

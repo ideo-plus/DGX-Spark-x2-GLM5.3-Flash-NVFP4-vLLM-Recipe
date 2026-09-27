@@ -1,0 +1,47 @@
+#!/bin/sh
+# spark-drop-caches: ページキャッシュを捨てる (issue #84)。root 所有で /usr/local/sbin/ に
+# 置く POSIX sh のスクリプト。計測者が ⚠ 了承したうえで、ssh から手打ちで流す (systemd の
+# unit からは呼ばない)。
+#
+# GB10 は CPU と GPU がメモリを共有する。変換・serve verify (sha256sum)・別構成の mmap 起動の
+# 直後は、ページキャッシュが埋まっていて、CUDA から見える空きが小さくなり、
+# --load-format instanttensor の起動が buffer_size exceeds device memory budget で落ちる
+# (関門 memory_free が、この状態を検出して起動を断る)。sync のあとに
+# /proc/sys/vm/drop_caches へ 3 を書くと、ページキャッシュ・dentry・inode のキャッシュを
+# 捨て、MemFree が増える。
+#
+# 差し替え口 (試験だけが使う。sudoers は引数なしのこの1コマンドしか許さないので、sudo 経由
+# では使えない):
+#   --target <道筋>  既定 /proc/sys/vm/drop_caches
+#
+# 環境変数は読まない (EnvironmentFile 相当の入力を持たない。差し替え口は引数だけ)。
+# 未知の引数・位置引数は、使い方を出して 2 で終わる (書かずに終える)。
+
+set -eu
+
+# 補助コマンド (sync) は、継承した PATH からではなく、この固定した PATH から探す。
+PATH=/usr/sbin:/usr/bin:/sbin:/bin
+export PATH
+
+TARGET=/proc/sys/vm/drop_caches
+
+usage() {
+    printf '%s\n' "usage: spark-drop-caches [--target <道筋>]" >&2
+    exit 2
+}
+
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --target)
+            [ "$#" -ge 2 ] || usage
+            TARGET=$2
+            shift 2
+            ;;
+        *)
+            usage
+            ;;
+    esac
+done
+
+sync
+printf '3\n' > "$TARGET"

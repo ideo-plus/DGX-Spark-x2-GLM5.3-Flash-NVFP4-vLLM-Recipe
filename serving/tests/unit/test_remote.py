@@ -13,7 +13,8 @@
 - rsync の遠隔の道筋 (`push` の宛先、`pull` の元、`remote_root`、`ssh_host`) は、遠隔の
   シェルに素で渡るので、使える文字を絞る。Mac の側の道筋は絞らず、1 つの引数のまま渡る
 - `ip` と `ethtool` は読み取りの形だけ (requirements 2.7)、`cat` は `remote_root` の下と
-  インターフェースの読み取りの場所だけ (requirements 2.4、2.6)。`scaling_max_freq` の読み取り
+  インターフェースの読み取りの場所だけ (requirements 2.4、2.6)。`/proc` は `/proc/stat` と
+  `/proc/meminfo` の完全一致だけで、変形は断る。`scaling_max_freq` の読み取り
   (CPU の上限の観察) は、正規表現の完全一致の 1 種類だけを追加で許し、`/sys/devices/system/cpu/`
   の前方一致は許さない
 - 時間切れと接続の失敗は `RemoteError`、遠隔の 0 以外の終了は `CommandResult`
@@ -448,13 +449,16 @@ def test_ethtool_outside_the_read_only_forms_is_refused(
         ],
         # /proc/stat との併記も通る
         ["cat", "/proc/stat", "/sys/devices/system/cpu/cpu0/cpufreq/scaling_max_freq"],
+        # /proc/meminfo (関門 memory_free が読む) も、/proc/stat と同じく完全一致で通る
+        ["cat", "/proc/meminfo"],
+        ["cat", "/proc/meminfo", "/proc/stat"],
     ],
 )
 def test_cat_reads_only_the_allowed_places(
     runner: SshRunner, sent: Recorder, argv: list[str]
 ) -> None:
     """`cat` は、Spark の置き場所の下、インターフェースの読み取りの場所、熱区域と hwmon の
-    下 (前方一致)、`/proc/stat` (完全一致) だけを読める。"""
+    下 (前方一致)、`/proc/stat` と `/proc/meminfo` (完全一致) だけを読める。"""
     runner.run(HEAD, argv, timeout_s=10.0, mutating=False)
 
     assert sent.calls, f"{argv} が流れていない"
@@ -480,6 +484,12 @@ def test_cat_reads_only_the_allowed_places(
         ["cat", "/proc/self/stat"],
         ["cat", "/proc/1/environ"],
         ["cat", "/proc"],
+        # /proc/meminfo も、完全一致だけを許す (変形、前置き・後置き、許可外との併記は拒否)
+        ["cat", "/proc/meminfox"],
+        ["cat", "/proc/meminfo/"],
+        ["cat", "/proc/meminfo/../1/environ"],
+        ["cat", "-n", "/proc/meminfo"],
+        ["cat", "/proc/meminfo", "/etc/passwd"],
         # 前方一致の場所からの遡りと、許可と非許可の混在も拒否する
         ["cat", "/sys/class/thermal/../../kernel/hostname"],
         ["cat", "/sys/class/thermalx/a"],
@@ -505,25 +515,46 @@ def test_cat_outside_the_allowed_places_is_refused(
     runner: SshRunner, sent: Recorder, argv: list[str]
 ) -> None:
     """よその場所、認証の情報、別の構成の記録を読む `cat` は断る (requirements 2.4、2.6)。
-    `/proc` は `/proc/stat` の完全一致だけを許し、前方一致では許さない。"""
+    `/proc` は `/proc/stat` と `/proc/meminfo` の完全一致だけを許し、前方一致では許さない。"""
     with pytest.raises(RuntimeError, match="cat"):
         runner.run(HEAD, argv, timeout_s=10.0, mutating=False)
 
     assert sent.calls == []
 
 
+def _refusal_places(message: str) -> tuple[str, str]:
+    """`cat` の断りの文を、前方一致の枠と、完全一致の枠に分ける (どちらも、そのまま返す)。
+
+    前方一致の枠は「完全一致で 」の手前まで、完全一致の枠は「完全一致で 」の後ろから、
+    正規表現の枠 (「正規表現の完全一致で」) の手前まで。断られた道筋そのものは文の末尾に
+    出るので、どちらの枠にも入らない。
+    """
+    before, _, after = message.partition("完全一致で ")
+    exact, _, _ = after.partition("正規表現の")
+    return before, exact
+
+
+def _assert_proc_places_are_exact_only(message: str) -> None:
+    """`/proc/stat` と `/proc/meminfo` が、完全一致の枠だけに示され、「の下」にはない。"""
+    prefix_frame, exact_frame = _refusal_places(message)
+    assert "/proc/stat" in exact_frame
+    assert "/proc/meminfo" in exact_frame
+    assert "/proc/stat" not in prefix_frame
+    assert "/proc/meminfo" not in prefix_frame
+    assert "/proc/stat の下" not in message
+    assert "/proc/meminfo の下" not in message
+
+
 def test_cat_refusal_message_separates_prefix_and_exact_places(
     runner: SshRunner, sent: Recorder
 ) -> None:
-    """cat を拒否する文が、前方一致の場所と完全一致の場所を分けて示す (`/proc/stat` を
-    「の下」には含めない)。文言の完全一致では確かめず、`/proc/stat` が完全一致の場所として
-    示されることだけを確かめる。"""
+    """cat を拒否する文が、前方一致の場所と完全一致の場所を分けて示す (`/proc/stat` と
+    `/proc/meminfo` を「の下」には含めない)。文言の完全一致では確かめず、この 2 つが
+    完全一致の場所として、前方一致の場所とは別の枠に示されることだけを確かめる。"""
     with pytest.raises(RuntimeError) as caught:
         runner.run(HEAD, ["cat", "/proc/statx"], timeout_s=10.0, mutating=False)
 
-    message = str(caught.value)
-    assert "完全一致で /proc/stat" in message
-    assert "/proc/stat の下" not in message
+    _assert_proc_places_are_exact_only(str(caught.value))
     assert sent.calls == []
 
 
@@ -532,7 +563,7 @@ def test_cat_refusal_message_lists_the_regex_place_separately(
 ) -> None:
     """cat を拒否する文が、正規表現の完全一致の場所を、別の枠で示す。
 
-    既存の「完全一致で /proc/stat」の文はそのまま残し、`/proc/stat` を「の下」には含めない
+    完全一致の枠には `/proc/stat` と `/proc/meminfo` があり、それを「の下」には含めない
     (既存の試験 `test_cat_refusal_message_separates_prefix_and_exact_places` と同じ形)。
     文言の完全一致では確かめず、`scaling_max_freq` が正規表現の場所として示されることだけを
     確かめる。
@@ -548,8 +579,7 @@ def test_cat_refusal_message_lists_the_regex_place_separately(
     message = str(caught.value)
     assert "正規表現の完全一致で" in message
     assert "scaling_max_freq" in message
-    assert "完全一致で /proc/stat" in message
-    assert "/proc/stat の下" not in message
+    _assert_proc_places_are_exact_only(message)
     assert sent.calls == []
 
 

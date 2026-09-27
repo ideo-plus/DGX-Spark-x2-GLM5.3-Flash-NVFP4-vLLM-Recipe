@@ -183,7 +183,7 @@ uv run serve check p1-fetch-nvfp4-probe
 **→ 進む条件**: `status=pulled`。`serve check` の表で、`gate_image_digest` の行が 2 台とも通る。
 
 この時点の `serve check` そのものは、**終了コード 1 になる**。重みの照合の記録がまだないので、
-`gate_weights_verified` が断るからである (それが準備 4 の仕事)。見るのは、8 つの関門の表のうち、
+`gate_weights_verified` が断るからである (それが準備 4 の仕事)。見るのは、9 つの関門の表のうち、
 `gate_image_digest` の行である。
 
 **✋ 止める条件**: 空きが足りない (1)、取得のあとにダイジェストが合わない (2)。
@@ -244,7 +244,7 @@ uv run serve check probe-pinned
   読み直す
 
 **→ 進む条件**: `status=fetched` と `status=verified`、`mismatched=` が空。`serve check
-probe-pinned` で 8 つの関門がすべて通る。
+probe-pinned` で 9 つの関門がすべて通る。
 
 **✋ 止める条件**: 合わないファイルがある (2)。名前が出るので `not-working.md` に書く。
 **黙って取り直さない。**
@@ -376,7 +376,7 @@ uv run serve netcheck links
   訂正する (要件 4.2)
 
 **→ 進む条件**: `serve check netcheck-sanity` が、**直結の値がないという理由では断られない**
-(構成を読み込めて、8 つの関門の結果を並べる)。埋める前は、構成の読み込みの段で、6 つの項目の
+(構成を読み込めて、9 つの関門の結果を並べる)。埋める前は、構成の読み込みの段で、6 つの項目の
 名前を並べて終了コード 1 になる。
 
 ### A.2 帯域を測る
@@ -476,7 +476,7 @@ uv run serve verify p1-fetch-nvfp4 --yes
 - 構成の `ready_timeout_s` は 28800 秒 (8 時間) の**見積もり**である。実測で直す
 - 取得が動いている間の `serve verify` は、照合を始めずに断る
 
-**→ 進む条件**: `status=fetched`、`mismatched=` が空。`serve check p1-nvfp4-tp2` で 8 つの
+**→ 進む条件**: `status=fetched`、`mismatched=` が空。`serve check p1-nvfp4-tp2` で 9 つの
 関門がすべて通る。
 
 **✋ 止める条件**: 合わないファイルがある (2)。名前を示して止まり、**黙って取り直さない**。

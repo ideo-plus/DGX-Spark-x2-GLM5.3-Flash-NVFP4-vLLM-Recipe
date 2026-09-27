@@ -45,6 +45,13 @@ from pydantic import HttpUrl
 
 from fake_runner import FakeRunner, RecordedCall, Reply, Rule
 from fake_vllm import FakeVllm, Fault, MetricsSample
+from meminfo_sample import (
+    EXHAUSTED_MEMINFO,
+    HEALTHY_FREE_KB,
+    HEALTHY_MEMINFO,
+    kb_in_bytes_text,
+    meminfo_rule,
+)
 from serving_kit import lifecycle as lc
 from serving_kit import types as kt
 from serving_kit.config import ConfigError
@@ -201,6 +208,14 @@ def serve_config(
     )
 
 
+def instanttensor_serve_config(port: int) -> ConfigDef:
+    """`serve_config` に、`--load-format instanttensor` を足した構成。"""
+    config = serve_config(port)
+    return config.model_copy(
+        update={"args": {**config.args, "load-format": _setting("--load-format", "instanttensor")}}
+    )
+
+
 def plans_of(config: ConfigDef) -> tuple[ContainerPlan, ...]:
     return build_plans(config, NODES, STARTED_AT)
 
@@ -345,6 +360,8 @@ class StartScript:
 
     gpu_apps: str = ""
     avail: str = "Avail\n999999999999\n"
+    meminfo: str = HEALTHY_MEMINFO
+    """両方の台が返す `/proc/meminfo` の本文 (合成。既定は、空きが十分ある)。"""
     listening: str = ""
     digests: str = json.dumps([IMAGE_REF]) + "\n"
     layout_ok: bool = True
@@ -373,6 +390,8 @@ class StartScript:
                     )
                 )
             rules.append(Rule(prefix=("docker", "logs", "--timestamps"), node=role, replies=logs))
+            # `/proc/meminfo` は、照合の記録の `cat` の規則より前に置く (何にでも当たるため)
+            rules.append(meminfo_rule(self.meminfo, node=role))
             rules.append(
                 Rule(prefix=("cat",), node=role, replies=(Reply(stdout=verified_record(role)),))
             )
@@ -491,7 +510,7 @@ def cleanup_order(runner: FakeRunner) -> list[str]:
     return [name for name in steps(runner) if name in watched]
 
 
-GATE_STEPS = ("uname", "nvidia-smi", "test", "image inspect", "cat", "df", "ss")
+GATE_STEPS = ("uname", "nvidia-smi", "test", "image inspect", "cat", "df", "cat", "ss")
 """1 台ぶんの関門の読み取り (`guards.GATE_ORDER` の順。`own_state` は、読んだ一覧を使う)。"""
 
 CLEANUP_STEPS = [
@@ -563,7 +582,7 @@ def test_ready_runs_the_steps_in_the_designed_order(tmp_path: Path, fake_vllm: F
 
     assert outcome.status == "ready"
     assert len(confirmer.shown) == 1
-    assert steps(runner)[:20] == (
+    assert steps(runner)[:22] == (
         "ps",
         "ps",
         *GATE_STEPS,
@@ -574,7 +593,7 @@ def test_ready_runs_the_steps_in_the_designed_order(tmp_path: Path, fake_vllm: F
         "run",
     )
     # 待ちの間は、起こした識別子を一覧から取り、毎回、2 台のコンテナの状態を見る
-    assert steps(runner)[20:24] == ("ps", "ps", "container inspect", "container inspect")
+    assert steps(runner)[22:26] == ("ps", "ps", "container inspect", "container inspect")
 
 
 def test_ready_reads_health_models_and_metrics(tmp_path: Path, fake_vllm: FakeVllm) -> None:
@@ -647,7 +666,11 @@ def test_ready_does_not_collect_the_whole_record_nor_clean_up(
 def test_launch_record_is_pushed_to_state_on_both_nodes(
     tmp_path: Path, fake_vllm: FakeVllm
 ) -> None:
-    """起動の記録を Mac で作り、2 台の `state/` に `--delete` なしで置く (requirements 3.10)。"""
+    """起動の記録を Mac で作り、2 台の `state/` に `--delete` なしで置く (requirements 3.10)。
+
+    起動の記録は、起動の直前に通った関門の結果 (台ごとに 9 件) も持つ。`memory_free` の
+    `detail` に、起動の前の `MemFree` が残る (起動が落ちた回の、直前の空きを後から読める)。
+    """
     config = serve_config(port_of(fake_vllm))
     runner = runner_of(tmp_path, StartScript(plans=plans_of(config)))
 
@@ -668,6 +691,11 @@ def test_launch_record_is_pushed_to_state_on_both_nodes(
         assert record.started_at == STARTED_AT
         assert record.config_sha256 == plans_of(config)[0].labels[LABEL_CONFIG_SHA256]
         assert len(record.plans) == len(ROLES)
+        assert len(record.gates) == 9 * len(ROLES)
+        assert all(gate.passed for gate in record.gates)
+        memory = [gate for gate in record.gates if gate.gate == "memory_free"]
+        assert sorted(gate.node or "" for gate in memory) == ["head", "worker"]
+        assert all(kb_in_bytes_text(HEALTHY_FREE_KB) in gate.detail for gate in memory)
 
 
 # --- 派生の重み (手元で変換した重み) の構成 ----------------------------------
@@ -1324,6 +1352,27 @@ def test_refused_gate_skips_the_approval(tmp_path: Path) -> None:
     assert [gate.gate for gate in outcome.gates if not gate.passed] == ["gpu_idle", "gpu_idle"]
 
 
+def test_refused_memory_free_gate_skips_the_approval_and_shows_the_remedy(tmp_path: Path) -> None:
+    """`--load-format instanttensor` の構成で空きが足りなければ、了承を尋ねず、状態を変える
+    呼び出しを 1 つも出さずに断る。断りの文は、何をすれば起動できるかを示す。"""
+    config = instanttensor_serve_config(UNUSED_PORT)
+    script = StartScript(plans=plans_of(config), meminfo=EXHAUSTED_MEMINFO)
+    runner = runner_of(tmp_path, script)
+    confirmer = SpyConfirmer()
+
+    outcome = run_start(runner, config, tmp_path, confirmer=confirmer)
+
+    assert outcome.status == "refused"
+    assert [gate.gate for gate in outcome.gates if not gate.passed] == [
+        "memory_free",
+        "memory_free",
+    ]
+    assert "spark-drop-caches" in outcome.detail
+    assert "--load-format auto" in outcome.detail
+    assert confirmer.shown == []
+    assert mutating_calls(runner) == ()
+
+
 def test_declined_approval_makes_no_mutating_call(tmp_path: Path) -> None:
     """了承しなければ、状態を変える呼び出しが 1 つも出ない (requirements 2.1)。"""
     config = serve_config(UNUSED_PORT)
@@ -1739,7 +1788,9 @@ def test_the_public_record_helpers_refuse_a_relative_record_dir(
     config = probe_config(8000)
     plans = build_plans(config, NODES, STARTED_AT)
     runner = runner_of(tmp_path, StartScript(plans=plans))
-    record = lc.launch_record(config, plans, STARTED_AT, repo_commit=REPO_COMMIT, repo_dirty=False)
+    record = lc.launch_record(
+        config, plans, STARTED_AT, repo_commit=REPO_COMMIT, repo_dirty=False, gates=()
+    )
 
     with pytest.raises(ValueError, match="絶対"):
         lc.record_pushes(config, relative)
@@ -1777,7 +1828,7 @@ def test_the_public_helpers_compose_a_one_node_run(tmp_path: Path, fake_vllm: Fa
             report=io.StringIO(),
         )
         record = lc.launch_record(
-            config, plans, STARTED_AT, repo_commit=REPO_COMMIT, repo_dirty=False
+            config, plans, STARTED_AT, repo_commit=REPO_COMMIT, repo_dirty=False, gates=()
         )
         lc.push_launch_records(runner, config, NODES, record, record_dir(tmp_path))
         lc.start_all(runner, config, NODES, plans, controls)

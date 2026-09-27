@@ -1446,11 +1446,13 @@ def _fetch_gates(
 ) -> tuple[GateResult, ...]:
     """取得の前の関門を、**起こす台についてだけ**流す。
 
-    並びは `guards.GATE_ORDER` から 2 つを除いたものである。`gate_weights_verified` を除くのは
+    並びは `guards.GATE_ORDER` から 3 つを除いたものである。`gate_weights_verified` を除くのは
     **取得の前には、まだ照合の記録がないから** (決めごとの 3)、`gate_own_state` を除くのは
     台ごとのやり直しの判定 (`_classify_node`) が、同じ一覧で、より細かく見ているからである
-    (決めごとの 2)。ほかは design.md 「関門」の表のとおりで、GPU を使わない種類でも
-    `gate_gpu_idle` を流す。
+    (決めごとの 2)。`gate_memory_free` を除くのは、取得 (`hf download`) が
+    `--load-format instanttensor` で読み込まないから (issue #84)。取得は、むしろ大量の書き込みで
+    ページキャッシュを埋める側であり、`memory_free` の下限で断る対象ではない。ほかは design.md
+    「関門」の表のとおりで、GPU を使わない種類でも `gate_gpu_idle` を流す。
     """
     gates: list[GateResult] = []
     for plan in starting:
