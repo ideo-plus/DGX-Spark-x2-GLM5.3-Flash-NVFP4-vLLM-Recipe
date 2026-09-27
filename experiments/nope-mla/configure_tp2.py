@@ -20,10 +20,11 @@ args に足し、構成の名前を `-prof` 付きにする (どの `--variant` 
 `--vllm-overlay <名前>` を付けると、`experiments/k2-vllm-overlay/<名前>.json` (固定した vLLM の
 直したファイルの定義) に並ぶファイルごとに、`serving/payload/vllm-overlay/<名前>/<道筋>` の写し
 (`serve push` で `{remote_root}/payload/` へ配る) を、イメージの中の vLLM の同じファイルに重ねる
-読み取り専用の bind mount を、根拠つきで docker の節の末尾に足す (ADR 0007 の第 2a 段、#73)。
-構成の名前は `--weights` の接尾辞の直後に `-ov-<名前>` を付ける (どの `--variant` にも付け
-られる)。定義が無い、`name` が `<名前>` と違う、`vllm_commit` が固定の commit と違う、道筋が
-`vllm/` で始まる相対の道筋でない、写しが無い、mount の鍵が重なるときは、生成の前に断る。
+読み取り専用の bind mount を、根拠つきで docker の節の末尾に足す (ADR 0007 の第 2 段。名前ごとの
+段と Issue は `OVERLAY_PROVENANCE`)。構成の名前は `--weights` の接尾辞の直後に `-ov-<名前>` を
+付ける (どの `--variant` にも付けられる)。定義が無い、`name` が `<名前>` と違う、`vllm_commit` が
+固定の commit と違う、名前が `OVERLAY_PROVENANCE` に無い、道筋が `vllm/` で始まる相対の道筋で
+ない、写しが無い、mount の鍵が重なるときは、生成の前に断る。
 写しが「固定のソース + パッチ」と一致することは、生成器ではなく試験 (`test_vllm_overlay.py`)
 が固定する。
 
@@ -81,13 +82,24 @@ OVERLAY_MOUNT_QUOTE = (
     '"/usr/local/lib/python${PYTHON_VERSION}/dist-packages/nvpl/lib"'
 )
 """固定の commit の `docker/Dockerfile` の 26 行目、1062 行目、971 行目の原文。"""
-OVERLAY_MOUNT_WHY = (
-    "ADR 0007 の第 2a 段 (#73)。固定した vLLM (0961bbae) のこのファイルに "
-    "experiments/k2-vllm-overlay のパッチを当てた写し (serving/payload/vllm-overlay/<名前>/…。"
-    "serve push で配る) を、イメージを作り直さずに読み取り専用の bind mount で重ねる。"
-    "重ねる先は、イメージの中の vLLM の導入先 (uv pip install --system が置く dist-packages) の"
-    "同じ道筋"
-)
+OVERLAY_PROVENANCE: Mapping[str, tuple[str, str]] = {
+    "k2s2a": ("ADR 0007 の第 2a 段", "#73"),
+    "k2s2b": ("ADR 0007 の第 2b 段", "#79"),
+}
+"""重ねる定義の名前 → (ADR の段, Issue)。mount の理由と構成の説明に書く。"""
+
+
+def _overlay_mount_why(stage: str, issue: str) -> str:
+    """直したファイル 1 つを重ねる mount の理由 (段と Issue は `OVERLAY_PROVENANCE`)。"""
+    return (
+        f"{stage} ({issue})。固定した vLLM (0961bbae) のこのファイルに "
+        "experiments/k2-vllm-overlay のパッチを当てた写し (serving/payload/vllm-overlay/<名前>/…。"
+        "serve push で配る) を、イメージを作り直さずに読み取り専用の bind mount で重ねる。"
+        "重ねる先は、イメージの中の vLLM の導入先 (uv pip install --system が置く dist-packages) の"
+        "同じ道筋"
+    )
+
+
 EXPECTED_IMAGE_ID = "sha256:9df45888d2d726a1818be1005ace819808d4a1e8b4ec01a3efa7bc7f10a40c90"
 IMAGE_SEEN_AS = "vllm-nope:0961bbae-fi070"
 IMAGE_MEASURED = "docs/results/2026-09-22-nope-build.md"
@@ -232,10 +244,13 @@ class VllmOverlay(NamedTuple):
     """`--vllm-overlay` で選ぶ、固定した vLLM の直したファイルの重ね。
 
     `files` は `vllm/` で始まる相対の道筋で、定義 (`<名前>.json`) の並び (mount の並び) である。
+    `stage` と `issue` は、その名前の ADR の段と Issue (`OVERLAY_PROVENANCE`)。
     """
 
     name: str
     files: tuple[str, ...]
+    stage: str
+    issue: str
 
 
 class LoadFormat(NamedTuple):
@@ -568,13 +583,17 @@ def _is_vllm_relative_path(path: str) -> bool:
 def vllm_overlay(name: str, data: Mapping[str, Any]) -> VllmOverlay:
     """`--vllm-overlay <名前>` の指定を、重ねる定義から組む。
 
-    名前・commit が違う、道筋が `vllm/` で始まる相対の道筋でない、写しが無い、mount の鍵が
-    重なるときは `ValueError` (生成の前に断る)。
+    名前・commit が違う、名前の根拠 (`OVERLAY_PROVENANCE`) が無い、道筋が `vllm/` で始まる相対の
+    道筋でない、写しが無い、mount の鍵が重なるときは `ValueError` (生成の前に断る)。
     """
     if data.get("name") != name:
         raise ValueError(
             f"重ねる定義の名前 ({data.get('name')!r}) が、--vllm-overlay の値 ({name}) と違う"
         )
+    provenance = OVERLAY_PROVENANCE.get(name)
+    if provenance is None:
+        raise ValueError(f"重ねる定義 {name} の根拠 (ADR の段と Issue) が生成器に無い")
+    stage, issue = provenance
     if data.get("vllm_commit") != VLLM_COMMIT:
         raise ValueError(
             f"重ねる定義の vllm_commit ({data.get('vllm_commit')!r}) が、"
@@ -597,7 +616,7 @@ def vllm_overlay(name: str, data: Mapping[str, Any]) -> VllmOverlay:
             raise ValueError(f"重ねる道筋 {keys[key]} と {path} の mount の鍵 ({key}) が重なる")
         keys[key] = path
         files.append(path)
-    return VllmOverlay(name=name, files=tuple(files))
+    return VllmOverlay(name=name, files=tuple(files), stage=stage, issue=issue)
 
 
 def with_vllm_overlay(variant: Variant, overlay: VllmOverlay) -> Variant:
@@ -612,7 +631,7 @@ def with_vllm_overlay(variant: Variant, overlay: VllmOverlay) -> Variant:
             f"{variant.description}。固定した vLLM の直したファイル"
             f" ({', '.join(overlay.files)}) を、"
             f"読み取り専用の bind mount で重ねる (vllm-overlay {overlay.name}。"
-            "ADR 0007 の第 2a 段、#73)"
+            f"{overlay.stage}、{overlay.issue})"
         ),
         vllm_overlay=overlay,
     )
@@ -816,7 +835,7 @@ def render(configs_text: str, image: Mapping[str, Any], variant: Variant = SMOKE
                 key=overlay_mount_key(path),
                 flag="--mount",
                 value=overlay_mount_value(overlay.name, path),
-                why=OVERLAY_MOUNT_WHY,
+                why=_overlay_mount_why(overlay.stage, overlay.issue),
                 source=OVERLAY_MOUNT_SOURCE,
                 quote=OVERLAY_MOUNT_QUOTE,
             )

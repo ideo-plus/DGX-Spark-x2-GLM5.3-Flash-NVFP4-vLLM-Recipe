@@ -19,6 +19,10 @@
 (`f_a_proj`・`f_b_proj`) は、実機と同じく、テンソル名が `self_attn.f_a_proj.weight` の形
 (`forget_gate.` なし) で、`ignore` の名前だけが `self_attn.forget_gate.f_a_proj` の形になる (#76)。
 
+第 2b 段 (`--preset k2s2b`。#79) は、同じ合成 checkpoint の層 0 の KDA のまとめた層
+(`KDA_MERGED_MODULES`) を第 2a 段の対象に足して選ぶ (`STAGE2B_TARGET_MODULES`)。`f_a_proj` は、
+`ignore` の名前が `self_attn.forget_gate.f_a_proj` の形のままなので、変換しても `ignore` に残る。
+
 書き込みは `safetensors.torch.save_file` (参照実装) で行う。
 """
 
@@ -125,14 +129,20 @@ STAGE2A_TARGET_MODULES: tuple[str, ...] = (
 )
 """第 2a 段の選び方が拾うモジュール名 (15 個)。"""
 
-STAGE2_UNTOUCHED_MODULES: tuple[str, ...] = (
-    # KDA のまとめた層 (vLLM で 1 つの線形層にまとまる q・k・v・b・f_a・g_a)
+KDA_MERGED_MODULES: tuple[str, ...] = (
     f"{_KDA_LAYER}.self_attn.q_proj",
     f"{_KDA_LAYER}.self_attn.k_proj",
     f"{_KDA_LAYER}.self_attn.v_proj",
     f"{_KDA_LAYER}.self_attn.b_proj",
     f"{_KDA_LAYER}.self_attn.f_a_proj",
     f"{_KDA_LAYER}.self_attn.g_a_proj",
+)
+"""KDA のまとめた層 (層 0)。vLLM で 1 つの線形層 (`in_proj_qkvbfg_a`) にまとまる
+q・k・v・b・f_a・g_a。第 2a 段では選ばれず、第 2b 段 (`--preset k2s2b`。#79) で組ごと選ばれる。"""
+
+STAGE2_UNTOUCHED_MODULES: tuple[str, ...] = (
+    # KDA のまとめた層 (vLLM で 1 つの線形層にまとまる q・k・v・b・f_a・g_a)
+    *KDA_MERGED_MODULES,
     # MLA の kv_b_proj と indexer
     f"{_MLA_LAYER}.self_attn.kv_b_proj",
     f"{_MLA_LAYER}.self_attn.indexer.wq_b",
@@ -144,6 +154,15 @@ STAGE2_UNTOUCHED_MODULES: tuple[str, ...] = (
 )
 """第 2a 段の選び方が拾わないモジュール名。同じ字面 (`o_proj`) が層種によって対象・非対象に
 分かれるので、層 45 の `o_proj` を含める。"""
+
+STAGE2B_TARGET_MODULES: tuple[str, ...] = (*STAGE2A_TARGET_MODULES, *KDA_MERGED_MODULES)
+"""第 2b 段の選び方が拾うモジュール名 (21 個)。第 2a 段の 15 個と、KDA のまとめた層の 6 個。"""
+
+STAGE2B_UNTOUCHED_MODULES: tuple[str, ...] = tuple(
+    module for module in STAGE2_UNTOUCHED_MODULES if module not in KDA_MERGED_MODULES
+)
+"""第 2b 段の選び方が拾わないモジュール名。第 2a 段の拾わない名前から、KDA のまとめた層を除いたもの
+(`kv_b_proj`・indexer・`layer_types` に載らない層 45・`embed_tokens`・`norm`・`eh_proj`)。"""
 
 STAGE2_KDA_GATE_IGNORE_NAMES: Mapping[str, str] = {
     f"{_KDA_LAYER}.self_attn.f_a_proj": f"{_KDA_LAYER}.self_attn.forget_gate.f_a_proj",

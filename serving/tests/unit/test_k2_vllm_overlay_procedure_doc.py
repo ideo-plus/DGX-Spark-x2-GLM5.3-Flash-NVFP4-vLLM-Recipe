@@ -1,7 +1,7 @@
 """vLLM の直したファイルを重ねる手順書 (`docs/vllm-baseline/k2-vllm-overlay-procedure.md`) の試験。
 
 文書のタスクなので、振る舞いの試験の代わりに、手順書の完了の状態を固定する (ADR 0007 の
-第 2a 段、#73)。確かめること:
+第 2a 段、#73。第 2b 段、#79)。確かめること:
 
 1. 先頭 20 行以内に「書かないこと」の決まり (要求・応答の本文、認証の情報、`exl3-tp2` の
    中身) がある
@@ -20,12 +20,19 @@
    `serve push`・`serve start` は、コード塊として書かれている
 6. 2 台の写しと Mac の写しの `sha256sum` / `shasum -a 256` の突き合わせは、コード塊の命令として
    読める形で、hash コマンドの**それぞれの**直後に `| LC_ALL=C sort` がある (2 台 × 2 側)
+7. 第 2b 段 (`k2s2b`。#79) の節がある。直すこと (`kda.py` の `quant_config`、`model.py` の
+   `packed_modules_mapping`)、写しの生成と確認 (`overlay.py refresh k2s2b` / `check k2s2b`)、重ねた
+   構成の生成 (`--weights k2s2b`、`--vllm-overlay k2s2b`、構成の名前とファイル名、前提の
+   `k2s2b.manifest.json`)、起動のログの期待 (KDA のまとめた層 `in_proj_qkvbfg_a` も
+   `CompressedTensorsW8A16Fp8`)、古い重みで重ねたときの失敗の印
+   (`Found different quantization schemes`) が、その節にある
 
 RED: 文書がなければ、`read_text` で `pytest.fail` する。
 """
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Final
 
@@ -35,6 +42,8 @@ from procedure_doc_kit import (
     SERVE_CALL,
     ask_mark_problems,
     checksum_sort_problems,
+    code_blocks,
+    lines_inside,
     read_text,
     relative_link_targets,
     subparser_map,
@@ -210,3 +219,85 @@ def test_the_checksum_comparison_sorts_every_side_by_file_name() -> None:
         f"{_MINIMUM_CHECKSUM_COMMANDS} 個が要る): {DOC_PATH}"
     )
     assert not problems, "\n".join(problems)
+
+
+# --- 7. 第 2b 段 (`k2s2b`)。KDA のまとめた層 `in_proj_qkvbfg_a` も FP8 で読む (#79) --------------
+
+_STAGE_2B_HEADING_MARK: Final[str] = "第 2b 段"
+
+STAGE_2B_SECTION_MARKERS: Final[tuple[str, ...]] = (
+    # 直すこと
+    "quant_config",
+    "packed_modules_mapping",
+    # 写しの生成と確認 (Mac)
+    "overlay.py refresh k2s2b",
+    "overlay.py check k2s2b",
+    "k2s2b.json",
+    # 重ねた構成の生成 (Mac)
+    "--vllm-overlay k2s2b",
+    "--weights k2s2b",
+    "k2s2b.manifest.json",
+    "p2-nope-tp2-full-k2s2b-ov-k2s2b",
+    "tp2-full-k2s2b-ov-k2s2b.toml",
+    # 起動のログでの期待と、古い重みで重ねたときの失敗の印
+    "in_proj_qkvbfg_a",
+    "CompressedTensorsW8A16Fp8",
+    "Found different quantization schemes",
+    # 根拠
+    "#79",
+)
+"""第 2b 段の節に必要な印。ほかの節にも出る名前 (`quant_config`、`in_proj_qkvbfg_a` など) は、
+節の中にあることを見る (文書のどこかにあるだけでは、第 2b 段の説明にならない)。"""
+
+
+def _stage_2b_section(text: str) -> str:
+    """見出しに「第 2b 段」を含む `## ` の節 (次の `## ` の見出し、なければ末尾の手前まで)。
+
+    コード塊の中の `## ` は見出しと取り違えない。節がなければ、そこで落とす。
+    """
+    lines = text.splitlines()
+    inside = lines_inside(code_blocks(text))
+    headings = [
+        number
+        for number, line in enumerate(lines, start=1)
+        if number not in inside and line.startswith("## ")
+    ]
+    begin = next(
+        (number for number in headings if _STAGE_2B_HEADING_MARK in lines[number - 1]), None
+    )
+    if begin is None:
+        pytest.fail(f"見出しに「{_STAGE_2B_HEADING_MARK}」を含む節 (`## `) がない: {DOC_PATH}")
+    end = next((number for number in headings if number > begin), len(lines) + 1)
+    return "\n".join(lines[begin - 1 : end - 1])
+
+
+def test_the_procedure_has_a_stage_2b_section_for_the_k2s2b_overlay() -> None:
+    """見出しに「第 2b 段」と `k2s2b` を含む節がある。"""
+    section = _stage_2b_section(read_text(DOC_PATH))
+
+    assert re.search(r"k2s2b", section.splitlines()[0]), section.splitlines()[0]
+
+
+@pytest.mark.parametrize("marker", STAGE_2B_SECTION_MARKERS)
+def test_the_stage_2b_section_mentions_the_required_marker(marker: str) -> None:
+    """第 2b 段の節に、直すこと・写しの生成と確認・構成の生成・期待と失敗の印・根拠がある。"""
+    assert marker in _stage_2b_section(read_text(DOC_PATH))
+
+
+def test_the_stage_2b_section_expects_the_kda_merged_layer_among_the_fp8_hits() -> None:
+    """第 2b 段の節は、起動のログの期待として、KDA のまとめた層 `in_proj_qkvbfg_a` を、W8A16 FP8 の
+    scheme (`CompressedTensorsW8A16Fp8`) が当たる側に書く。
+
+    第 2a 段では、まとめた層は BF16 のままなので、当たってはいけない層だった。第 2b 段の節の
+    `in_proj_qkvbfg_a` を含む段落 (空行で区切られた連なり) のどれかに、W8A16 の印がある。
+    """
+    section = _stage_2b_section(read_text(DOC_PATH))
+    paragraphs = [paragraph for paragraph in re.split(r"\n\s*\n", section) if paragraph.strip()]
+
+    expecting = [
+        paragraph
+        for paragraph in paragraphs
+        if "in_proj_qkvbfg_a" in paragraph and "W8A16" in paragraph
+    ]
+
+    assert expecting, "in_proj_qkvbfg_a と W8A16 を同じ段落に書いた期待がない"

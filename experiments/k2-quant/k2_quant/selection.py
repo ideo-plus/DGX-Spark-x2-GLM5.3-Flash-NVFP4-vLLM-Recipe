@@ -47,13 +47,24 @@ DEFAULT_PATTERN: Final[str] = (
 WEIGHT_SUFFIX: Final = ".weight"
 SUPPORTED_DTYPES: Final = frozenset({"BF16", "F16", "F32"})
 
+KDA_FUSED_GROUP: Final[tuple[str, ...]] = (
+    "q_proj",
+    "k_proj",
+    "v_proj",
+    "b_proj",
+    "f_a_proj",
+    "g_a_proj",
+)
+"""KDA の層で、vLLM の 1 つの線形層 `in_proj_qkvbfg_a` にまとまる 6 射影。`FUSED_GROUPS` の 1 つで、
+`k2s2b` の選び方 (`k2_quant.presets`) も、この定数から KDA のまとめた層の射影を取る。"""
+
 FUSED_GROUPS: Final[tuple[tuple[str, ...], ...]] = (
     # MLA: vLLM の `fused_qkv_a_proj`
     ("q_a_proj", "kv_a_proj_with_mqa"),
     # MLP (dense と共有の専門家): vLLM の `gate_up_proj`
     ("gate_proj", "up_proj"),
     # KDA: vLLM の `in_proj_qkvbfg_a`
-    ("q_proj", "k_proj", "v_proj", "b_proj", "f_a_proj", "g_a_proj"),
+    KDA_FUSED_GROUP,
 )
 """vLLM で 1 つの線形層にまとまる組。組の名前は、同じ親 (`...self_attn`、`...mlp` など) の下の
 モジュール名の末尾。組の定義はここだけに置く。"""

@@ -1,6 +1,6 @@
-# vLLM の直したファイルを重ねて起こす手順 (`--vllm-overlay k2s2a`)
+# vLLM の直したファイルを重ねて起こす手順 (`--vllm-overlay k2s2a`・`k2s2b`)
 
-この手順は、[ADR 0007](../decisions/0007-k2-stage2.md) の第 2a 段 (#73) の枠です。固定した vLLM (0961bbae) の Python のファイル 3 つを、lm_head・MLA の射影・KDA のまとめていない射影が FP8 (W8A16、チャネルごと、compressed-tensors) で読めるように直し、その写しを `serve push` で配って、**イメージを作り直さずに**、読み取り専用の bind mount (`readonly`) でコンテナの中の同じファイルに重ねます。
+この手順は、[ADR 0007](../decisions/0007-k2-stage2.md) の第 2a 段 (#73) の枠です。固定した vLLM (0961bbae) の Python のファイル 3 つを、lm_head・MLA の射影・KDA のまとめていない射影が FP8 (W8A16、チャネルごと、compressed-tensors) で読めるように直し、その写しを `serve push` で配って、**イメージを作り直さずに**、読み取り専用の bind mount (`readonly`) でコンテナの中の同じファイルに重ねます。第 2b 段 (#79) の重ね `k2s2b` は、これに KDA のまとめた層 `in_proj_qkvbfg_a` の FP8 の読み込みを足したもので、§9 に差分を書きます。
 
 この文書に書かないこと: **送った内容**と応答の本文、**認証の情報**、`exl3-tp2` の中身。`exl3-tp2` は別の計測者の構成なので調べません。この文書は手順であって記録ではないので、実機で成功したとは書きません (実機で分かったことは、日付を付けて §8 に足します)。**⚠ の付いた操作は、計測者に了承を得てから行います。**
 
@@ -12,7 +12,7 @@
 |---|---|
 | `vllm/model_executor/layers/vocab_parallel_embedding.py` | `ParallelLMHead` に、humming の線形カーネルが読む `input_size_per_partition`・`output_partition_sizes`・`has_bias` を持たせる (#68。FP8 の `lm_head`) |
 | `vllm/models/glm5next/common/model.py` | MLA に `quant_config` を渡す (`fused_qkv_a_proj`・`q_b_proj`・`o_proj`)。`packed_modules_mapping` に `fused_qkv_a_proj` → `q_a_proj`・`kv_a_proj_with_mqa` を足す。W8A16 の `weight_scale` を持つ射影を、BF16 への読み替え (`_try_load_fp8_attn_proj`) に流さない |
-| `vllm/models/glm5next/common/kda.py` | `quant_config` を外す処理を消し、`o_proj`・`f_b_proj`・`g_b_proj` に渡す。まとめた層 `in_proj_qkvbfg_a` は、第 2b 段まで量子化しない |
+| `vllm/models/glm5next/common/kda.py` | `quant_config` を外す処理を消し、`o_proj`・`f_b_proj`・`g_b_proj` に渡す。まとめた層 `in_proj_qkvbfg_a` は、第 2b 段 (§9) まで量子化しない |
 
 `indexer` (`attention.py`) は直しません。MLA が `quant_config` を受けるので、`indexer` の `wq_b` と MLA の `kv_b_proj` も `quant_config` を受けますが、checkpoint の `quantization_config.ignore` に当たれば BF16 のままです。これを実機で確かめるのが §2 の段 0 と §7 です。
 
@@ -173,7 +173,7 @@ grep -rhoE 'Using scheme: [A-Za-z0-9]* for [^ ]*' \
 - MLA 11 層の `fused_qkv_a_proj`・`q_b_proj`・`o_proj`
 - KDA 34 層の `o_proj`・`f_b_proj`・`g_b_proj`
 
-**どちらの段でも、当たってはいけない層:** `in_proj_qkvbfg_a` (KDA のまとめた層。第 2b 段)、`indexer` (`wq_b`、`wk_weights_proj`)、MLA の `kv_b_proj`。これらが W8A16 FP8 の一覧に出たら、または別の scheme (NVFP4 など) の一覧に出たら、checkpoint の `ignore` と `targets` の当たり方が想定と違うので、計測に進まずに記録します。
+**どちらの段でも、当たってはいけない層 (第 2a 段の重ね `k2s2a` のとき):** `in_proj_qkvbfg_a` (KDA のまとめた層。第 2b 段の重ね `k2s2b` では当たる側。§9)、`indexer` (`wq_b`、`wk_weights_proj`)、MLA の `kv_b_proj`。これらが W8A16 FP8 の一覧に出たら、または別の scheme (NVFP4 など) の一覧に出たら、checkpoint の `ignore` と `targets` の当たり方が想定と違うので、計測に進まずに記録します。
 
 ## 8. 実機でしか分からないこと
 
@@ -182,3 +182,43 @@ grep -rhoE 'Using scheme: [A-Za-z0-9]* for [^ ]*' \
 3. イメージの中の `vllm.__file__` (§4 で確かめる)。
 4. humming の線形カーネルが実際に選ばれるか、FP8 の `lm_head` が humming で正しく動くか、速さ (`k2s1b` 比) と品質。
 5. NoPE の `kv_a_proj_with_mqa` の詰め物 (`load_weights` が、rope の部分を 0 で埋めて足す処理) が、FP8 の重みと、チャネルごとの `weight_scale` のまま正しく通るか (段 1 で、MLA を FP8 にしたときに初めて通る経路)。
+
+## 9. 第 2b 段 (`k2s2b`): KDA のまとめた層 `in_proj_qkvbfg_a` も FP8 で読む
+
+第 2b 段 ([ADR 0007](../decisions/0007-k2-stage2.md)。#79) の重ね `k2s2b` は、`k2s2a` の 3 つのファイルの直しに、次の 2 点を足したものです。道筋は `k2s2a` と同じ 3 つで、`vocab_parallel_embedding.py` の写しは `k2s2a` とバイト単位で同じです。パッチは `experiments/k2-vllm-overlay/patches/k2s2b/` に、定義は `experiments/k2-vllm-overlay/k2s2b.json` にあります。
+
+| ファイル | `k2s2a` に足すこと |
+|---|---|
+| `vllm/models/glm5next/common/kda.py` | まとめた層 `in_proj_qkvbfg_a` に `quant_config` を渡す (`quant_config=self.quant_config`)。q・k・v・b は TP で分割、f_a・g_a (分割の 4 と 5) は 2 台で複製のままです。複製の分割の重みとチャネルごとの `weight_scale` は、上流の `_Glm5NextMergedColumnParallelLinear` の `weight_loader` / `weight_loader_v2` が層とパラメータの `tp_rank` を 0 にして読むので、読み込みの処理は足しません (固定の vLLM の `kimi_k3` の `in_proj_qkvgfab` と同じ扱い) |
+| `vllm/models/glm5next/common/model.py` | `packed_modules_mapping` に `in_proj_qkvbfg_a` → `q_proj`・`k_proj`・`v_proj`・`b_proj`・`f_a_proj`・`g_a_proj` (checkpoint のテンソル名の形。#76) を足す。compressed-tensors は、この対応で 6 つの分割それぞれを `ignore` と `targets` に当てます |
+
+**Mac で写しとパッチを確かめる (§1 の読み替え):** 試験は §1 と同じ `tests/unit/test_vllm_overlay.py` が `k2s2a` と `k2s2b` の両方を見ます。写しを直したら、次でパッチと定義の SHA-256 を作り直します。
+
+```bash
+uv run --directory serving python ../experiments/k2-vllm-overlay/overlay.py refresh k2s2b
+uv run --directory serving python ../experiments/k2-vllm-overlay/overlay.py check k2s2b
+```
+
+**構成の生成 (§2 の読み替え):** 第 2b 段の重み (`--preset k2s2b` で変換したもの。[派生の重みの手順書](k2-derived-weights-procedure.md) の §9) を対話側が取り込み、`serving/weights/k2s2b.manifest.json` をコミットしてから、`--weights k2s2b --vllm-overlay k2s2b` で生成します。マニフェストが無い間は、生成器が出力を作らずに断ります。
+
+```bash
+uv run --directory serving python ../experiments/nope-mla/configure_tp2.py \
+  --variant full --weights k2s2b --vllm-overlay k2s2b --load-format auto \
+  ../serving/var/nope-build-0961bbae/image-inspect.json \
+  ../serving/var/nope-build-0961bbae/tp2-full-k2s2b-ov-k2s2b.toml
+```
+
+構成の名前は `p2-nope-tp2-full-k2s2b-ov-k2s2b` (`tp2-full-k2s2b-ov-k2s2b.toml`) です。mount の理由と構成の説明には「ADR 0007 の第 2b 段」と「#79」が入ります。
+
+**段 0 (古い重みのまま重ねる) は置きません。** `k2s2b` の重ねは、まとめた層に `quant_config` を渡すので、compressed-tensors が 6 つの分割それぞれを checkpoint の `ignore` に当てます。まとめた層を変換していない重み (`k2s1b`・`k2s2a`) では、`ignore` の `f_a_proj` は `self_attn.forget_gate.f_a_proj` の形 (#76) で、ほかの分割の名前の形と揃わない見込みです。一部の分割だけが `ignore` に当たると、起動の途中で `Found different quantization schemes for the shards of …` の `ValueError` で落ちます (実機の `ignore` の全体はリポジトリに無く、未確認)。この印が出たら、重みが第 2b 段のものか (`--weights k2s2b`) を確かめます。
+
+**§3〜§6 の読み替え:** 道筋と名前の `k2s2a` を `k2s2b` に読み替えます。写しの置き場所は `payload/vllm-overlay/k2s2b/`、構成の名前は `p2-nope-tp2-full-k2s2b-ov-k2s2b`、`--configs` は `../serving/var/nope-build-0961bbae/tp2-full-k2s2b-ov-k2s2b.toml` です。§3〜§6 の実機の操作は、同じく ⚠ 了承を得てから行います。
+
+**§7 で期待すること (`k2s2b` + 重ね):** 第 2a 段の段 1 の層 (第 1 段の層、`lm_head`、MLA 11 層の `fused_qkv_a_proj`・`q_b_proj`・`o_proj`、KDA 34 層の `o_proj`・`f_b_proj`・`g_b_proj`) に加えて、KDA 34 層の `in_proj_qkvbfg_a` にも W8A16 FP8 の scheme (`CompressedTensorsW8A16Fp8`) が当たります。当たってはいけないのは、`indexer` (`wq_b`、`wk_weights_proj`) と MLA の `kv_b_proj` です。KV cache (`GPU KV cache size`) は、重みが小さくなったぶん、`k2s2a` の段 1 より増えるはずです。
+
+**第 2b 段で、実機でしか分からないこと** (分かったら、日付を付けて §8 に足します):
+
+1. humming (または Marlin) の W8A16 FP8 の線形カーネルが、6 つの分割をまとめた層のチャネルごとの `weight_scale` で正しく動くか。
+2. TP の 2 台で、複製の分割 (f_a・g_a) の重みと `weight_scale` が、2 台とも全体で同じに読まれるか。分割 (q・k・v・b) の `weight_scale` が、重みと同じ範囲で切られるか。
+3. 実機の checkpoint の `ignore` と `targets` の名前の形で、6 つの分割が同じ scheme に当たるか (当たらなければ `Found different quantization schemes` で落ちる)。
+4. 速さ (`k2s2a` 比) と品質。

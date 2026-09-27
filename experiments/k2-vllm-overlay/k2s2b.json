@@ -1,0 +1,30 @@
+{
+  "name": "k2s2b",
+  "vllm_commit": "0961bbae2894d574be790d219651824eb199318e",
+  "files": [
+    {
+      "path": "vllm/model_executor/layers/vocab_parallel_embedding.py",
+      "patch": "patches/k2s2b/vllm/model_executor/layers/vocab_parallel_embedding.py.patch",
+      "source_sha256": "e98d766b9d10dc40f0b1e25ef42278776c64dd78324f22735d7e7771fb0d8f5d",
+      "patched_sha256": "67970e6a65214b6715744a87e9c57386c2e011189710ed0507c584854f1a19c9",
+      "patch_sha256": "8cd276333f2c1e4907fe9f8dcf99a62a3e684ed75426975ad8e5286983e36ae4",
+      "why": "#68。FP8 (W8A16) の ParallelLMHead を humming の線形カーネルで読めるように、LinearBase と同じ input_size_per_partition・output_partition_sizes・has_bias を持たせる"
+    },
+    {
+      "path": "vllm/models/glm5next/common/model.py",
+      "patch": "patches/k2s2b/vllm/models/glm5next/common/model.py.patch",
+      "source_sha256": "9d30ec0bf2eb052b96c6fc995435979993a68cced3376734d0ea72002e0f5dfc",
+      "patched_sha256": "587416224d743bc0b9fdece79091e44b81606b3443ffa4c20a82c1217d123d2e",
+      "patch_sha256": "c6decdb99f0846d4a515bc89637bfbd153970a61a7b2c1ca113fc4e4adbd80d2",
+      "why": "MLA に quant_config を渡し (model.py:330)、packed_modules_mapping に fused_qkv_a_proj (q_a_proj、kv_a_proj_with_mqa) を足し、W8A16 の weight_scale を持つ射影を _try_load_fp8_attn_proj の BF16 への読み替えに流さない。第 2b 段では、packed_modules_mapping に KDA のまとめた層 in_proj_qkvbfg_a (q_proj・k_proj・v_proj・b_proj・f_a_proj・g_a_proj) も足す (#79)"
+    },
+    {
+      "path": "vllm/models/glm5next/common/kda.py",
+      "patch": "patches/k2s2b/vllm/models/glm5next/common/kda.py.patch",
+      "source_sha256": "37745b45892cb26d9193160c4f446191f6cc276031fe8f7de5dbb37784cf8e8b",
+      "patched_sha256": "baffe1bb93a07a018f4b1ea63b3394881953e2f6113d37f46954d52570549eee",
+      "patch_sha256": "d8a9a12de4fcc948b84f74889efe8ebd393deab3fec8383abd601e7d74fa39d4",
+      "why": "KDA の quant_config を外す処理 (kda.py:188-194) を消し、o_proj・f_b_proj・g_b_proj とまとめた層 in_proj_qkvbfg_a に quant_config を渡す。複製の分割 (f_a・g_a) の重みと weight_scale は、tp_rank を 0 に固定する既存の weight_loader / weight_loader_v2 で読む (kimi_k3 の in_proj_qkvgfab と同じ) (#79)"
+    }
+  ]
+}

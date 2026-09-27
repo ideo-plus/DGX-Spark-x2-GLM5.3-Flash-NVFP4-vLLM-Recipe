@@ -129,18 +129,22 @@ Spark に配り、コンテナの中で `torchrun` で動かす 2 つのスク�
 
 ## serving-kit が配る、vLLM の直したファイルの写し (`serving/payload/vllm-overlay/`)
 
-ADR 0007 の第 2a 段 (#73)。固定した vLLM の Python のファイルに、このリポジトリのパッチを
-当てた写しを Spark に配り、イメージを作り直さずに、読み取り専用の bind mount でコンテナの中の
-同じファイルに重ねる。写しは上流のファイルの先頭の SPDX の表記 (Apache-2.0) をそのまま保つ。
+ADR 0007 の第 2a 段 (#73、`k2s2a`) と第 2b 段 (#79、`k2s2b`)。固定した vLLM の Python の
+ファイルに、このリポジトリのパッチを当てた写しを Spark に配り、イメージを作り直さずに、読み取り
+専用の bind mount でコンテナの中の同じファイルに重ねる。写しは上流のファイルの先頭の SPDX の
+表記 (Apache-2.0) をそのまま保つ。
 
 | 名前 | 出典 | commit | ライセンス | 用途 | 変更の有無 |
 |---|---|---|---|---|---|
 | `k2s2a/vllm/model_executor/layers/vocab_parallel_embedding.py` | https://github.com/vllm-project/vllm/blob/0961bbae2894d574be790d219651824eb199318e/vllm/model_executor/layers/vocab_parallel_embedding.py | `0961bbae2894d574be790d219651824eb199318e` | Apache-2.0 | FP8 (W8A16) の lm_head を humming の線形カーネルで読む | あり (`experiments/k2-vllm-overlay/patches/k2s2a/vllm/model_executor/layers/vocab_parallel_embedding.py.patch`) |
 | `k2s2a/vllm/models/glm5next/common/model.py` | https://github.com/vllm-project/vllm/blob/0961bbae2894d574be790d219651824eb199318e/vllm/models/glm5next/common/model.py | `0961bbae2894d574be790d219651824eb199318e` | Apache-2.0 | MLA の射影に量子化の設定を渡し、FP8 の重みと scale を読む | あり (`experiments/k2-vllm-overlay/patches/k2s2a/vllm/models/glm5next/common/model.py.patch`) |
 | `k2s2a/vllm/models/glm5next/common/kda.py` | https://github.com/vllm-project/vllm/blob/0961bbae2894d574be790d219651824eb199318e/vllm/models/glm5next/common/kda.py | `0961bbae2894d574be790d219651824eb199318e` | Apache-2.0 | KDA のまとめていない射影に量子化の設定を渡す | あり (`experiments/k2-vllm-overlay/patches/k2s2a/vllm/models/glm5next/common/kda.py.patch`) |
+| `k2s2b/vllm/model_executor/layers/vocab_parallel_embedding.py` | https://github.com/vllm-project/vllm/blob/0961bbae2894d574be790d219651824eb199318e/vllm/model_executor/layers/vocab_parallel_embedding.py | `0961bbae2894d574be790d219651824eb199318e` | Apache-2.0 | FP8 (W8A16) の lm_head を humming の線形カーネルで読む | あり (`experiments/k2-vllm-overlay/patches/k2s2b/vllm/model_executor/layers/vocab_parallel_embedding.py.patch`) |
+| `k2s2b/vllm/models/glm5next/common/model.py` | https://github.com/vllm-project/vllm/blob/0961bbae2894d574be790d219651824eb199318e/vllm/models/glm5next/common/model.py | `0961bbae2894d574be790d219651824eb199318e` | Apache-2.0 | MLA の射影に量子化の設定を渡し、FP8 の重みと scale を読む。packed_modules_mapping に KDA のまとめた層 in_proj_qkvbfg_a を足す | あり (`experiments/k2-vllm-overlay/patches/k2s2b/vllm/models/glm5next/common/model.py.patch`) |
+| `k2s2b/vllm/models/glm5next/common/kda.py` | https://github.com/vllm-project/vllm/blob/0961bbae2894d574be790d219651824eb199318e/vllm/models/glm5next/common/kda.py | `0961bbae2894d574be790d219651824eb199318e` | Apache-2.0 | KDA のまとめていない射影と、まとめた層 in_proj_qkvbfg_a に量子化の設定を渡す | あり (`experiments/k2-vllm-overlay/patches/k2s2b/vllm/models/glm5next/common/kda.py.patch`) |
 
 - 写しは「固定の commit のソース + パッチ」であり、パッチと 3 つの SHA-256 (ソース、写し、
-  パッチ) を `experiments/k2-vllm-overlay/k2s2a.json` に固定し、試験
+  パッチ) を `experiments/k2-vllm-overlay/<名前>.json` に固定し、試験
   (`serving/tests/unit/test_vllm_overlay.py`) で確かめる
 - 上流のソースと Issue だけを見て書いた。他のレシピのパッチは写していない (`PLAN.md` §2)
 - 上流へ返すときは、同じパッチをそのまま PR にする
