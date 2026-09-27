@@ -221,6 +221,19 @@ ssh -o BatchMode=yes -o ConnectTimeout=5 spark-153d 'sudo /usr/local/sbin/spark-
 ssh -o BatchMode=yes -o ConnectTimeout=5 spark-5083 'sudo /usr/local/sbin/spark-drop-caches'
 ```
 
+**root が要らない方法（2026-09-27 に実機で確かめた。こちらを先に使う）。** ページキャッシュを埋めているのは重みのファイルなので、自分が読めるファイルのキャッシュだけを、ふつうのユーザーのまま捨てられる（GNU coreutils の `dd` の `iflag=nocache` と `count=0`。`posix_fadvise` の `POSIX_FADV_DONTNEED`）。`serve verify` のあとにキャッシュが 110 GB 埋まった状態から、両台とも 1 秒未満で `MemFree` が 6〜7 GB から 116〜117 GB に戻り、そのまま `--load-format instanttensor` で起動できた（`k2s2b`＋重ね合わせ、N = 3。起動の開始から ready まで約 4 分 50 秒、重みの読み込み 35 秒）。root の固定のコマンドの設置は、この方法で足りない場合だけにする。
+
+⚠ 了承を得てから実行する。両台で、重みのファイルのページキャッシュだけを捨てる（読み取りの権限だけで行い、ファイルの中身は変えない）。
+
+```bash
+for node in spark-153d spark-5083; do
+  ssh -o BatchMode=yes -o ConnectTimeout=5 "$node" \
+    'find /home/j5ik2o/vllm-baseline/models -type f -exec dd if={} iflag=nocache count=0 status=none \; 2>/dev/null; grep -E "^(MemFree|Cached)" /proc/meminfo'
+done
+```
+
+読めないファイル（Hub の取得の `.cache` の中の一部）は飛ばされる。重みのファイル自体は読めるので、結果に影響はない。
+
 ⚠ 了承を得てから実行する。`serve start` は、2 台でコンテナを起こす。`serve smoke` は、短い要求を 1 つずつ送る (応答の本文は画面に出すだけで、どこにも残さない)。
 
 ```bash
