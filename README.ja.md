@@ -16,8 +16,8 @@
 | 重み | code/en | code/ja | prose/en | prose/ja |
 |---|---:|---:|---:|---:|
 | 元の NVFP4 の重み (MTP N=3) | 33.99 | 29.31 | 29.75 | 27.85 |
-| K2 第 2 段 FP8 (`k2s2b`) | 42.45 | 37.73 | 39.62 | 34.80 |
-| K2 第 3 段 NVFP4A16 (`k2s3`) | 48.00 | 40.62 | 42.30 | 38.26 |
+| ＋ 残っていた BF16 の重みを FP8 に (`k2s2b`) | 42.45 | 37.73 | 39.62 | 34.80 |
+| ＋ それらの重みを NVFP4 に (`k2s3`) | 48.00 | 40.62 | 42.30 | 38.26 |
 
 確認の段 (`fast`、出力 256 トークン) の `k2s3`・MTP N = 3 の値は **42.14 / 39.18 / 40.67 / 39.67**。コード・英語は、基準の 45 tok/s にまだ約 7% 届かない ([記録](docs/results/2026-09-28-k2-stage3.md))。
 
@@ -25,8 +25,8 @@
 
 これらは**少ないサンプル数の探りの値**であり、候補を素早く比べるためのもので、成功の判定には使わない。
 確認の段 (出力 256 トークン) の値と、最終の大量サンプルでの検証は [`docs/results/`](docs/results/)
-にある (例: [K2 第 2a 段](docs/results/2026-09-27-k2-stage2a.md)、
-[K2 第 2b 段](docs/results/2026-09-27-k2-stage2b.md))。成功の基準に対する判定そのものは、
+にある (例: [FP8、アテンションの一部まで](docs/results/2026-09-27-k2-stage2a.md)、
+[FP8、アテンションの射影すべて](docs/results/2026-09-27-k2-stage2b.md)、[NVFP4](docs/results/2026-09-28-k2-stage3.md))。成功の基準に対する判定そのものは、
 P0〜P7 をすべて終えたあと **P8** でまとめて行う。
 
 成功の基準 (表と根拠の全体は [`PLAN.md` §3](PLAN.md#3-成功の基準) を参照): 生成速度 (コード・英語)
@@ -44,7 +44,8 @@ P0〜P7 をすべて終えたあと **P8** でまとめて行う。
   デバイスとして見え、両方が使われる (all-reduce の busbw は実測で約 186.9 Gbps)。
 - **MTP の投機的デコード、N = 3** — モデル付属の multi-token-prediction ヘッド (MIT) であり、
   非商用の第三者のドラフターではない。
-- **K2**: vLLM がそのままでは量子化できなかった BF16 の重み (MLA・KDA のアテンションの射影、共有の
+- **残っていた BF16 の重みの量子化** (このリポジトリの中では「K2」と呼ぶ。[ADR 0006](docs/decisions/0006-path-pruning.md)
+  で残した 3 つの速くする道の 2 つ目で、ファイル形式の名前ではない): vLLM がそのままでは量子化できなかった BF16 の重み (MLA・KDA のアテンションの射影、共有の
   専門家、dense の MLP、`lm_head`) を、[`experiments/k2-quant`](experiments/k2-quant/README.md)
   (ゼロから書いた、CPU だけで動く、GPU もネットワークも使わない道具) で、手元で FP8 (第 2a・2b 段) に、
   続けて NVFP4A16 (重みだけ NVFP4、第 3 段) に変換する。
@@ -70,7 +71,7 @@ P0〜P7 をすべて終えたあと **P8** でまとめて行う。
 | `ops/spark-drop-caches/` | 速い起動の前に使う、ページキャッシュを捨てる道具 (root 不要) |
 | `docs/decisions/` | ADR。何を試し、何を測り、なぜ選んだか |
 | `docs/results/` | 公開する計測の要約 (生データはリポジトリに入れず `results/` に置く) |
-| `docs/vllm-baseline/` | 手順書 (基盤の立ち上げ、K2 の変換、上書きの立ち上げ) |
+| `docs/vllm-baseline/` | 手順書 (基盤の立ち上げ、重みの FP8・NVFP4 への変換、上書きの立ち上げ) |
 | `docs/research/`、`docs/rules/`、`docs/tasks/`、`docs/development/` | 調査のメモ、作業の決まり、タスクの記録、CI |
 | `scripts/` | `spark-precheck.sh` (読み取りだけの機材の確認) と TAKT のラッパー |
 | `results/` | 計測の生データ (`.gitignore` 対象。プロンプトと応答の本文はここだけに置き、リポジトリには入れない) |
@@ -93,7 +94,7 @@ P0〜P7 をすべて終えたあと **P8** でまとめて行う。
 6. `serve fetch` + `serve verify` + `serve start` — 重みの本体を取得・照合し、2 台で TP=2 を起こす。
 7. `serve smoke` / `serve watch` / `serve logs` / `serve stop` — 疎通を確かめ、負荷の下で見張り、
    記録を集め、後片付けする。
-8. K2 の派生の重みに固有の手順は、
+8. 手元で FP8・NVFP4 に変換した重みに固有の手順は、
    [`docs/vllm-baseline/k2-derived-weights-procedure.md`](docs/vllm-baseline/k2-derived-weights-procedure.md)
    と [`docs/vllm-baseline/k2-vllm-overlay-procedure.md`](docs/vllm-baseline/k2-vllm-overlay-procedure.md)
    を参照。

@@ -17,8 +17,8 @@ Single stream, decode tokens/sec, MTP N=3, same-day probe runs with 128-token ou
 | Weights | code/en | code/ja | prose/en | prose/ja |
 |---|---:|---:|---:|---:|
 | Original NVFP4 (MTP N=3) | 33.99 | 29.31 | 29.75 | 27.85 |
-| K2 stage 2 FP8 (`k2s2b`) | 42.45 | 37.73 | 39.62 | 34.80 |
-| K2 stage 3 NVFP4A16 (`k2s3`) | 48.00 | 40.62 | 42.30 | 38.26 |
+| + remaining BF16 weights quantized to FP8 (`k2s2b`) | 42.45 | 37.73 | 39.62 | 34.80 |
+| + those weights quantized to NVFP4 instead (`k2s3`) | 48.00 | 40.62 | 42.30 | 38.26 |
 
 Confirmation stage (`fast`, 256-token outputs), `k2s3` with MTP N=3: **42.14 / 39.18 / 40.67 / 39.67** — code/en is still about 7% short of the 45 tok/s criterion ([record](docs/results/2026-09-28-k2-stage3.md)).
 
@@ -26,8 +26,8 @@ Without speculative decoding, the original weights sit around **~14.0 tok/s**.
 
 These are **probe-level numbers from small samples**, meant to compare candidates quickly, not to
 judge success. Confirmation-stage (256-token) numbers and the final large-sample verification live
-in [`docs/results/`](docs/results/) (e.g. [k2 stage 2a](docs/results/2026-09-27-k2-stage2a.md),
-[k2 stage 2b](docs/results/2026-09-27-k2-stage2b.md)); the pass/fail judgment against the success
+in [`docs/results/`](docs/results/) (e.g. [FP8, attention partly](docs/results/2026-09-27-k2-stage2a.md),
+[FP8, all attention projections](docs/results/2026-09-27-k2-stage2b.md), [NVFP4](docs/results/2026-09-28-k2-stage3.md)); the pass/fail judgment against the success
 criteria itself is deferred to phase **P8**, run once at the end over all phases.
 
 Success criteria (see [`PLAN.md` §3](PLAN.md#3-成功の基準) for the full table and rationale):
@@ -45,7 +45,9 @@ conversations), and a 72-hour continuous run under `takt`-like load.
   uses as two RoCE devices (measured all-reduce busbw ~186.9 Gbps).
 - **MTP speculative decoding, N=3** — the model's own multi-token-prediction head (MIT-licensed),
   not a non-commercial third-party drafter.
-- **K2**: the BF16 weights vLLM couldn't quantize out of the box (attention projections in MLA and
+- **Quantizing the remaining BF16 weights** (called "K2" inside this repository — the second of the
+  three speed-up paths kept in [ADR 0006](docs/decisions/0006-path-pruning.md); it is not a file
+  format): the BF16 weights vLLM couldn't quantize out of the box (attention projections in MLA and
   KDA, shared experts, dense MLPs, `lm_head`) are converted locally to FP8 (stage 2a/2b) and then to
   NVFP4A16 (weight-only NVFP4, stage 3) with [`experiments/k2-quant`](experiments/k2-quant/README.md),
   a from-scratch, CPU-only, GPU/network-free tool.
@@ -71,7 +73,7 @@ conversations), and a 72-hour continuous run under `takt`-like load.
 | `ops/spark-drop-caches/` | Page-cache eviction helper (root not required) used before fast startup |
 | `docs/decisions/` | ADRs — what was tried, measured, and why it was chosen |
 | `docs/results/` | Published measurement summaries (raw data stays out of the repo, in `results/`) |
-| `docs/vllm-baseline/` | Step-by-step procedures (baseline bring-up, K2 conversion, overlay bring-up) |
+| `docs/vllm-baseline/` | Step-by-step procedures (baseline bring-up, converting weights to FP8/NVFP4, overlay bring-up) |
 | `docs/research/`, `docs/rules/`, `docs/tasks/`, `docs/development/` | Investigation notes, working rules, task tracking, CI |
 | `scripts/` | `spark-precheck.sh` (read-only hardware check) and TAKT wrapper scripts |
 | `results/` | Raw measurement data (git-ignored; prompts and responses live here, never in the repo) |
@@ -97,7 +99,7 @@ procedure.
    TP=2 across both nodes.
 7. `serve smoke` / `serve watch` / `serve logs` / `serve stop` — sanity-check, observe under load,
    collect logs, and tear down.
-8. For K2 derived weights specifically, see
+8. For the locally converted (FP8/NVFP4) weights specifically, see
    [`docs/vllm-baseline/k2-derived-weights-procedure.md`](docs/vllm-baseline/k2-derived-weights-procedure.md)
    and [`docs/vllm-baseline/k2-vllm-overlay-procedure.md`](docs/vllm-baseline/k2-vllm-overlay-procedure.md).
 9. To measure, use `bench` (see [`bench/README.md`](bench/README.md)): `probe` to compare
