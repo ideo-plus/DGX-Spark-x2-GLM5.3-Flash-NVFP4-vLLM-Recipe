@@ -114,6 +114,7 @@ REQUIRED_MARKERS: Final[tuple[str, ...]] = (
     "-m k2_quant",
     "--preset k2s2a",
     "--preset k2s2b",
+    "--preset k2s3",
     "payload/k2-quant",
     "serve push",
     "--network none",
@@ -1063,3 +1064,45 @@ def test_section_8_points_to_the_fix_for_the_page_cache_failure(marker: str) -> 
     """§8 の、ページキャッシュで `instanttensor` の起動が落ちた項目が、対策 (#84。関門
     `memory_free` と、`ops/spark-drop-caches/`) を指す。"""
     assert marker in _section_8(read_text(DOC_PATH))
+
+
+# --- 15. §9 第 3 段 (`--preset k2s3`)。対象は k2s2b と同じ、NVFP4A16 にする (#95) -----------------
+
+STAGE_3_MARKERS: Final[tuple[str, ...]] = (
+    "--preset k2s3",
+    "models/k2s3",
+    "--name k2s3",
+    "serving/weights/k2s3.manifest.json",
+    "tp2-full-k2s3.toml",
+    "p2-nope-tp2-full-k2s3",
+    "--vllm-overlay k2s2b",
+    "#95",
+)
+"""第 3 段の読み替えに必要な印 (変換の選び方、変換の置き場所、取り込みの名前、構成の名前と
+ファイル名、起動に要る重ね (k2s2b))。"""
+
+
+@pytest.mark.parametrize("marker", STAGE_3_MARKERS)
+def test_section_9_describes_the_stage_3_reading_of_the_procedure(marker: str) -> None:
+    """§9 に、第 3 段 (`k2s3`) の読み替えの印 (選び方、置き場所、取り込み、構成、重ね) がある。"""
+    assert marker in _section_9(read_text(DOC_PATH))
+
+
+def test_section_9_describes_the_stage_3_target_as_the_same_as_stage_2b_in_nvfp4a16() -> None:
+    """§9 は、`--preset k2s3` の対象が `k2s2b` と同じで、形式が NVFP4A16 であることを、
+    `--preset k2s3` を述べる段落のどれかに書く。
+
+    書き方は問わず、対象が同じであること (`k2s2b`) と、形式 (`NVFP4A16`) の両方が、その段落に
+    あることを見る。
+    """
+    paragraphs = re.split(r"\n\s*\n", _section_9(read_text(DOC_PATH)))
+
+    describing = [
+        paragraph
+        for paragraph in paragraphs
+        if "--preset k2s3" in paragraph and "k2s2b" in paragraph and "NVFP4A16" in paragraph
+    ]
+
+    assert describing, (
+        "`--preset k2s3` と、対象が k2s2b と同じであること、NVFP4A16 を同じ段落に書いた説明がない"
+    )

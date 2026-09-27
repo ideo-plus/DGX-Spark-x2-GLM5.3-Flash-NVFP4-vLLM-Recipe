@@ -1,8 +1,8 @@
 """変換の道具の入口。
 
 入力の重みのディレクトリ (safetensors の shard、`model.safetensors.index.json`、
-`config.json`) から、対象のテンソルを FP8 E4M3 (重みだけ、出力チャネルごとの対称スケール)
-にした新しいディレクトリを作る。CPU だけで動き、GPU とネットワークは使わない。
+`config.json`) から、対象のテンソルを FP8 E4M3 か NVFP4A16 (重みだけ NVFP4。Issue #95) に
+した新しいディレクトリを作る。CPU だけで動き、GPU とネットワークは使わない。
 """
 
 from __future__ import annotations
@@ -13,7 +13,7 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from k2_quant.convert import ConversionError, execute_plan, plan_conversion
-from k2_quant.presets import DEFAULT_PRESET, PRESET_NAMES
+from k2_quant.presets import DEFAULT_PRESET, FORMAT_NAMES, PRESET_NAMES
 from k2_quant.selection import DEFAULT_PATTERN
 
 
@@ -60,6 +60,8 @@ def _build_parser() -> argparse.ArgumentParser:
             "入力 config.json の text_config.layer_types から決め、無ければ何も書かずに終了 1)。\n"
             "k2s2b は k2s2a の対象 + KDA のまとめた層 (q・k・v・b・f_a・g_a。組を丸ごと選ぶ)。\n"
             "k2s2b の重みを vLLM で読むには、#79 の重ね合わせ (k2s2b) が前提。\n"
+            "k2s3 は k2s2b と同じ対象を NVFP4A16 (重みだけ NVFP4) にする (Issue #95。読むには\n"
+            "#79 の重ね合わせ k2s2b が前提で未確認)。\n"
             "--pattern と同時には使えない。manifest には、解決後の正規表現を --pattern として書く\n"
             f"(既定: {DEFAULT_PRESET})"
         ),
@@ -82,6 +84,17 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--format",
+        choices=FORMAT_NAMES,
+        default=None,
+        help=(
+            "数値形式。fp8 (既定) は FP8 E4M3 (重みだけ、出力チャネルごとの対称スケール)。\n"
+            "nvfp4a16 は NVFP4A16 (重みだけ NVFP4。Issue #95)。--pattern と組み合わせて選ぶ。\n"
+            "--preset とは同時に使えない (--preset は preset ごとの既定の形式を使う)。\n"
+            "manifest の args には、nvfp4a16 のときだけ --format を書く"
+        ),
+    )
+    parser.add_argument(
         "--link",
         action="store_true",
         help=(
@@ -93,10 +106,15 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    args = _build_parser().parse_args(argv)
+    parser = _build_parser()
+    args = parser.parse_args(argv)
+    if args.preset is not None and args.format is not None:
+        parser.error("argument --format: not allowed with argument --preset")
     try:
         preset = DEFAULT_PRESET if args.preset is None else args.preset
-        plan = plan_conversion(args.source, pattern=args.pattern, preset=preset)
+        plan = plan_conversion(
+            args.source, pattern=args.pattern, preset=preset, weight_format=args.format
+        )
         execute_plan(
             plan,
             args.output,

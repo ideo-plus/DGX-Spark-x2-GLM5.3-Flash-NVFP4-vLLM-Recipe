@@ -366,9 +366,10 @@ def test_stage2b_pattern_adds_only_the_kda_merged_projections_to_the_stage2a_sel
     assert len(stage_2b - stage_2a) == 34 * 6
 
 
-def test_the_preset_names_list_the_three_stages_in_order() -> None:
-    """`--preset` に渡せる名前は、第 1 段 `k2s1`、第 2a 段 `k2s2a`、第 2b 段 `k2s2b` の 3 つ。"""
-    assert presets.PRESET_NAMES == ("k2s1", "k2s2a", "k2s2b")
+def test_the_preset_names_list_the_four_stages_in_order() -> None:
+    """`--preset` に渡せる名前は、第 1 段 `k2s1`、第 2a 段 `k2s2a`、第 2b 段 `k2s2b`、
+    第 3 段 `k2s3` の 4 つ (C1)。"""
+    assert presets.PRESET_NAMES == ("k2s1", "k2s2a", "k2s2b", "k2s3")
 
 
 def test_stage2a_pattern_string_is_unchanged_by_adding_stage2b() -> None:
@@ -390,3 +391,46 @@ def test_stage2a_pattern_string_is_unchanged_by_adding_stage2b() -> None:
 
     assert presets.resolve_preset_pattern("k2s2a", config) == expected
     assert presets.stage2a_pattern(config) == expected
+
+
+# --- 第 3 段 (`k2s3`)。対象は `k2s2b` と同じ、形式だけ NVFP4A16 にする (Issue #95) ------------
+
+
+def test_stage3_pattern_is_identical_to_the_stage2b_pattern() -> None:
+    """第 3 段の選び方の文字列は、第 2b 段と 1 文字も違わない (対象は `k2s2b` と同じ) (C1)。"""
+    config = _config([synthetic.KDA_LAYER_TYPE] * 3 + [synthetic.MLA_LAYER_TYPE])
+
+    assert presets.stage3_pattern(config) == presets.stage2b_pattern(config)
+
+
+def test_resolve_preset_pattern_for_stage3_matches_stage2b_across_45_layers() -> None:
+    """`resolve_preset_pattern("k2s3", …)` は、実機と同じ 45 層の並びでも、`k2s2b` と同じ選び方に
+    なる (C1)。"""
+    layer_types = _layer_types_across_45_layers()
+    config = _config(layer_types)
+
+    assert presets.resolve_preset_pattern("k2s3", config) == presets.resolve_preset_pattern(
+        "k2s2b", config
+    )
+    selected = selection.select_modules(
+        _candidates_across_45_layers(layer_types), presets.resolve_preset_pattern("k2s3", config)
+    )
+    expected = selection.select_modules(
+        _candidates_across_45_layers(layer_types), presets.stage2b_pattern(config)
+    )
+    assert selected == expected
+
+
+def test_resolve_preset_format_maps_fp8_presets_and_k2s3_to_nvfp4a16() -> None:
+    """`resolve_preset_format` は、`k2s1`/`k2s2a`/`k2s2b` を `fp8`、`k2s3` を `nvfp4a16` にする
+    (C1)。"""
+    assert presets.resolve_preset_format("k2s1") == "fp8"
+    assert presets.resolve_preset_format("k2s2a") == "fp8"
+    assert presets.resolve_preset_format("k2s2b") == "fp8"
+    assert presets.resolve_preset_format("k2s3") == "nvfp4a16"
+
+
+def test_resolve_preset_format_rejects_an_unknown_preset_name() -> None:
+    """未知の preset 名は、形式を決めずに断る (C1)。"""
+    with pytest.raises(selection.SelectionError):
+        presets.resolve_preset_format("k2s9")

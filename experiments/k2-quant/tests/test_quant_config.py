@@ -223,3 +223,103 @@ def test_add_group_rejects_missing_quantization_config(tmp_path: Path) -> None:
 def test_add_group_constant_matches_contract() -> None:
     """`FP8_CHANNEL_WEIGHTS` は契約の weights 辞書そのもの (C3)。"""
     assert dict(quant_config.FP8_CHANNEL_WEIGHTS) == EXPECTED_WEIGHTS
+
+
+# --- 第 3 段 (`k2s3`): NVFP4A16 の group (`add_nvfp4a16_group`。Issue #95) ----------------------
+
+EXPECTED_NVFP4_WEIGHTS: dict[str, Any] = {
+    "actorder": None,
+    "block_structure": None,
+    "dynamic": False,
+    "group_size": 16,
+    "num_bits": 4,
+    "observer": "memoryless_minmax",
+    "observer_kwargs": {},
+    "scale_dtype": "torch.float8_e4m3fn",
+    "strategy": "tensor_group",
+    "symmetric": True,
+    "type": "float",
+    "zp_dtype": None,
+}
+"""元の重みの専門家の NVFP4 の group (`group_0`) の `weights` (2026-09-27 に HF の
+rev `18d55bfd…` の `config.json` から逐語で確認した値)。"""
+
+
+def test_add_nvfp4a16_group_matches_the_original_nvfp4_groups_format_and_weights(
+    tmp_path: Path,
+) -> None:
+    """新しい group の `format` と `weights` は、元の重みの NVFP4 の group (`group_0`) と
+    同じ形になる (C4)。
+    """
+    synthetic.build_checkpoint(tmp_path)
+    before = _config(tmp_path)
+    original_group_0 = before["quantization_config"]["config_groups"]["group_0"]
+
+    result = quant_config.add_nvfp4a16_group(before, modules=["lm_head"])
+
+    new_group = result["quantization_config"]["config_groups"]["group_2"]
+    assert new_group["format"] == original_group_0["format"]
+    assert new_group["weights"] == original_group_0["weights"]
+    assert new_group["format"] == "nvfp4-pack-quantized"
+
+
+def test_add_nvfp4a16_group_has_no_input_or_output_activations(tmp_path: Path) -> None:
+    """新しい group は重みだけの量子化なので、`input_activations`/`output_activations` は
+    null になる。元の専門家の group (`group_0`) は W4A4 (`input_activations` がある) だが、
+    NVFP4A16 は重みだけなので null にする (C4)。
+    """
+    synthetic.build_checkpoint(tmp_path)
+    before = _config(tmp_path)
+    group_0 = before["quantization_config"]["config_groups"]["group_0"]
+    assert group_0["input_activations"] is not None
+
+    result = quant_config.add_nvfp4a16_group(before, modules=["lm_head"])
+
+    new_group = result["quantization_config"]["config_groups"]["group_2"]
+    assert new_group["input_activations"] is None
+    assert new_group["output_activations"] is None
+
+
+def test_add_nvfp4a16_group_target_matches_only_the_runtime_names_of_the_given_modules(
+    tmp_path: Path,
+) -> None:
+    """`targets` は、渡したモジュールの実行時の名前にだけ当たる (FP8 と仕組みを共有する) (C4)。"""
+    synthetic.build_checkpoint(tmp_path)
+    before = _config(tmp_path)
+
+    result = quant_config.add_nvfp4a16_group(
+        before, modules=["model.language_model.layers.0.mlp.gate_proj"]
+    )
+
+    (target,) = result["quantization_config"]["config_groups"]["group_2"]["targets"]
+    assert _hits(target, "language_model.model.layers.0.mlp.gate_proj")
+    assert not _hits(target, "language_model.model.layers.0.mlp.up_proj")
+
+
+def test_add_nvfp4a16_group_removes_only_the_converted_names_from_ignore(tmp_path: Path) -> None:
+    """`ignore` からは、渡したモジュールの名前だけが消える (FP8 と同じ仕組みを共有する) (C4)。"""
+    synthetic.build_checkpoint(tmp_path)
+    before = _config(tmp_path)
+
+    result = quant_config.add_nvfp4a16_group(before, modules=["lm_head"])
+
+    ignore_before = before["quantization_config"]["ignore"]
+    ignore_after = result["quantization_config"]["ignore"]
+    assert "lm_head" not in ignore_after
+    assert ignore_after == [name for name in ignore_before if name != "lm_head"]
+
+
+def test_add_nvfp4a16_group_rejects_a_module_matching_an_existing_target(tmp_path: Path) -> None:
+    """既存 group の target に当たるモジュールは、書く前に断る (FP8 と同じ検証を共有する) (C4)。"""
+    synthetic.build_checkpoint(tmp_path)
+    before = _config(tmp_path)
+
+    with pytest.raises(quant_config.ConfigError):
+        quant_config.add_nvfp4a16_group(
+            before, modules=["model.language_model.layers.3.mlp.experts.0.gate_proj"]
+        )
+
+
+def test_nvfp4_tensor_group_weights_constant_matches_the_original_group_contract() -> None:
+    """`NVFP4_TENSOR_GROUP_WEIGHTS` は、元の重みの NVFP4 の group の `weights` そのもの (C4)。"""
+    assert dict(quant_config.NVFP4_TENSOR_GROUP_WEIGHTS) == EXPECTED_NVFP4_WEIGHTS

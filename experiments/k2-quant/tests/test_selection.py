@@ -362,6 +362,25 @@ def test_validate_fused_groups_accepts_a_selected_member_whose_partners_are_not_
     selection.validate_fused_groups([f"{parent}.{members[0]}"], tensors)
 
 
+def test_validate_fused_groups_rejection_message_names_the_group_and_the_missing_partner() -> None:
+    """組の一部だけを選ぶと、断る理由に組の名前 (`fused group gate_proj+up_proj is partially
+    selected`) と、選ばれていない相手の完全な名前が入る (SCN-U4-P2)。
+
+    `_partial_selections()` を使う既存の試験は、選ばれていない相手の名前が理由に入ることまでしか
+    確かめておらず、組の名前を示す文言 (`_fused_group_key` が返す組をそのまま `'+'.join` した形)
+    までは確かめていなかった (U4)。
+    """
+    parent = f"{LANGUAGE_MODEL}.layers.0.mlp"
+    tensors = _group_tensors(parent, MLP_FUSED_GROUP)
+
+    with pytest.raises(selection.SelectionError) as excinfo:
+        selection.validate_fused_groups([f"{parent}.gate_proj"], tensors)
+
+    message = str(excinfo.value)
+    assert "fused group gate_proj+up_proj is partially selected" in message
+    assert f"{parent}.up_proj" in message
+
+
 def test_validate_fused_groups_does_not_pair_a_member_with_a_partner_of_another_parent() -> None:
     """組は同じ親の下だけで数える。別の層の相手が checkpoint にあっても、この層に相手が無ければ
     通す (C3)。
@@ -372,3 +391,73 @@ def test_validate_fused_groups_does_not_pair_a_member_with_a_partner_of_another_
     }
 
     selection.validate_fused_groups([f"{LANGUAGE_MODEL}.layers.0.mlp.gate_proj"], tensors)
+
+
+# --- 第 3 段 (`k2s3`): 全体スケールを共有する組 (`scale_sharing_groups`。Issue #95) -------------
+
+
+@pytest.mark.parametrize(("parent", "members"), FUSED_GROUP_PARAMS)
+def test_scale_sharing_groups_groups_a_wholly_selected_fused_group_as_one(
+    parent: str, members: Sequence[str]
+) -> None:
+    """組の全員が選ばれていれば、1 つの組 (名前順) になる (C3)。"""
+    modules = [f"{parent}.{member}" for member in members]
+
+    groups = selection.scale_sharing_groups(modules)
+
+    assert tuple(sorted(modules)) in groups
+
+
+def test_scale_sharing_groups_returns_a_singleton_for_a_module_outside_any_fused_group() -> None:
+    """`FUSED_GROUPS` のどの組の名前にも当たらないモジュールは、1 要素の組になる (C3)。"""
+    standalone = f"{LANGUAGE_MODEL}.layers.0.mlp.down_proj"
+
+    groups = selection.scale_sharing_groups([standalone])
+
+    assert groups == ((standalone,),)
+
+
+def test_scale_sharing_groups_returns_a_singleton_when_the_partner_is_not_among_the_modules() -> (
+    None
+):
+    """組の相手が渡した集合に無ければ、単独の組になる (組の相手が checkpoint に無い場合と同じ形)
+    (C3)。
+    """
+    only_gate = f"{LANGUAGE_MODEL}.layers.0.mlp.gate_proj"
+
+    groups = selection.scale_sharing_groups([only_gate])
+
+    assert groups == ((only_gate,),)
+
+
+def test_scale_sharing_groups_does_not_merge_members_of_different_parents() -> None:
+    """組は同じ親の下だけで数える。別の層の同名の射影を、同じ組に数えない (C3)。"""
+    first = f"{LANGUAGE_MODEL}.layers.0.mlp.gate_proj"
+    second = f"{LANGUAGE_MODEL}.layers.1.mlp.up_proj"
+
+    groups = selection.scale_sharing_groups([first, second])
+
+    assert (first,) in groups
+    assert (second,) in groups
+    assert len(groups) == 2
+
+
+def test_scale_sharing_groups_orders_the_result_by_each_groups_first_member() -> None:
+    """外側の並びは、各組 (名前順にした中) の先頭の名前順になる (決定性) (C3)。"""
+    mlp = f"{LANGUAGE_MODEL}.layers.0.mlp"
+    attn_singleton = f"{LANGUAGE_MODEL}.layers.0.self_attn.q_b_proj"
+    modules = [f"{mlp}.up_proj", attn_singleton, f"{mlp}.gate_proj"]
+
+    groups = selection.scale_sharing_groups(modules)
+
+    assert groups == ((f"{mlp}.gate_proj", f"{mlp}.up_proj"), (attn_singleton,))
+
+
+def test_scale_sharing_groups_orders_members_within_a_group_by_name() -> None:
+    """組の中の並びは、渡した順によらず名前順になる (決定性) (C3)。"""
+    parent = f"{LANGUAGE_MODEL}.layers.0.self_attn"
+    shuffled = [f"{parent}.{member}" for member in reversed(KDA_FUSED_GROUP)]
+
+    groups = selection.scale_sharing_groups(shuffled)
+
+    assert groups == (tuple(sorted(shuffled)),)

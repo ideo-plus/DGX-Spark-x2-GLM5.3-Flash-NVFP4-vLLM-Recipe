@@ -114,6 +114,21 @@ def validate_targets(modules: Sequence[str], tensors: Mapping[str, TensorInfo]) 
             raise SelectionError(f"{module}: weight is not 2-dimensional: {weight.shape}")
 
 
+def _fused_group_key(module: str) -> tuple[str, tuple[str, ...]] | None:
+    """モジュール名が、まとめた層の組の一員なら `(親, 組)` を返す。一員でなければ `None`。
+
+    `validate_fused_groups` と `scale_sharing_groups` が使う (親, 組) の唯一の定義。
+    一部だけ選ばれた組を断る単位と、全体スケールを共有する単位を一致させるため。
+    組の名前は互いに重ならないので、当たる組は高々 1 つ。
+    """
+    for group in FUSED_GROUPS:
+        for member in group:
+            suffix = f".{member}"
+            if module.endswith(suffix):
+                return module[: -len(suffix)], group
+    return None
+
+
 def validate_fused_groups(modules: Sequence[str], tensors: Mapping[str, TensorInfo]) -> None:
     """まとめた層の組が、checkpoint に実在する分について、全員選ばれているかを確かめる。
 
@@ -123,20 +138,34 @@ def validate_fused_groups(modules: Sequence[str], tensors: Mapping[str, TensorIn
     """
     selected = set(modules)
     for module in modules:
-        for group in FUSED_GROUPS:
-            for member in group:
-                suffix = f".{member}"
-                if not module.endswith(suffix):
-                    continue
-                parent = module[: -len(suffix)]
-                present = {
-                    f"{parent}.{name}"
-                    for name in group
-                    if f"{parent}.{name}{WEIGHT_SUFFIX}" in tensors
-                }
-                missing = sorted(present - selected)
-                if missing:
-                    raise SelectionError(
-                        f"{parent}: fused group {'+'.join(group)} is partially selected; "
-                        f"missing {missing}"
-                    )
+        key = _fused_group_key(module)
+        if key is None:
+            continue
+        parent, group = key
+        present = {
+            f"{parent}.{name}" for name in group if f"{parent}.{name}{WEIGHT_SUFFIX}" in tensors
+        }
+        missing = sorted(present - selected)
+        if missing:
+            raise SelectionError(
+                f"{parent}: fused group {'+'.join(group)} is partially selected; missing {missing}"
+            )
+
+
+def scale_sharing_groups(modules: Sequence[str]) -> tuple[tuple[str, ...], ...]:
+    """全体スケールを共有する単位。組の定義は `FUSED_GROUPS` だけ (Issue #95)。
+
+    `validate_fused_groups` と同じ (親, 組) の求め方 (`_fused_group_key`) で、組の一員なら
+    (親, 組) ごとに `modules` の中で選ばれているメンバーを集める。どの組にも属さないモジュールは、
+    1 要素の組になる。外側の並びは各組の先頭の名前順、組の中も名前順 (決定性)。
+    """
+    grouped: dict[tuple[str, tuple[str, ...]], set[str]] = {}
+    singletons: list[tuple[str, ...]] = []
+    for module in modules:
+        key = _fused_group_key(module)
+        if key is None:
+            singletons.append((module,))
+        else:
+            grouped.setdefault(key, set()).add(module)
+    result = [tuple(sorted(members)) for members in grouped.values()] + singletons
+    return tuple(sorted(result, key=lambda group: group[0]))
