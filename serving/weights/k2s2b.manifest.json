@@ -1,0 +1,122 @@
+{
+  "derivation": {
+    "conversion": {
+      "args": [
+        "--source-repo",
+        "RedHatAI/GLM-5.3-Flash-NVFP4",
+        "--source-revision",
+        "18d55bfd5a2194887738da73753975c9d3842f46",
+        "--pattern",
+        ".*\\.layers\\.(?:0|1|2)\\.mlp\\.(?:gate|up|down)_proj$|.*\\.layers\\.\\d+\\.mlp\\.shared_experts\\.(?:gate|up|down)_proj$|.*\\.layers\\.(?:3|7|11|15|19|23|27|31|35|39|43)\\.self_attn\\.(?:q_a_proj|kv_a_proj_with_mqa|q_b_proj|o_proj)$|.*\\.layers\\.(?:0|1|2|4|5|6|8|9|10|12|13|14|16|17|18|20|21|22|24|25|26|28|29|30|32|33|34|36|37|38|40|41|42|44)\\.self_attn\\.(?:o_proj|f_b_proj|g_b_proj|q_proj|k_proj|v_proj|b_proj|f_a_proj|g_a_proj)$|(?:.*\\.)?lm_head$"
+      ],
+      "commit": "cc0d703740529c26a8e5b21cd9f975c6412daf95",
+      "target_pattern": ".*\\.layers\\.(?:0|1|2)\\.mlp\\.(?:gate|up|down)_proj$|.*\\.layers\\.\\d+\\.mlp\\.shared_experts\\.(?:gate|up|down)_proj$|.*\\.layers\\.(?:3|7|11|15|19|23|27|31|35|39|43)\\.self_attn\\.(?:q_a_proj|kv_a_proj_with_mqa|q_b_proj|o_proj)$|.*\\.layers\\.(?:0|1|2|4|5|6|8|9|10|12|13|14|16|17|18|20|21|22|24|25|26|28|29|30|32|33|34|36|37|38|40|41|42|44)\\.self_attn\\.(?:o_proj|f_b_proj|g_b_proj|q_proj|k_proj|v_proj|b_proj|f_a_proj|g_a_proj)$|(?:.*\\.)?lm_head$",
+      "tool": "experiments/k2-quant"
+    },
+    "name": "k2s2b",
+    "origin": {
+      "repo": "RedHatAI/GLM-5.3-Flash-NVFP4",
+      "revision": "18d55bfd5a2194887738da73753975c9d3842f46"
+    }
+  },
+  "files": [
+    {
+      "path": "chat_template.jinja",
+      "sha256": "0c4099f3382d6c92700dfb99725025360966fd73032f0ecf32377c0d9e6309c5",
+      "size": 10950
+    },
+    {
+      "path": "config.json",
+      "sha256": "95293af99a3c6750baceaafb4e962846e72351dd6993a06f2c2ecd0d17de75c3",
+      "size": 46997
+    },
+    {
+      "path": "generation_config.json",
+      "sha256": "e9e93ee323895fa5e8e160f1f9826fd98b6bd7b3935435f423c3554f88bfa3ac",
+      "size": 177
+    },
+    {
+      "path": "model-00001-of-00010.safetensors",
+      "sha256": "896d3c32c78390b45c0db92d4225b245d83a3ca5e4091527082b49a626431004",
+      "size": 18549628760
+    },
+    {
+      "path": "model-00002-of-00010.safetensors",
+      "sha256": "b6954aca9c190c7f774f30a1a508f2ad452972aa1c221936f929e144fdcfceb5",
+      "size": 19263671676
+    },
+    {
+      "path": "model-00003-of-00010.safetensors",
+      "sha256": "e0e232061b8e20ee60acb36f4ab2453a3259e6ae6bb33a7d3e90a00836f40918",
+      "size": 19387301712
+    },
+    {
+      "path": "model-00004-of-00010.safetensors",
+      "sha256": "cbc707ec6cdd33d79bde13d3c75d7e52bcb8bc3a9a49686f6df7de1b98b1375d",
+      "size": 19224335676
+    },
+    {
+      "path": "model-00005-of-00010.safetensors",
+      "sha256": "1389a9908cb00116240734de5f092c81196a7bbc524a8ce110f78616a75f9f61",
+      "size": 19387303024
+    },
+    {
+      "path": "model-00006-of-00010.safetensors",
+      "sha256": "0a580f1d62212ae3dd4c7b481e67a0c7465999559bdbbbeac125e995d5fcd232",
+      "size": 19224336348
+    },
+    {
+      "path": "model-00007-of-00010.safetensors",
+      "sha256": "184dfe6d50b169eca86103ba4ca3e425420ae8af9107ba9cad808bcee4330ba2",
+      "size": 19387300872
+    },
+    {
+      "path": "model-00008-of-00010.safetensors",
+      "sha256": "a9ae5bbc4c3bc7edf0d7d3bc06a09bd90044c932ba20c12ce897d58655065df9",
+      "size": 19224333740
+    },
+    {
+      "path": "model-00009-of-00010.safetensors",
+      "sha256": "46cf720b626944c252c8ab8886774ed9d155cd8e4ba0b719d916a3abe38454de",
+      "size": 19387302032
+    },
+    {
+      "path": "model-00010-of-00010.safetensors",
+      "sha256": "be3a72cbe98dc8c4b019a3fd71014e2aaa749947a90f32a4bc67b45aee089a69",
+      "size": 9268487532
+    },
+    {
+      "path": "model.safetensors.index.json",
+      "sha256": "870db0c1046e642ee04b13a03980b511d0b65a035781d6eaab0520564558404d",
+      "size": 17108249
+    },
+    {
+      "path": "model_mtp.safetensors",
+      "sha256": "3fb6eab693c79e58eb824585a05b17ad602266790e883d774d6179f82270aedf",
+      "size": 7593427760
+    },
+    {
+      "path": "processor_config.json",
+      "sha256": "aae38374c94b08cc9b0547c6e64f05b951bd9735cea571c6988f5ed552bed3ed",
+      "size": 909
+    },
+    {
+      "path": "recipe.yaml",
+      "sha256": "c90bdcc6cd502c44af68ed4017740fe448d213f537a1a9509dc6437b9833c673",
+      "size": 1200
+    },
+    {
+      "path": "tokenizer.json",
+      "sha256": "0cfe2c099a7702a0921abc315ee039deb51e4a34b4818fc509bd27fa3dc4acc1",
+      "size": 20217541
+    },
+    {
+      "path": "tokenizer_config.json",
+      "sha256": "77af7d4769cd62c107b90495cac9b0ba81573c86486821bfba2980c04285ec7a",
+      "size": 790
+    }
+  ],
+  "generated_at": "2026-09-27T02:20:12.118819Z",
+  "kind": "derived",
+  "total_bytes": 189934815945
+}
