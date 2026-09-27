@@ -1,12 +1,13 @@
-# k2-quant: 選んだモジュールを FP8 (重みだけ、チャネルごと) にする変換の道具 (K2 の第 1 段・第 2a 段)
+# k2-quant: 選んだモジュールを FP8 (重みだけ、チャネルごと) にする変換の道具 (K2 の第 1 段・第 2a 段・第 2b 段)
 
 K2 の第 1 段 (Issue #56)。vLLM を直さずに量子化できる部分 (共有の専門家・dense) を、FP8 E4M3 の重みと、
 出力チャネルごとの対称スケールに変換する。この段の目的は、「変換 → vLLM で読み込み → Marlin FP8 で読む」の
 流れを確かめること。見込みの短縮は、投機なしで約 6 ms (推定。Issue の記載)。
 
 第 2a 段 (Issue #74、`docs/decisions/0007-k2-stage2.md`) は、同じ道具に `--preset k2s2a` を足して、MLA の射影、
-KDA のまとめていない射影、`lm_head` も選べるようにしたもの (下の「第 2a 段 (`--preset k2s2a`)」)。既定
-(`--preset` を渡さない、または `--preset k2s1`) は、第 1 段のままである。
+KDA のまとめていない射影、`lm_head` も選べるようにしたもの (下の「第 2a 段 (`--preset k2s2a`)」)。第 2b 段
+(Issue #79) の `--preset k2s2b` は、それに KDA のまとめた層の 6 射影を足したもの (下の「第 2b 段
+(`--preset k2s2b`)」)。既定 (`--preset` を渡さない、または `--preset k2s1`) は、第 1 段のままである。
 
 この道具は、CPU だけで動く。GPU もネットワークも使わない。実機での実行と、vLLM での読み込みは対話側が行う
 (この README を書いた時点では、どちらも未確認)。
@@ -52,7 +53,7 @@ KDA のまとめていない射影、`lm_head` も選べるようにしたもの
   (`compressed-tensors`、量子化の対象は experts だけ) には当たらない) は、既定の変換では前提が変わらない
   (`shared_head.head` を変換しない)。`--pattern` で足したときだけ、前提が変わる。
 - KDA と MLA の射影: vLLM の側で BF16 に固定されている。既定 (第 1 段) では触らない。第 2a 段
-  (`--preset k2s2a`。下の節) で、一部だけを選べる。
+  (`--preset k2s2a`。下の節) で、一部だけを選べる。第 2b 段 (`--preset k2s2b`) で、KDA のまとめた層も選べる。
 
 ### 第 2a 段 (`--preset k2s2a`)
 
@@ -73,7 +74,7 @@ KDA のまとめていない射影、`lm_head` も選べるようにしたもの
   当たる分岐を作る)。
 - `text_config.layer_types` が無い、空、最上位にしか無い、知らない種類を含む、のいずれかなら、層を推測せず、
   何も書かずに終了 1 で止まる (「全部 KDA」などへは倒さない)。
-- 選ばない: KDA のまとめた層 (q・k・v・b・f_a・g_a。vLLM の `in_proj_qkvbfg_a`。第 2b 段の対象)、MLA の
+- 選ばない: KDA のまとめた層 (q・k・v・b・f_a・g_a。vLLM の `in_proj_qkvbfg_a`。第 2b 段 `--preset k2s2b` の対象)、MLA の
   `kv_b_proj` と indexer (`indexer.wq_b`)、`layer_types` に載らない層 (MTP の層 45) の attention、専門家、
   `eh_proj`、`shared_head.head`。`layer_types` は本体の層だけの並びなので、MTP の attention は選ばれない
   (MTP の attention の量子化の扱いは未確認。調査と ADR は MLA を「11 層」と数え、MTP を含めていない)。
@@ -84,6 +85,33 @@ KDA のまとめていない射影、`lm_head` も選べるようにしたもの
 
 ```bash
 uv run --directory experiments/k2-quant python -m k2_quant --preset k2s2a \
+  --source <入力の重み> --output <出力> \
+  --source-repo RedHatAI/GLM-5.3-Flash-NVFP4 --source-revision 18d55bfd5a2194887738da73753975c9d3842f46
+```
+
+### 第 2b 段 (`--preset k2s2b`)
+
+`--preset k2s2b` は、`--preset k2s2a` の対象に、KDA の層のまとめた層 (vLLM の `in_proj_qkvbfg_a`) の 6 射影を
+足して選ぶ (Issue #79、ADR 0007 の第 2b 段)。`--pattern` とは同時に使えない。
+
+| 対象 | 名前 |
+|---|---|
+| 第 2a 段の対象 | 上の表 (第 1 段の既定の対象、MLA の層の射影、KDA の層のまとめていない射影、`lm_head`) |
+| KDA の層のまとめた層 | `layers.N.self_attn.{q_proj,k_proj,v_proj,b_proj,f_a_proj,g_a_proj}` |
+
+- KDA の層は、第 2a 段と同じく `text_config.layer_types` の `linear_attention` の層で決める。並びが無ければ、
+  何も書かずに終了 1 で止まる。
+- 6 射影は組を丸ごと選ぶ (下の「まとめた層の整合の検査」を通る)。`q_proj` は MLA の `q_a_proj`・`q_b_proj`
+  や MLA の層の同じ字面の名前には当たらない。
+- 選ばない: MLA の `kv_b_proj` と indexer (`indexer.wq_b`)、`layer_types` に載らない層 (MTP の層 45) の
+  attention、専門家、`eh_proj`、`shared_head.head` (第 2a 段と同じ)。
+- `ignore` からは、変換した名前 (テンソル名の形の `self_attn.q_proj` など) を外す。`self_attn.forget_gate.f_a_proj`
+  の形の名前は、第 2a 段の `f_b_proj` と同じく、変換後も `ignore` に残る (#76)。
+- 変換の結果を vLLM で読み込むには、#79 の vLLM の修正 (重ね合わせ `k2s2b`。
+  `experiments/k2-vllm-overlay/`) が前提。この README では、読めることを確かめていない (未確認)。
+
+```bash
+uv run --directory experiments/k2-quant python -m k2_quant --preset k2s2b \
   --source <入力の重み> --output <出力> \
   --source-repo RedHatAI/GLM-5.3-Flash-NVFP4 --source-revision 18d55bfd5a2194887738da73753975c9d3842f46
 ```
@@ -105,7 +133,8 @@ vLLM で 1 つの線形層にまとまる組は、組の一部だけが FP8 に�
 - 組は同じ親 (`layers.N.self_attn`、`layers.N.mlp` など) の下だけで数える。相手の `.weight` が checkpoint に
   無ければ通す (混ざらないので)。
 - `--pattern` で選ぶときも同じ。たとえば `q_a_proj` を選ぶなら、`kv_a_proj_with_mqa` も選ぶ。
-  `--preset k2s2a` は、組の全員か、組のどれも選ばない形にしてある。
+  `--preset k2s2a` と `--preset k2s2b` は、組の全員か、組のどれも選ばない形にしてある (`k2s2b` は KDA の組を
+  丸ごと選ぶ)。
 
 ### `--pattern` の書き方
 
@@ -286,8 +315,8 @@ docker run --rm --network none \
 - 2 台それぞれで同じコマンドを流すと、同じ `manifest.json` (バイト単位で同じ) ができる。それを Mac に
   写して `serve derived-import` に渡す (手順書 §2)。
 - 第 2a 段は、上のコマンドの `-m k2_quant` の引数に `--preset k2s2a` を足し、置き場所を別の名前にする
-  (手順書の「第 2a 段」の節)。2 台の manifest が一致する条件は、第 1 段と同じ (入力が同じなら、
-  `layer_types` から解決した正規表現も同じ)。
+  (手順書の「第 2a 段」の節)。第 2b 段は `--preset k2s2b` にする (同じ節の「第 2b 段」の段落)。2 台の
+  manifest が一致する条件は、第 1 段と同じ (入力が同じなら、`layer_types` から解決した正規表現も同じ)。
 
 ### メモリ・ディスク・所要時間の目安
 
@@ -351,3 +380,9 @@ docker run --rm --network none \
     `forget_gate.` 付きの名前の扱い、まとめた層の対応 (`packed_modules_mapping`) が、組を覆うか。
     これは #73 の範囲。道具は、既存のとおり checkpoint の名前の末尾から target を作る。
   - 変換した重みを vLLM (#73 の修正を当てたもの) が読み込めるか、精度と速度への影響。
+- 第 2b 段 (`--preset k2s2b`):
+  - 実機の KDA のまとめた層の 6 射影に、`.weight` 以外のパラメータがあるか (あれば終了 1)。
+  - 変換後の `ignore` に残る `self_attn.forget_gate.f_a_proj` と、変換した 6 射影の名前 (テンソル名の形) の
+    組み合わせで、vLLM (#79 の修正を当てたもの) の scheme の引き当てが 6 つの分割を同じ scheme にするか
+    (違えば `Found different quantization schemes` で起動が落ちる)。
+  - 変換した重みを vLLM (#79 の修正を当てたもの) が読み込めるか、精度と速度への影響。

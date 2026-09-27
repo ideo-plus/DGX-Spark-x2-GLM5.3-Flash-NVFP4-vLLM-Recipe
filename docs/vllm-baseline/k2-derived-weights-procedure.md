@@ -307,3 +307,12 @@ ssh spark-5083 docker run --rm --network none \
 - 2a の射影に、`.weight` 以外のパラメータ (`.bias` など) があるか。あれば、道具は `unexpected parameter` で終了 1 になります。
 - 変換した名前の数 (`converted modules: N`)。所要時間。Spark の `models/` の空き (`--link` を使えないので、`models/k2s1` などとは別に、変換の結果のぶんが要ります。大きさは未確認)。
 - #73 の修正を当てた vLLM が、この重みを読み込めるか。FP8 にした層が、期待した層だけか。精度と速度への影響。
+
+**第 2b 段 (`k2s2b`。Issue #79):** 同じ道具に `--preset k2s2b` を付けると、第 2a 段の対象に、KDA の層のまとめた層 (vLLM の `in_proj_qkvbfg_a`) の 6 射影 `self_attn.q_proj`・`k_proj`・`v_proj`・`b_proj`・`f_a_proj`・`g_a_proj` を足して FP8 にします。6 つは組を丸ごと選びます (一部だけの選び方は、上のとおり道具が終了 1 で断ります)。MLA の `kv_b_proj` と indexer は、この段でも対象にしません。手順は、上の第 2a 段の読み替えの `k2s2a` を `k2s2b` にしたものです。
+
+- **§1 (変換)**: 置き場所を `/home/j5ik2o/vllm-baseline/models/k2s2b` (構成の中では `{remote_root}/models/k2s2b`) にし、`-m k2_quant` の引数を `--preset k2s2b` にします。上のコード塊の `k2s2a` (置き場所の 4 か所 (`mkdir` の 2 行と `--mount` の 2 行) と、`--preset` の 2 か所) を、すべて `k2s2b` に読み替えます。
+- **§2 (取り込み)**: `--name k2s2b`、写す先は `serving/var/k2s2b/`、コミットする派生のマニフェストは `serving/weights/k2s2b.manifest.json` です。
+- **§3 (構成の生成)**: `--weights k2s2b` を付け、出力は `tp2-full-k2s2b.toml` にそろえます。構成の名前は `p2-nope-tp2-full-k2s2b` になります。
+- **§4〜§7**: 構成の名前を `p2-nope-tp2-full-k2s2b`、`--configs` を `tp2-full-k2s2b.toml` にします。照合の記録は `state/k2s2b.derived.verified.json` です。
+
+**この重みを vLLM で読むには、#79 の vLLM の修正 (重ね合わせ `k2s2b`) が前提です。** 起動は、`--weights k2s2b --vllm-overlay k2s2b` で生成した構成でだけ行います ([重ねて起こす手順書](k2-vllm-overlay-procedure.md) の §9)。第 2a 段の重ね (`--vllm-overlay k2s2a`) は、まとめた層を BF16 のまま作るので、この重みを読めません。

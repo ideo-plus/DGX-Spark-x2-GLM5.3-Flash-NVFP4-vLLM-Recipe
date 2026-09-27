@@ -40,6 +40,8 @@
 12. §8 (実機でしか分からないこと) が、2026-09-26 に分かったこと (変換の所要時間と 2 台の一致、
     ページキャッシュで `--load-format instanttensor` の起動が落ち、`auto` なら読めること) を、
     既存の項目を残したまま述べる
+13. §9 が、第 2b 段 (`--preset k2s2b`。#79) の読み替え (足す KDA のまとめた層の 6 射影、置き場所、
+    取り込みの名前とマニフェスト、構成の名前とファイル名、起動に要る #79 の重ね) を述べる
 
 RED: 文書がなければ、`read_text` で `pytest.fail` する。道具の写しや `derived-import` が
 まだなければ、その理由を示して落とす。
@@ -107,6 +109,7 @@ REQUIRED_MARKERS: Final[tuple[str, ...]] = (
     "serve derived-import",
     "-m k2_quant",
     "--preset k2s2a",
+    "--preset k2s2b",
     "payload/k2-quant",
     "serve push",
     "--network none",
@@ -929,3 +932,60 @@ def test_section_8_records_what_was_learned_on_2026_09_26(marker: str) -> None:
 def test_section_8_keeps_the_existing_open_questions(marker: str) -> None:
     """§8 の既存の項目 (`numpy`、空き、起動の時間と GPU のメモリ、匿名) を、消していない。"""
     assert marker in _section_8(read_text(DOC_PATH))
+
+
+# --- 13. §9 第 2b 段 (`--preset k2s2b`) の読み替え (#79) ------------------------------
+
+STAGE_2B_MARKERS: Final[tuple[str, ...]] = (
+    "--preset k2s2b",
+    "models/k2s2b",
+    "--name k2s2b",
+    "serving/weights/k2s2b.manifest.json",
+    "tp2-full-k2s2b.toml",
+    "p2-nope-tp2-full-k2s2b",
+    "--vllm-overlay k2s2b",
+    "#79",
+)
+"""第 2b 段の読み替えに必要な印 (変換の選び方、変換の置き場所、取り込みの名前、構成の名前と
+ファイル名、起動に要る重ね)。"""
+
+
+def _section_9(text: str) -> str:
+    """`## 9.` の見出しから、次の `## ` の見出し (なければ末尾) の手前まで (コード塊の中は除く)。"""
+    lines = text.splitlines()
+    inside = lines_inside(code_blocks(text))
+    headings = [
+        number
+        for number, line in enumerate(lines, start=1)
+        if number not in inside and line.startswith("## ")
+    ]
+    begin = next((number for number in headings if lines[number - 1].startswith("## 9.")), None)
+    assert begin is not None, f"`## 9.` の見出しがない: {DOC_PATH}"
+    end = next((number for number in headings if number > begin), len(lines) + 1)
+    return "\n".join(lines[begin - 1 : end - 1])
+
+
+@pytest.mark.parametrize("marker", STAGE_2B_MARKERS)
+def test_section_9_describes_the_stage_2b_reading_of_the_procedure(marker: str) -> None:
+    """§9 に、第 2b 段 (`k2s2b`) の読み替えの印 (選び方、置き場所、取り込み、構成、重ね) がある。"""
+    assert marker in _section_9(read_text(DOC_PATH))
+
+
+def test_section_9_names_the_kda_merged_projections_that_the_stage_2b_preset_adds() -> None:
+    """§9 は、`--preset k2s2b` が第 2a 段の対象に足す、KDA のまとめた層の射影
+    (q・k・v・b・f_a・g_a) を、`--preset k2s2b` を述べる段落のどれかに書く。
+
+    書き方 (`q・k・v・b・f_a・g_a` でも `q_proj`〜`g_a_proj` でも) は問わず、まとめた層の中で
+    第 2a 段のとき変換しなかった `f_a` と `g_a` の両方が、その段落にあることを見る。
+    """
+    paragraphs = re.split(r"\n\s*\n", _section_9(read_text(DOC_PATH)))
+
+    describing = [
+        paragraph
+        for paragraph in paragraphs
+        if "--preset k2s2b" in paragraph and "f_a" in paragraph and "g_a" in paragraph
+    ]
+
+    assert describing, (
+        "`--preset k2s2b` と、まとめた層の射影 (f_a・g_a) を同じ段落に書いた説明がない"
+    )

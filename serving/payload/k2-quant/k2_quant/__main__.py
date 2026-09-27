@@ -58,6 +58,8 @@ def _build_parser() -> argparse.ArgumentParser:
             "対象の選び方の名前。k2s1 は第 1 段の既定 (下の --pattern の既定と同じ)。k2s2a は\n"
             "第 1 段の対象 + MLA の射影 + KDA のまとめていない射影 + lm_head (MLA と KDA の層は\n"
             "入力 config.json の text_config.layer_types から決め、無ければ何も書かずに終了 1)。\n"
+            "k2s2b は k2s2a の対象 + KDA のまとめた層 (q・k・v・b・f_a・g_a。組を丸ごと選ぶ)。\n"
+            "k2s2b の重みを vLLM で読むには、#79 の重ね合わせ (k2s2b) が前提。\n"
             "--pattern と同時には使えない。manifest には、解決後の正規表現を --pattern として書く\n"
             f"(既定: {DEFAULT_PRESET})"
         ),
