@@ -1,0 +1,252 @@
+{
+  "schema_version": 1,
+  "conditions": {
+    "schema_version": 1,
+    "run_id": "20260927T153200Z-p2-nope-tp2-mtp3-tmybtc",
+    "status": "completed",
+    "target": {
+      "name": "p2-nope-tp2-mtp3",
+      "base_url": "http://10.0.1.60:8000/",
+      "model": "glm-5-3-flash",
+      "notes": "MTP を下書き 3 トークンで有効にした full と同じ構成の計測 (起動側の構成名も p2-nope-tp2-mtp3)。実機では未確認",
+      "api_key_env": null,
+      "metrics_url": null,
+      "max_context_tokens": 163840,
+      "metric_map": {},
+      "tool_markup_markers": [
+        "<tool_call>",
+        "</tool_call>",
+        "<arg_key>",
+        "<arg_value>"
+      ]
+    },
+    "server_model": "glm-5-3-flash",
+    "server_version": "0.1.dev1+g0961bbae2.d20260922",
+    "started_at": "2026-09-27T15:32:00.384031Z",
+    "finished_at": "2026-09-27T15:33:18.992559Z",
+    "suites": [
+      "quality"
+    ],
+    "profile_name": "probe",
+    "profile": {
+      "name": "probe",
+      "seed": 0,
+      "sampling": {
+        "temperature": 0.0,
+        "top_p": null,
+        "top_k": null,
+        "thinking": "server_default"
+      },
+      "chars_per_token": {
+        "prose_en": 4.831,
+        "prose_ja": 1.794,
+        "code": 3.505,
+        "log": 2.316
+      },
+      "timeout": {
+        "connect_s": 10.0,
+        "first_event_s": 120.0,
+        "idle_s": 60.0,
+        "total_s": 900.0
+      },
+      "min_successes": 5,
+      "max_consecutive_failures": 5,
+      "length_tolerance": 0.05,
+      "compare_tolerance": 0.02,
+      "metrics_interval_s": 1.0,
+      "output_sanity": {
+        "repeat_min_chars": 12,
+        "repeat_min_count": 8
+      },
+      "sandbox": {
+        "runtime": "auto",
+        "image": "bench-sandbox:py3.13-numpy2.5.3",
+        "image_digest": "sha256:f75a1d43009306248ecbe68c0cc992b700a472037ba6ea336e519404ec1d1de6",
+        "timeout_s": 20.0,
+        "memory_mb": 512,
+        "cpus": 1.0,
+        "pids_limit": 64
+      },
+      "decode": {
+        "trials": 10,
+        "warmup_trials": 1,
+        "max_tokens": 128
+      },
+      "prefill": {
+        "trials": 5,
+        "warmup_trials": 1,
+        "max_tokens": 16,
+        "target_input_tokens": [
+          8000,
+          32000,
+          128000
+        ]
+      },
+      "concurrency": {
+        "levels": [
+          1,
+          2,
+          4,
+          8
+        ],
+        "rounds": 5,
+        "max_tokens": 256,
+        "input_tokens": 2000
+      },
+      "quality": {
+        "toolcall_tasks": 5,
+        "needle_lengths": [
+          8000
+        ],
+        "needle_depths": [
+          50
+        ],
+        "trials_per_cell": 1,
+        "code_max_tokens": 1024,
+        "code_problem_limit": 1
+      },
+      "agent": {
+        "start_tokens": 20000,
+        "end_tokens": 120000,
+        "step_tokens": 20000,
+        "trials_per_stage": 50,
+        "conversations_per_stage": 5,
+        "threshold": 0.01,
+        "max_tokens": 256
+      }
+    },
+    "harness_version": "0.1.0+g90b8a710.dirty",
+    "generator_version": 1,
+    "context_limit": 163840,
+    "warnings": [],
+    "skipped": [],
+    "datasets": [
+      {
+        "name": "HumanEval+",
+        "version": "v0.1.10",
+        "source_url": "https://github.com/evalplus/humanevalplus_release/releases/download/v0.1.10/HumanEvalPlus-OriginFmt.jsonl.gz",
+        "license": "Apache-2.0 (EvalPlus)、MIT (OpenAI HumanEval)",
+        "scoring_method": "応答から取り出したコードに、課題の `test` (`check(candidate)` の定義) と `check(<entry_point>)` の呼び出しを続けて、隔離したコンテナの中で動かす。例外なく終われば正解。正解の割合を、問題の数とともに示す (5.2、5.4)",
+        "sha256": "daa7661c8189924068069b0872a440b491edb60f8bdf431d5957adc88d18bae5"
+      }
+    ]
+  },
+  "incomplete": false,
+  "results": [
+    {
+      "condition": "quality/toolcall",
+      "metric": "accuracy",
+      "tier": "primary",
+      "continuous": null,
+      "proportion": {
+        "numerator": 5,
+        "denominator": 5,
+        "rate": 1.0,
+        "ci95_low": 0.4781762498950185,
+        "ci95_high": 1.0,
+        "upper95_one_sided": 1.0
+      },
+      "failures": 0,
+      "flags": [],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0,
+        "not_scored": 0
+      }
+    },
+    {
+      "condition": "quality/code/humaneval+",
+      "metric": "accuracy",
+      "tier": "primary",
+      "continuous": null,
+      "proportion": {
+        "numerator": 0,
+        "denominator": 1,
+        "rate": 0.0,
+        "ci95_low": 0.0,
+        "ci95_high": 0.975,
+        "upper95_one_sided": 0.95
+      },
+      "failures": 0,
+      "flags": [],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0,
+        "not_scored": 0
+      }
+    },
+    {
+      "condition": "quality/needle/8k/d50",
+      "metric": "accuracy",
+      "tier": "primary",
+      "continuous": null,
+      "proportion": {
+        "numerator": 1,
+        "denominator": 1,
+        "rate": 1.0,
+        "ci95_low": 0.025,
+        "ci95_high": 1.0,
+        "upper95_one_sided": 1.0
+      },
+      "failures": 0,
+      "flags": [],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0,
+        "not_scored": 0
+      }
+    }
+  ],
+  "agent": null,
+  "server_metrics": {
+    "quality/toolcall": {
+      "spec_acceptance_rate": 0.8888888888888888,
+      "mean_acceptance_length": 3.6666666666666665,
+      "decode_steps": 77.0,
+      "tokens_per_step": 3.4675324675324677,
+      "prefix_cache_hit_rate": 0.0,
+      "kv_usage_peak": 0.04117647058823526,
+      "preemptions": 0.0,
+      "missing": []
+    },
+    "quality/code/humaneval+": {
+      "spec_acceptance_rate": 0.8148148148148148,
+      "mean_acceptance_length": 3.4444444444444446,
+      "decode_steps": 298.0,
+      "tokens_per_step": 3.436241610738255,
+      "prefix_cache_hit_rate": 0.0,
+      "kv_usage_peak": 0.04117647058823526,
+      "preemptions": 0.0,
+      "missing": []
+    },
+    "quality/needle/8k/d50": {
+      "spec_acceptance_rate": 0.8771929824561403,
+      "mean_acceptance_length": 3.6315789473684212,
+      "decode_steps": 20.0,
+      "tokens_per_step": 3.45,
+      "prefix_cache_hit_rate": 0.0,
+      "kv_usage_peak": 0.05294117647058827,
+      "preemptions": 0.0,
+      "missing": []
+    }
+  },
+  "datasets": [
+    {
+      "name": "HumanEval+",
+      "version": "v0.1.10",
+      "source_url": "https://github.com/evalplus/humanevalplus_release/releases/download/v0.1.10/HumanEvalPlus-OriginFmt.jsonl.gz",
+      "license": "Apache-2.0 (EvalPlus)、MIT (OpenAI HumanEval)",
+      "scoring_method": "応答から取り出したコードに、課題の `test` (`check(candidate)` の定義) と `check(<entry_point>)` の呼び出しを続けて、隔離したコンテナの中で動かす。例外なく終われば正解。正解の割合を、問題の数とともに示す (5.2、5.4)",
+      "sha256": "daa7661c8189924068069b0872a440b491edb60f8bdf431d5957adc88d18bae5"
+    }
+  ]
+}
