@@ -1,4 +1,4 @@
-# DGX Spark x2 GLM-5.3-Flash Recipe
+# DGX Spark x2 GLM-5.3-Flash NVFP4 vLLM Recipe
 
 [日本語](README.ja.md)
 
