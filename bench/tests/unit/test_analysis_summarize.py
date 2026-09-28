@@ -262,6 +262,56 @@ def test_decode_speed_and_ttft_use_the_fixed_formulas(tmp_path: Path) -> None:
     assert ttft.continuous.max == pytest.approx(0.5)
 
 
+def test_legacy_text_block_does_not_acquire_unrecorded_phase_timestamps(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    _append(
+        store,
+        _trial(
+            condition="decode/json/en",
+            first_s=1.0,
+            last_s=3.0,
+            input_tokens=10,
+            output_tokens=41,
+            text='{"ok": true}',
+        ),
+    )
+    store = _finish(store)
+    legacy, warnings = store.read_trials()
+    assert warnings == []
+    assert legacy[0].result.blocks[0].text == '{"ok": true}'
+    assert legacy[0].result.model_dump().get("output_phases") is None
+
+    summary = _summary(store)
+    all_output = _row(summary, "decode/json/en", "decode_tps").continuous
+    assert all_output is not None
+    assert all_output.mean == pytest.approx(20.0)
+    values = trial_values(*_read_back(store))
+    assert values.get(("decode/json/en", "text_chars_per_s"), []) == []
+    assert summary.output_phases["decode/json/en"]["text_arrived"] == 1
+    assert summary.output_phases["decode/json/en"]["unknown"] == 1
+    assert "不明" in summary.model_dump_json()
+
+
+def test_legacy_trial_still_reproduces_the_total_output_decode_speed(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    _append(
+        store,
+        _trial(
+            condition="decode/json/ja",
+            first_s=2.0,
+            last_s=4.0,
+            input_tokens=10,
+            output_tokens=41,
+            text="旧記録の本文",
+        ),
+    )
+    summary = _summary(_finish(store))
+    all_output = _row(summary, "decode/json/ja", "decode_tps").continuous
+    assert all_output is not None
+    assert all_output.n == 1
+    assert all_output.mean == pytest.approx(20.0)
+
+
 def test_warmup_is_excluded_and_failures_are_counted(tmp_path: Path) -> None:
     """慣らしは集計にも失敗の件数にも入らない。失敗は値から外して数える (2.5、10.1)。"""
     store = _store(tmp_path)
@@ -1290,7 +1340,8 @@ def test_markdown_separates_primary_from_reference(tmp_path: Path) -> None:
 
     assert "## 主な結果" in text
     assert "## 参考" in text
-    primary, _, reference = text.partition("## 参考")
+    _, _, results = text.partition("## 主な結果")
+    primary, _, reference = results.partition("## 参考")
     assert "concurrency/c1" in primary
     assert "decode/code/en" in primary
     assert "concurrency/c8" not in primary
@@ -1358,11 +1409,9 @@ def test_markdown_shows_the_excluded_count_only_where_it_applies(tmp_path: Path)
         ),
     )
     _, md_path = write_summary(_finish(store).run_dir)
-    rows = [
-        line
-        for line in md_path.read_text(encoding="utf-8").splitlines()
-        if line.startswith("| `decode/prose/en`")
-    ]
+    markdown = md_path.read_text(encoding="utf-8")
+    result_tables = markdown.split("## 主な結果\n", 1)[1].split("## 品質", 1)[0]
+    rows = [line for line in result_tables.splitlines() if line.startswith("| `decode/prose/en`")]
     assert len(rows) == 2, "表の行が見つからない"
 
     decode_line = next(line for line in rows if "`decode_tps`" in line)
@@ -1468,6 +1517,7 @@ def test_summarize_imports_nothing_outside_the_allowed_set() -> None:
         "bench_harness.store",
         "bench_harness.store.rawstore",
         "bench_harness.analysis.stats",
+        "bench_harness.analysis.output_phases",
     }
     for module in modules:
         root = module.split(".")[0]

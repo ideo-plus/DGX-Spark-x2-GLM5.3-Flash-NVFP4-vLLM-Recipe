@@ -221,6 +221,34 @@ def test_open_round_trips_the_manifest(tmp_path: Path) -> None:
     assert reopened.manifest() == store.manifest()
 
 
+def test_legacy_manifest_without_retokenization_settings_remains_readable(tmp_path: Path) -> None:
+    store = _create_store(tmp_path)
+    manifest_path = store.run_dir / "manifest.json"
+    data = json.loads(manifest_path.read_text(encoding="utf-8"))
+    data.pop("output_retokenization", None)
+    manifest_path.write_text(json.dumps(data), encoding="utf-8")
+
+    reopened = RunStore.open(store.run_dir)
+    assert reopened.manifest().schema_version == data["schema_version"]
+    assert reopened.manifest().model_dump().get("output_retokenization") is None
+
+
+def test_legacy_manifest_is_not_silently_treated_as_explicit_retokenization_off(
+    tmp_path: Path,
+) -> None:
+    store = _create_store(tmp_path)
+    data = json.loads((store.run_dir / "manifest.json").read_text(encoding="utf-8"))
+    data.pop("output_retokenization", None)
+    old = RunManifest.model_validate(data)
+    explicitly_off = RunManifest.model_validate(
+        {**data, "output_retokenization": {"enabled": False}}
+    )
+
+    assert old.model_dump().get("output_retokenization") != explicitly_off.model_dump().get(
+        "output_retokenization"
+    )
+
+
 def test_open_missing_manifest_raises(tmp_path: Path) -> None:
     missing = tmp_path / "nowhere"
     missing.mkdir()

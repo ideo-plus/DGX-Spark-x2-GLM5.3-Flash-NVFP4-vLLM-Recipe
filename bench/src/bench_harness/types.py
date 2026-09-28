@@ -501,6 +501,66 @@ class RequestError(_Frozen):
     message: str = ""
 
 
+class PhaseObservation(_Frozen):
+    """受信した段階の非空文字列を、単調時計の時刻と文字数で記録する。"""
+
+    has_block: bool = False
+    first_ns: int | None = None
+    last_ns: int | None = None
+    char_count: NonNegativeInt = 0
+
+    @model_validator(mode="after")
+    def _check_observation(self) -> Self:
+        if self.char_count:
+            if not self.has_block or self.first_ns is None or self.last_ns is None:
+                raise ValueError("文字を観測した段階にはブロックと両端の時刻が必要")
+        elif self.first_ns is not None or self.last_ns is not None:
+            raise ValueError("文字のない段階には時刻を付けない")
+        if self.first_ns is not None and self.last_ns is not None and self.first_ns > self.last_ns:
+            raise ValueError("段階の末尾時刻が先頭より前")
+        return self
+
+
+class OutputPhases(_Frozen):
+    """思考と本文の観測。旧記録ではStreamResult側をNoneにする。"""
+
+    thinking: PhaseObservation = PhaseObservation()
+    text: PhaseObservation = PhaseObservation()
+
+
+_CountReason = Literal[
+    "no_phase",
+    "request_failed",
+    "model_unknown",
+    "model_mismatch",
+    "unsupported",
+    "timeout",
+    "unavailable",
+    "http_error",
+    "invalid_response",
+    "cancelled",
+]
+
+
+class _PhaseTokenCount(_Frozen):
+    """生成時のトークン数とは区別して保存する生文字列の再計数結果。"""
+
+    count: NonNegativeInt | None = None
+    count_source: Literal["retokenized"] = "retokenized"
+    reason: _CountReason | None = None
+
+    @model_validator(mode="after")
+    def _check_count(self) -> Self:
+        if (self.count is None) == (self.reason is None):
+            raise ValueError("再計数値または欠測理由のどちらか一方が必要")
+        return self
+
+
+class _OutputTokenCounts(_Frozen):
+    thinking: _PhaseTokenCount
+    text: _PhaseTokenCount
+
+
 class StreamResult(_Frozen):
     """1 つの要求の結果。認証の情報は含まない (1.8)。"""
 
@@ -510,6 +570,8 @@ class StreamResult(_Frozen):
     blocks: list[ContentBlock] = Field(default_factory=list)
     server_model: str | None = None
     error: RequestError | None = None
+    output_phases: OutputPhases | None = None
+    output_token_counts: _OutputTokenCounts | None = None
 
 
 class PreflightOk(_Frozen):
@@ -703,6 +765,15 @@ class TrialRecord(_Frozen):
     target_input_tokens: int | None = None
 
 
+class _OutputRetokenization(_Frozen):
+    """再計数を行う設定。旧manifestでは項目自体を持たない。"""
+
+    enabled: bool
+    method: str = Field(default="/tokenize", min_length=1)
+    block_join: Literal["concat"] = "concat"
+    add_special_tokens: Literal[False] = False
+
+
 class RunManifest(_Frozen):
     """計測ランの実行の条件と状態 (1.6)。要求と応答の本文は入れない (8.3)。"""
 
@@ -723,6 +794,7 @@ class RunManifest(_Frozen):
     warnings: list[str] = Field(default_factory=list)
     skipped: list[SkippedCondition] = Field(default_factory=list)
     datasets: list[DatasetRef] = Field(default_factory=list)
+    output_retokenization: _OutputRetokenization | None = None
 
 
 class RunRequest(_Frozen):
@@ -732,6 +804,7 @@ class RunRequest(_Frozen):
     suites: list[SuiteName]
     profile_name: str
     trials_override: dict[str, int] = Field(default_factory=dict)
+    retokenize_output: bool = False
 
 
 class RunOutcome(_Frozen):
@@ -800,6 +873,7 @@ class MetricResult(_Frozen):
     failures: NonNegativeInt = 0
     flags: list[MetricFlag] = Field(default_factory=list)
     flag_counts: dict[str, int] = Field(default_factory=dict)
+    count_source: Literal["retokenized"] | None = None
 
 
 class AgentStageResult(_Frozen):
@@ -825,6 +899,15 @@ class AgentSummary(_Frozen):
     stopped_reason: str | None = None
 
 
+class _RetokenizationCounts(_Frozen):
+    """公開用の件数と固定の欠測理由。生成文字列は含めない。"""
+
+    thinking_counted: NonNegativeInt = 0
+    text_counted: NonNegativeInt = 0
+    count_source: Literal["retokenized"] = "retokenized"
+    missing_reasons: dict[str, NonNegativeInt] = Field(default_factory=dict)
+
+
 class Summary(_Frozen):
     """要約 (8.2、8.6)。送った内容と応答の本文を入れる項目を持たない (8.3)。"""
 
@@ -835,6 +918,9 @@ class Summary(_Frozen):
     agent: AgentSummary | None = None
     server_metrics: dict[str, DerivedMetrics] = Field(default_factory=dict)
     datasets: list[DatasetRef] = Field(default_factory=list)
+    output_phases: dict[str, dict[str, NonNegativeInt]] = Field(default_factory=dict)
+    phase_warnings: list[str] = Field(default_factory=list)
+    output_retokenization_counts: dict[str, _RetokenizationCounts] = Field(default_factory=dict)
 
 
 class ComparisonRow(_Frozen):
@@ -848,6 +934,8 @@ class ComparisonRow(_Frozen):
     diff: float | None = None
     relative_diff: float | None = None
     verdict: DiffVerdict | None = None
+    count_source_a: Literal["retokenized"] | None = None
+    count_source_b: Literal["retokenized"] | None = None
     proportion_verdict: ProportionDiffOutcome | None = None
 
 

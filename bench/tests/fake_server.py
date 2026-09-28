@@ -764,6 +764,7 @@ class FakeServer:
         self._advertise_limit = True
         self._enforce_limit = True
         self._count_tokens_enabled = True
+        self._tokenize_response: tuple[int, JsonDict | str, float] | None = None
         self._version: str | None = "0.0.0-fake"
         self._metrics_enabled = True
         self._metrics_text: str | None = None
@@ -868,6 +869,13 @@ class FakeServer:
         """`POST /v1/messages/count_tokens` の有無 (切ると 404)。"""
         with self._lock:
             self._count_tokens_enabled = enabled
+
+    def set_tokenize_response(
+        self, status: int, payload: JsonDict | str, *, delay_s: float = 0.0
+    ) -> None:
+        """出力文字列の再計数応答を指定する。未指定なら /tokenize は 404。"""
+        with self._lock:
+            self._tokenize_response = (status, payload, delay_s)
 
     def set_version(self, version: str | None) -> None:
         """`GET /version` が返す版 (`None` なら 404)。"""
@@ -1306,6 +1314,8 @@ class _Handler(BaseHTTPRequestHandler):
             self._handle_messages(raw, body)
         elif path == "/v1/messages/count_tokens":
             self._handle_count_tokens(path, raw, body)
+        elif path == "/tokenize":
+            self._handle_tokenize(raw, body)
         else:
             self._record(path, "POST", raw, body, 0, claim_in_flight=False)
             self._send_json(404, _error_body("NotFoundError", f"unknown path {path}"))
@@ -1373,6 +1383,21 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_json(404, _error_body("NotFoundError", "no count_tokens endpoint"))
             return
         self._send_json(200, {"input_tokens": input_tokens})
+
+    def _handle_tokenize(self, raw: bytes, body: JsonDict | None) -> None:
+        self._record("/tokenize", "POST", raw, body, 0, claim_in_flight=False)
+        with self._fake._lock:
+            response = self._fake._tokenize_response
+        if response is None:
+            self._send_json(404, _error_body("NotFoundError", "no tokenize endpoint"))
+            return
+        status, payload, delay_s = response
+        if delay_s > 0:
+            self._fake._wait(delay_s)
+        if isinstance(payload, str):
+            self._send_text(status, payload, "application/json")
+        else:
+            self._send_json(status, payload)
 
     def _stream(self, plan: _Plan) -> None:
         """イベントを 1 つずつ chunk にして流す。"""

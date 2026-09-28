@@ -46,11 +46,12 @@ Anthropic 互換の `/v1/messages` 経由で測る、コマンドラインの計
 - **計測の間、ほかの利用者が対象サーバーを使わない**こと。始める前に実行中の要求の数を読み、
   0 でなければ警告を記録する
 
-この道具が触る口は、次の 5 つだけである。**どれも推論か読み取りで、サーバーの状態を変える口は使わない。**
+この道具が触る口は、次のとおりである。**どれも推論か読み取りで、サーバーの状態を変える口は使わない。**
 
 | 口 | いつ使うか | なければ |
 |---|---|---|
 | `POST /v1/messages` | すべての試行 | 計測できない |
+| `POST /tokenize` | `--retokenize-output` 指定時、終了した出力の思考・本文を別々に再計数 | 理由付きの不明。全体のトークン数で代用しない |
 | `POST /v1/messages/count_tokens` | `bench calibrate` と、`bench run` の `concurrency`・`agent` (`concurrency` は包み 1 回 + 文書ごとに組み立てた要求を最大 4 回、`agent` は包み 1 回 + 段階 × 会話ごとに組み立てた会話を最大 4 回数える) | 出力 1 トークンの要求で代える (試行としては保存しない) |
 | `GET /v1/models` | 前提の確認 (入力の長さの上限 `max_model_len`) | `targets.toml` の `max_context_tokens` → 不明、の順で決める |
 | `GET /version` | 前提の確認 (サーバーの版の記録) | 「不明」と記録して続ける |
@@ -257,6 +258,39 @@ uv run bench run --target candidate-d --suite quality --no-download
 
 計測が終わると、要約 (`summary.json` と `summary.md`) が自動で作られる。
 
+### 思考と本文を分けて測る
+
+`decode_tps` は、思考などを含む全出力の速度である。JSON条件でも、思考だけで出力上限に
+達した試行の値を、JSON本文の速度として読んではいけない。要約の本文到達件数、本文未到達の警告、
+本文速度の有効件数を確認する。要求が成功しても、本文がなければ本文速度は計測できていない。
+本文の到達は、JSONの完全性や妥当性の合格を意味しない。
+
+通常は、本文までの待ち時間 `text_wait_s`、思考・本文の継続時間と文字数、
+`thinking_chars_per_s`・`text_chars_per_s` (文字/秒) を使う。本文の生成区間に思考待ちは含めない。
+本文→思考→本文など、思考と本文の観測区間を分離できない場合は、両段階の継続時間・速度を
+理由付き不明として警告に件数を示す。本文到達、文字数、本文までの待ち時間は残る。
+サーバーが全体の `usage.output_tokens` しか返さない場合、生成時の段階別トークン数は不明である。
+
+```bash
+# 終了した出力を同じサーバーで再計数する。既定では送らない追加要求を有効にする
+uv run bench run --target candidate-d --suite decode --profile probe --retokenize-output
+
+# 本文未到達なら、思考と本文の合計の出力上限を実行ごとに調整する (2048 は指定例)
+uv run bench run --target candidate-d --suite decode --profile probe --set decode.max_tokens=2048
+```
+
+`--set decode.max_tokens=N` の上限は**思考と本文の合計**に適用される。上限を増やしても本文到達は
+保証されない。既定の `probe`・`fast`・`quick`・`full`、試行数、6条件の生成指示、
+`thinking=server_default` は変更しない。思考を無効化できるという前提では測らない。
+
+再計数は生文字列を `/tokenize` に送り、`add_special_tokens=false` で会話の包みを加えずに数える。
+`thinking_retokenized_tps`・`text_retokenized_tps` と `count_source=retokenized` で区別する。
+生成時の正確なトークン数とは限らず、実機の対応・応答形式・モデル識別子の整合は未確認である。
+再計数の設定と方法はmanifestに残り、比較では方法差や欠測を表示する。
+旧記録の段階別時刻は補完せず、要約の再計算や比較で追加通信もしない。
+
+算式と欠測の扱いは[思考・本文の計測方法](../docs/development/output-phase-measurement.md)を参照。
+
 ### `bench summarize` — 要約を作り直す
 
 生データから作り直すだけなので、何度実行しても同じ結果になる。未完了の計測ランも要約できる。
@@ -353,7 +387,7 @@ docs/results/<計測ランの識別子>/  # bench publish で写した要約だ�
 - **未完了の計測ラン**は、先頭に「この計測ランは未完了である」と出る。状態が `completed` でない
   ものは、すべて未完了として扱う
 - **主な結果と参考**は、節が分かれている。参考は同時 4 本と 8 本で、結論には数えない
-- **値の名前**: `ttft_s` = 最初のトークンまでの時間 (秒)、`decode_tps` = 生成速度 (トークン/秒)、
+- **値の名前**: `ttft_s` = 最初のトークンまでの時間 (秒)、`decode_tps` = 思考などを含む全出力の生成速度 (トークン/秒)、
   `prefill_tps` = 入力の処理速度 (トークン/秒)、`round_total_tps` = 1 回ぶんの合計の生成速度。
   集計に入っているのは、成功して、慣らしでない試行だけである
 - **`n` の単位は行によって違う。** `ttft_s`、`decode_tps`、`prefill_tps` は試行の数 (同時処理では

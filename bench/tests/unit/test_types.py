@@ -85,6 +85,11 @@ CONTENT_BLOCK = t.ContentBlock(
     tool_input_raw='{"path": "README.md"}',
     tool_input={"path": "README.md"},
 )
+PHASE_OBSERVATION = t.PhaseObservation(has_block=True, first_ns=3_000, last_ns=9_000, char_count=2)
+OUTPUT_PHASES = t.OutputPhases(
+    thinking=PHASE_OBSERVATION,
+    text=t.PhaseObservation(has_block=True),
+)
 STREAM_RESULT = t.StreamResult(
     timing=TIMING,
     usage=USAGE,
@@ -261,6 +266,8 @@ EXAMPLES: dict[str, BaseModel] = {
     "Usage": USAGE,
     "StreamTiming": TIMING,
     "ContentBlock": CONTENT_BLOCK,
+    "PhaseObservation": PHASE_OBSERVATION,
+    "OutputPhases": OUTPUT_PHASES,
     "RequestError": t.RequestError(kind="timeout_idle", http_status=None, message="idle 60s"),
     "StreamResult": STREAM_RESULT,
     "PreflightOk": t.PreflightOk(
@@ -476,8 +483,31 @@ def test_summary_schema_has_no_body_like_property() -> None:
 
     assert props, "項目を 1 つも集められていない (歩き方の誤り)"
     assert props & BANNED_PROPERTY_NAMES == set()
-    offending = {name for name in props if set(name.split("_")) & BANNED_PROPERTY_TOKENS}
-    assert offending == set()
+    assert _body_like_properties(t.Summary.model_json_schema()) == set()
+
+
+def _body_like_properties(schema: Any) -> set[str]:
+    """本文を示す名前でも、数値だけを保持する項目は許容する。"""
+    offending: set[str] = set()
+    if isinstance(schema, dict):
+        for name, value in schema.get("properties", {}).items():
+            if set(name.split("_")) & BANNED_PROPERTY_TOKENS and value.get("type") not in (
+                "integer",
+                "number",
+            ):
+                offending.add(name)
+        for value in schema.values():
+            offending.update(_body_like_properties(value))
+    elif isinstance(schema, list):
+        for value in schema:
+            offending.update(_body_like_properties(value))
+    return offending
+
+
+@pytest.mark.parametrize("field_type", ["string", "object", "array"])
+def test_body_property_check_rejects_non_numeric_text_counts(field_type: str) -> None:
+    schema = {"properties": {"text_counted": {"type": field_type}}}
+    assert _body_like_properties(schema) == {"text_counted"}
 
 
 def test_summary_carries_the_run_manifest_at_the_head() -> None:

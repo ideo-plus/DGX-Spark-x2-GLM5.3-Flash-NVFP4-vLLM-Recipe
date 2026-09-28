@@ -1142,6 +1142,13 @@ def test_run_help_documents_the_exit_codes(capsys: pytest.CaptureFixture[str]) -
         assert code in out
 
 
+def test_run_help_documents_output_retokenization(capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit) as exc_info:
+        bench("run", "--help")
+    assert exc_info.value.code == 0
+    assert "--retokenize-output" in capsys.readouterr().out
+
+
 def test_run_help_documents_the_suites_and_the_dataset_cache(
     capsys: pytest.CaptureFixture[str],
 ) -> None:

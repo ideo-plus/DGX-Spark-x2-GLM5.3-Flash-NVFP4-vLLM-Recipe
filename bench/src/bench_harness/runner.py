@@ -116,6 +116,7 @@ from pydantic import JsonValue, SecretStr
 from bench_harness import __version__, config
 from bench_harness.client.messages import HttpxMessagesClient, MessagesClient
 from bench_harness.client.probe import ProbeError, is_context_limit_error, preflight
+from bench_harness.client.tokenize import recount_output
 from bench_harness.metrics import HttpxMetricsScraper, MetricsScraper, derive
 from bench_harness.store import RunStore, StoreError, new_run_id
 from bench_harness.suites import ConditionAborted, Suite, SuiteContext, make_suite_context
@@ -142,6 +143,9 @@ from bench_harness.types import (
     SuiteName,
     TargetDef,
     TrialRecord,
+    _OutputRetokenization,
+    _OutputTokenCounts,
+    _PhaseTokenCount,
 )
 
 __all__ = [
@@ -420,6 +424,9 @@ async def execute_run(
             registry=suites,
             suites=list(req.suites),
             clock=clock,
+            target=target,
+            api_key=api_key,
+            retokenize_output=req.retokenize_output,
         )
         return await run.execute()
     finally:
@@ -594,6 +601,7 @@ def _build_manifest(
         harness_version=harness_version(),
         context_limit=ok.context_limit,
         warnings=warnings,
+        output_retokenization=_OutputRetokenization(enabled=req.retokenize_output),
     )
 
 
@@ -632,6 +640,9 @@ class _Run:
         registry: Mapping[SuiteName, Suite],
         suites: Sequence[SuiteName],
         clock: Clock,
+        target: TargetDef,
+        api_key: SecretStr | None,
+        retokenize_output: bool,
     ) -> None:
         self._ctx = ctx
         self._store = store
@@ -640,6 +651,9 @@ class _Run:
         self._registry = registry
         self._suites = list(suites)
         self._clock = clock
+        self._target = target
+        self._api_key = api_key
+        self._retokenize_output = retokenize_output
         self._consecutive_failures = 0
         self._abort_reason: str | None = None
         self._interrupt_signal: int | None = None
@@ -726,6 +740,31 @@ class _Run:
                         group, group_count = key, 0
                     group_count += 1
 
+                    try:
+                        record = await self._recount_record(record)
+                    except asyncio.CancelledError:
+                        self._store.append_trial(self._cancelled_recount(record))
+                        self._trials_written += 1
+                        self._condition_done += 1
+                        if record.result.error is not None:
+                            failures += 1
+                        self._progress.update(
+                            suite.name, cond.key, self._condition_done, total, failures
+                        )
+                        for _ in range(max(0, cond.concurrency - group_count)):
+                            try:
+                                pending = await anext(iterator)
+                            except StopAsyncIteration:
+                                break
+                            self._store.append_trial(self._cancelled_recount(pending))
+                            self._trials_written += 1
+                            self._condition_done += 1
+                            if pending.result.error is not None:
+                                failures += 1
+                            self._progress.update(
+                                suite.name, cond.key, self._condition_done, total, failures
+                            )
+                        raise
                     self._store.append_trial(record)  # 1 つ終わるたびに書く (8.7)
                     self._trials_written += 1
                     self._condition_done += 1
@@ -766,6 +805,27 @@ class _Run:
             raise
         finally:
             await self._write_metrics(cond, before, cancelled=cancelled)
+
+    async def _recount_record(self, record: TrialRecord) -> TrialRecord:
+        if not self._retokenize_output:
+            return record
+        counts = await recount_output(
+            record.result,
+            self._target,
+            api_key=self._api_key,
+            timeout_s=self._ctx.profile.timeout.idle_s,
+        )
+        result = record.result.model_copy(update={"output_token_counts": counts})
+        return record.model_copy(update={"result": result})
+
+    @staticmethod
+    def _cancelled_recount(record: TrialRecord) -> TrialRecord:
+        counts = _OutputTokenCounts(
+            thinking=_PhaseTokenCount(reason="cancelled"),
+            text=_PhaseTokenCount(reason="cancelled"),
+        )
+        result = record.result.model_copy(update={"output_token_counts": counts})
+        return record.model_copy(update={"result": result})
 
     # --- 要求の入力を数えられない (issue #9、#24) ---
 

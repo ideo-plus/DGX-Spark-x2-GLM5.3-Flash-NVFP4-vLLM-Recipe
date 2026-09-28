@@ -1468,7 +1468,7 @@ def test_write_summary_is_byte_identical_on_a_second_run(tmp_path: Path) -> None
 
 
 def test_summarize_imports_nothing_outside_the_allowed_set() -> None:
-    """`analysis` は `types`、`store`、`analysis.stats` 以外を読み込まない (design.md)。"""
+    """集計の内部依存をtypes・store・analysis内の純粋な計算に限定する。"""
     source = Path(summarize_module.__file__ or "")
     tree = ast.parse(source.read_text(encoding="utf-8"))
     modules: set[str] = set()
@@ -1485,6 +1485,7 @@ def test_summarize_imports_nothing_outside_the_allowed_set() -> None:
         "bench_harness.store",
         "bench_harness.store.rawstore",
         "bench_harness.analysis.stats",
+        "bench_harness.analysis.output_phases",
     }
     for module in modules:
         root = module.split(".")[0]

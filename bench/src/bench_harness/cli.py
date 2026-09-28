@@ -259,6 +259,11 @@ def _add_run_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentPars
         "--profile", default="quick", metavar="NAME", help="計測の設定の名前 (既定: quick)"
     )
     parser.add_argument(
+        "--retokenize-output",
+        action="store_true",
+        help="生成後、同じサーバーで思考と本文の生文字列を再計数する",
+    )
+    parser.add_argument(
         "--set",
         dest="overrides",
         action="append",
@@ -441,6 +446,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
         suites=_selected_suites(args.suite),
         profile_name=profile_name,
         trials_override=_parse_overrides(args.overrides),
+        retokenize_output=args.retokenize_output,
     )
     if SuiteName.QUALITY in request.suites:
         # 使えない置き場所は、計測を始める前に、設定の誤りとして示す。あとで気付くと、
