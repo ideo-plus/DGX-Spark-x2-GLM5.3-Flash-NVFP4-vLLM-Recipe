@@ -360,7 +360,7 @@ async def test_json_instructions_require_one_long_array_of_fictional_records(
     assert "array" in instruction
     assert "object" in instruction
     assert "fictional" in instruction
-    assert "60" in instruction
+    assert "at least 60 distinct records" in instruction
     assert "same fixed" in instruction and "field" in instruction
     for field in ("id", "name", "status", "timestamp", "quantity", "tags"):
         assert re.search(rf"\b{field}\b", instruction), field
@@ -385,7 +385,7 @@ async def test_japanese_json_instruction_keeps_keys_english_and_values_japanese(
     assert "出力は JSON 配列だけ" in instruction
     assert "前後の説明" in instruction
     assert "コードブロック" in instruction
-    assert "60" in instruction
+    assert "少なくとも 60 件の異なる記録" in instruction
     assert "同じ固定フィールド" in instruction
     for field in ("id", "name", "status", "timestamp", "quantity", "tags"):
         assert re.search(rf"\b{field}\b", instruction), field
@@ -413,6 +413,19 @@ async def test_json_warmup_uses_a_different_topic_from_measured_trial(
                 warmup_topic = warmup.split("架空の", 1)[1].split("を、", 1)[0]
                 measured_topic = measured.split("架空の", 1)[1].split("を、", 1)[0]
             assert warmup_topic != measured_topic
+
+
+async def test_json_en_warmup_instruction_does_not_repeat_fictional_twice(
+    fake_server: FakeServer,
+) -> None:
+    fake_server.set_response(text_response("ok"))
+    profile = make_profile(decode={"trials": 10, "warmup_trials": 1, "max_tokens": 256})
+    async with suite_ctx(fake_server, profile=profile) as ctx:
+        cond = _condition(ctx, "decode/json/en")
+        [record async for record in decode_suite.run_condition(ctx, cond)]
+
+    warmup_instruction = _user_text(_requests(fake_server)[0].body)
+    assert "fictional fictional" not in warmup_instruction.lower(), warmup_instruction
 
 
 async def test_json_instructions_are_reproducible_across_run_ids(
