@@ -15,8 +15,7 @@
 でも慣らしと本番で違う話題になる。32 通りが 20 を超えるので、同じ条件の
 最初の 20 本の本番の試行は、必ず違う話題になる。
 
-code と prose の管理番号は `random.Random(trial_seed(...))` で、JSON の管理番号は
-同じ seed からの計算で決める。`trial_seed` は `run_id` を含まない (base.py) ので、計測ランを
+文中の架空の管理番号だけを、`random.Random(trial_seed(...))` で決める (code、prose、json で同じ)。`trial_seed` は `run_id` を含まない (base.py) ので、計測ランを
 またいでも、同じ番号の試行は同じ指示になる。
 
 話題も文中の題材も、すべて架空である (11.1: クリーンルーム。実在の企業や
@@ -167,14 +166,14 @@ _JSON_TOPICS_JA: Final[tuple[str, ...]] = (
     "からくり箱の自動販売機の補充記録",
 )
 _JSON_WARMUP_TOPICS_EN: Final[tuple[str, ...]] = (
-    "fictional kite festival registrations",
-    "fictional paper boat race entries",
-    "fictional lantern workshop reservations",
-    "fictional clock tower tour bookings",
-    "fictional cloud atlas annotations",
-    "fictional shell museum loans",
-    "fictional miniature garden visits",
-    "fictional snow globe repairs",
+    "kite festival registrations",
+    "paper boat race entries",
+    "lantern workshop reservations",
+    "clock tower tour bookings",
+    "cloud atlas annotations",
+    "shell museum loans",
+    "miniature garden visits",
+    "snow globe repairs",
 )
 _JSON_WARMUP_TOPICS_JA: Final[tuple[str, ...]] = (
     "凧祭りの参加登録",
@@ -338,14 +337,15 @@ def _json_instruction(lang: Lang, seed: int, index: int, *, warmup: bool) -> str
         angles = _JSON_ANGLES_JA
     topic = topics[index % len(topics)]
     angle = angles[(index // len(topics)) % len(angles)]
-    tracking_number = 1000 + seed % 9000
+    rng = random.Random(seed)
+    tracking_number = rng.randint(1000, 9999)
     if lang == "en":
         return (
             f"Write a single long JSON array of fictional {topic}, {angle}. "
             f"Use {tracking_number} as the fictional internal case number for this dataset. "
             "Each array element must be a record object with the same fixed English "
             "field names: id, name, status, timestamp, quantity, and tags. Use a unique "
-            "id, a string name and status, an ISO 8601 timestamp, a numeric quantity, "
+            "numeric id, a string name and status, an ISO 8601 timestamp, a numeric quantity, "
             "and an array of string tags for every record. Write at least 60 distinct "
             "records and keep writing until the array is complete; do not stop early. "
             "Output only the JSON array, with no explanation before or after it and no "
