@@ -103,6 +103,7 @@ _DECODE_MARKERS: Final[tuple[str, ...]] = (
     "Write one long, detailed report about",  # decode/prose/en
     "Python モジュールを書いてください",  # decode/code/ja
     _SLOW_CONDITION_MARKER,  # decode/prose/ja
+    "JSON",  # decode/json/en, decode/json/ja
 )
 
 DECODE_CONDITIONS: Final[tuple[str, ...]] = (
@@ -110,6 +111,8 @@ DECODE_CONDITIONS: Final[tuple[str, ...]] = (
     "decode/code/ja",
     "decode/prose/en",
     SLOW_CONDITION,
+    "decode/json/en",
+    "decode/json/ja",
 )
 PREFILL_TARGET_TOKENS: Final[int] = 1000
 PREFILL_CONDITIONS: Final[tuple[str, ...]] = ("prefill/cold/1k", "prefill/warm/1k")
@@ -152,7 +155,7 @@ def speed_script(
 class SpeedResponder:
     """要求の中身を見て、条件ごとの台本を返す (偽のサーバーの `set_response_factory`)。
 
-    生成速度の 4 つの条件は、指示の文で見分けられる (`suites/decode.py` の型紙)。
+    生成速度の 6 つの条件は、指示の文で見分けられる (`suites/decode.py` の型紙)。
     `slow_condition` を真にすると、`decode/prose/ja` の delta の間の遅れだけが
     `SLOWDOWN` 倍になる。ほかの条件と、最初のトークンまでの遅れは変わらない。
     """
@@ -350,6 +353,35 @@ def prompt_excerpt(store: RunStore, records: Sequence[TrialRecord]) -> str:
 
 
 # --- 流れ 1: 繰り返しと感度 (9.3、9.4) ---------------------------------------
+
+
+def test_decode_cli_records_and_summarizes_all_six_conditions(
+    fake_server: FakeServer, tmp_path: Path
+) -> None:
+    responder = SpeedResponder()
+    fake_server.set_response_factory(responder)
+    bed = write_bed(tmp_path, fake_server.base_url, trials=10)
+
+    code, run_dir = run_bench(bed, "decode")
+
+    assert code == EXIT_OK
+    store = RunStore.open(run_dir)
+    records, warnings = store.read_trials()
+    assert warnings == []
+    assert {record.condition for record in records} == set(DECODE_CONDITIONS)
+    assert all(
+        sum(record.condition == condition and not record.warmup for record in records) == 10
+        for condition in DECODE_CONDITIONS
+    )
+    summary = Summary.model_validate_json((run_dir / "summary.json").read_text(encoding="utf-8"))
+    assert {(row.condition, row.metric) for row in summary.results} == {
+        (condition, metric)
+        for condition in DECODE_CONDITIONS
+        for metric in ("decode_tps", "ttft_s")
+    }
+    for condition in DECODE_CONDITIONS:
+        assert values_of(run_dir, condition, "decode_tps")
+        assert values_of(run_dir, condition, "ttft_s")
 
 
 def test_two_runs_against_the_same_fake_all_fall_within_and_a_ten_percent_change_does_not(

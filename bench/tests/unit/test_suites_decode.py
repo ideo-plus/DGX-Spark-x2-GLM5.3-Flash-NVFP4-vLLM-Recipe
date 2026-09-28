@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import re
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -36,6 +37,8 @@ _ALL_KEYS: tuple[str, ...] = (
     "decode/code/ja",
     "decode/prose/en",
     "decode/prose/ja",
+    "decode/json/en",
+    "decode/json/ja",
 )
 
 
@@ -98,14 +101,14 @@ def _requests(server: FakeServer) -> list[RecordedRequest]:
 # --- 条件の計画 (2.1、2.2、2.7) ---------------------------------------------
 
 
-async def test_plan_returns_the_four_conditions_with_the_profiles_numbers(
+async def test_plan_returns_the_six_conditions_with_the_profiles_numbers(
     fake_server: FakeServer,
 ) -> None:
     profile = make_profile(decode={"trials": 15, "warmup_trials": 3, "max_tokens": 777})
     async with suite_ctx(fake_server, profile=profile) as ctx:
         planned = decode_suite.plan(ctx)
 
-    assert len(planned) == 4
+    assert len(planned) == 6
     assert all(isinstance(plan, ConditionPlan) for plan in planned)
     keys = {plan.key for plan in planned if isinstance(plan, ConditionPlan)}
     assert keys == set(_ALL_KEYS)
@@ -231,6 +234,27 @@ async def test_two_runs_with_different_run_id_send_identical_user_messages_but_d
     assert body1["system"] != body2["system"]
 
 
+async def test_existing_four_instructions_match_the_pre_json_baseline(
+    fake_server: FakeServer,
+) -> None:
+    expected = {
+        "decode/code/en": "c6d54204052d1512c313c3eea08663e6fb8da3e454def4f13d1d22d60ac66b9f",
+        "decode/code/ja": "ff2e753b4c9f20b4a1a2c5b09b242ee6cf065c20cb7be5c50d198768fa385f1b",
+        "decode/prose/en": "b4a7336f31782db75ce44a00bbdf532a73a58b33cecf89b055966dec6002bbd5",
+        "decode/prose/ja": "fc173b57a09ac20c7795f27116780e45f965bfcd1340c06ae80e47e0172c7c4b",
+    }
+    fake_server.set_response(text_response("ok"))
+    profile = make_profile(decode={"trials": 10, "warmup_trials": 0, "max_tokens": 64})
+
+    async with suite_ctx(fake_server, profile=profile) as ctx:
+        for key, digest in expected.items():
+            fake_server.reset()
+            cond = _condition(ctx, key)
+            [record async for record in decode_suite.run_condition(ctx, cond)]
+            instruction = _user_text(_requests(fake_server)[0].body)
+            assert hashlib.sha256(instruction.encode("utf-8")).hexdigest() == digest, key
+
+
 # --- 共通の印: 早く終わった、出力が少なすぎる (2.6) --------------------------
 
 
@@ -316,7 +340,92 @@ async def test_first_20_measured_trials_have_distinct_user_messages(
             texts = [_user_text(recorded.body) for recorded in _requests(fake_server)]
             assert len(texts) == 20
             assert len(set(texts)) == 20, (key, texts)
-            # 文中の架空の管理番号 (4 桁) を除いても、題材そのものが互いに違うこと。
+            # 文中の架空の管理番号を除いても、題材そのものが互いに違うこと。
             # 番号だけが違う同じ題材の繰り返しでは、この条件の代表にならない
-            without_numbers = {re.sub(r"\d{4}", "", text) for text in texts}
+            without_numbers = {re.sub(r"\d+", "", text) for text in texts}
             assert len(without_numbers) == 20, (key, sorted(without_numbers)[:3])
+
+
+async def test_json_instructions_require_one_long_array_of_fictional_records(
+    fake_server: FakeServer,
+) -> None:
+    fake_server.set_response(text_response("ok"))
+    profile = make_profile(decode={"trials": 10, "warmup_trials": 0, "max_tokens": 256})
+    async with suite_ctx(fake_server, profile=profile) as ctx:
+        cond = _condition(ctx, "decode/json/en")
+        [record async for record in decode_suite.run_condition(ctx, cond)]
+
+    instruction = _user_text(_requests(fake_server)[0].body).lower()
+    assert "json" in instruction
+    assert "array" in instruction
+    assert "object" in instruction
+    assert "fictional" in instruction
+    assert "60" in instruction
+    assert "same fixed" in instruction and "field" in instruction
+    for field in ("id", "name", "status", "timestamp", "quantity", "tags"):
+        assert re.search(rf"\b{field}\b", instruction), field
+    assert "number" in instruction
+    assert "case number" in instruction or "tracking number" in instruction
+    assert "code fence" in instruction or "markdown" in instruction
+    assert "before" in instruction and "after" in instruction
+
+
+async def test_japanese_json_instruction_keeps_keys_english_and_values_japanese(
+    fake_server: FakeServer,
+) -> None:
+    fake_server.set_response(text_response("ok"))
+    profile = make_profile(decode={"trials": 10, "warmup_trials": 0, "max_tokens": 256})
+    async with suite_ctx(fake_server, profile=profile) as ctx:
+        cond = _condition(ctx, "decode/json/ja")
+        [record async for record in decode_suite.run_condition(ctx, cond)]
+
+    instruction = _user_text(_requests(fake_server)[0].body)
+    assert "JSON" in instruction
+    assert "単一の長い JSON 配列" in instruction
+    assert "出力は JSON 配列だけ" in instruction
+    assert "前後の説明" in instruction
+    assert "コードブロック" in instruction
+    assert "60" in instruction
+    assert "同じ固定フィールド" in instruction
+    for field in ("id", "name", "status", "timestamp", "quantity", "tags"):
+        assert re.search(rf"\b{field}\b", instruction), field
+    assert "英語" in instruction and "キー" in instruction
+    assert "日本語" in instruction and "文字列" in instruction
+    assert "id は一意の数値" in instruction
+    assert "管理番号" in instruction
+
+
+async def test_json_warmup_uses_a_different_topic_from_measured_trial(
+    fake_server: FakeServer,
+) -> None:
+    fake_server.set_response(text_response("ok"))
+    profile = make_profile(decode={"trials": 10, "warmup_trials": 1, "max_tokens": 256})
+    async with suite_ctx(fake_server, profile=profile) as ctx:
+        for key in ("decode/json/en", "decode/json/ja"):
+            fake_server.reset()
+            cond = _condition(ctx, key)
+            [record async for record in decode_suite.run_condition(ctx, cond)]
+            warmup, measured = (_user_text(item.body) for item in _requests(fake_server)[:2])
+            if key.endswith("/en"):
+                warmup_topic = warmup.split("JSON array of fictional ", 1)[1].split(",", 1)[0]
+                measured_topic = measured.split("JSON array of fictional ", 1)[1].split(",", 1)[0]
+            else:
+                warmup_topic = warmup.split("架空の", 1)[1].split("を、", 1)[0]
+                measured_topic = measured.split("架空の", 1)[1].split("を、", 1)[0]
+            assert warmup_topic != measured_topic
+
+
+async def test_json_instructions_are_reproducible_across_run_ids(
+    fake_server: FakeServer,
+) -> None:
+    fake_server.set_response(text_response("ok"))
+    profile = make_profile(decode={"trials": 10, "warmup_trials": 1, "max_tokens": 256})
+    for key in ("decode/json/en", "decode/json/ja"):
+        messages: list[list[str]] = []
+        for run_id in ("20260920-000000-aaaaaa", "20260920-111111-bbbbbb"):
+            fake_server.reset()
+            async with suite_ctx(fake_server, profile=profile, run_id=run_id) as ctx:
+                cond = _condition(ctx, key)
+                [record async for record in decode_suite.run_condition(ctx, cond)]
+            messages.append([_user_text(item.body) for item in _requests(fake_server)])
+        assert messages[0] == messages[1]

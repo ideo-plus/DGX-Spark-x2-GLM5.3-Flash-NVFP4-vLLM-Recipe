@@ -1556,6 +1556,8 @@ async def test_summarizes_a_run_produced_by_the_real_decode_suite(
         "decode/code/ja",
         "decode/prose/en",
         "decode/prose/ja",
+        "decode/json/en",
+        "decode/json/ja",
     }
     for condition in conditions:
         for metric in ("decode_tps", "ttft_s"):
@@ -1567,5 +1569,7 @@ async def test_summarizes_a_run_produced_by_the_real_decode_suite(
             assert MetricFlag.INSUFFICIENT_TRIALS not in row.flags
 
     json_path, md_path = write_summary(outcome.run_dir)
-    assert Summary.model_validate_json(json_path.read_text(encoding="utf-8")).results
-    assert "decode/code/en" in md_path.read_text(encoding="utf-8")
+    written = Summary.model_validate_json(json_path.read_text(encoding="utf-8"))
+    assert {row.condition for row in written.results} == conditions
+    markdown = md_path.read_text(encoding="utf-8")
+    assert all(condition in markdown for condition in conditions)
