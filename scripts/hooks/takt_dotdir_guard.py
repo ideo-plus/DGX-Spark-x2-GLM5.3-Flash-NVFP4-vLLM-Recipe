@@ -4,7 +4,8 @@
 TAKT が起動した claude (`scripts/takt-claude.sh` が `TAKT_AGENT=1` を付ける) のときだけ効く。
 対話のセッションでは何もしない。
 
-通すのは、いま動いている実行のディレクトリ (`.takt/runs/` の下で、いちばん新しいもの) だけ。
+通すのは、いま動いている実行のディレクトリ (`.takt/runs/` の下で、`meta.json` が実行中で、それを
+いちばん新しく書いたもの。無ければ、いちばん新しいもの) だけ。
 各段階の指示が読ませる Report Directory と文脈は、ここにある。それ以外の `.takt/` (古い実行、
 ワークフロー、指示の部品、設定) を指すツール呼び出しは断る。
 
@@ -41,9 +42,19 @@ def _current_run(project: Path) -> Path | None:
     candidates = [p for p in runs.iterdir() if p.is_dir()]
     if not candidates:
         return None
-    # TAKT が「実行中」と記録している実行を先に選ぶ。無ければ、いちばん新しいもの
+    # TAKT が「実行中」と記録している実行を先に選ぶ。途中で切れた実行も「実行中」のまま残るので、
+    # その中では meta.json をいちばん新しく書いたもの (動いている実行は書き続ける) を選ぶ。
+    # 無ければ、いちばん新しいもの
     running = [p for p in candidates if _status(p) == "running"]
-    return max(running or candidates, key=lambda p: p.stat().st_mtime).resolve()
+    return max(running or candidates, key=_last_written).resolve()
+
+
+def _last_written(run: Path) -> float:
+    meta = run / "meta.json"
+    try:
+        return meta.stat().st_mtime
+    except OSError:
+        return run.stat().st_mtime
 
 
 def _status(run: Path) -> str | None:

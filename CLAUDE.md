@@ -5,6 +5,9 @@ DGX Spark の読み取り、配布、イメージ・重みの取得、起動、�
 takt の作業からは、SSH、rsync、Docker、実機向けの `serve` コマンドを実行しない。
 実機操作が必要になったら、必要な操作と未確認事項を報告して止める。
 Git の commit・push・マージは依頼に明示された場合だけ行う。
+`.takt/` は TAKT の設定と実行の記録で、ソースコードではない。TAKT の作業では、指示が示す Report Directory
+以外の `.takt/` を読まない。リポジトリを広く探すとき (`grep -r`、`find`、`git grep`、`git ls-files`) は
+`.takt/` を外す (例: `grep -r --exclude-dir=.takt`、`git grep ... -- ':!.takt'`)。
 
 返答と作成する文書は日本語にする。下記の cc-sdd / Kiro 手順は過去の P1 の参照として残すが、
 takt の作業には適用しない。既存の `.kiro/specs/` は根拠として読み、承認済みの条件を勝手に変更しない。
