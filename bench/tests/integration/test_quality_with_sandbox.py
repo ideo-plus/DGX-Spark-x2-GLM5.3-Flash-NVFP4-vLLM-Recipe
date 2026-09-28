@@ -20,9 +20,12 @@ from typing import Any
 
 import pytest
 
+from bench_harness.analysis.summarize import write_summary
 from bench_harness.client.messages import HttpxMessagesClient
 from bench_harness.corpus import humaneval
+from bench_harness.runner import StderrProgressSink, execute_run
 from bench_harness.scoring.sandbox import ContainerSandbox
+from bench_harness.store import RunStore
 from bench_harness.suites.base import SuiteContext, make_suite_context
 from bench_harness.suites.quality import CODE_CONDITION_KEY, ProblemsLoader, QualitySuite
 from bench_harness.types import (
@@ -32,8 +35,12 @@ from bench_harness.types import (
     Profile,
     QualityOutcome,
     QualityVerdict,
+    RunRequest,
+    RunStatus,
     SandboxSettings,
     SandboxUnavailable,
+    SuiteName,
+    Summary,
     TargetDef,
     TrialRecord,
 )
@@ -156,3 +163,73 @@ async def test_the_code_condition_scores_in_a_real_container(
 
     # 隔離の識別子が、計測ランに書ける形で取れる (5.5、design.md scoring/sandbox)
     assert suite.run_info().sandbox_image_ref is not None
+
+
+async def test_the_code_condition_runs_end_to_end_and_records_the_dataset(
+    fake_server: FakeServer,
+    tmp_path: Path,
+    sandbox: ContainerSandbox,
+    settings: SandboxSettings,
+) -> None:
+    """実コンテナの採点からrunnerの保存・要約まで、課題の出典を保持する。"""
+    targets = tmp_path / "targets.toml"
+    targets.write_text(
+        f'[targets.fake]\nbase_url = "{fake_server.base_url}"\nmodel = "fake-model"\n',
+        encoding="utf-8",
+    )
+    profiles = tmp_path / "profiles.toml"
+    digest = f'image_digest = "{settings.image_digest}"\n' if settings.image_digest else ""
+    profiles.write_text(
+        "[profiles.integration]\nmin_successes = 1\n"
+        "[profiles.integration.quality]\ntoolcall_tasks = 1\n"
+        "needle_lengths = [800]\nneedle_depths = [50]\ntrials_per_cell = 1\n"
+        "code_max_tokens = 256\ncode_problem_limit = 2\n"
+        "[profiles.integration.sandbox]\n"
+        f'runtime = "{settings.runtime}"\nimage = "{settings.image}"\n'
+        f"{digest}timeout_s = {settings.timeout_s}\nmemory_mb = {settings.memory_mb}\n"
+        f"cpus = {settings.cpus}\npids_limit = {settings.pids_limit}\n",
+        encoding="utf-8",
+    )
+    fake_server.set_response_factory(_responder)
+    registry = {
+        SuiteName.QUALITY: QualitySuite(
+            sandbox_factory=lambda _settings: sandbox, problems_loader=_loader()
+        )
+    }
+    outcome = await execute_run(
+        RunRequest(target_name="fake", suites=[SuiteName.QUALITY], profile_name="integration"),
+        StderrProgressSink(),
+        targets_path=targets,
+        profiles_path=profiles,
+        results_root=tmp_path / "results",
+        registry=registry,
+        env={},
+    )
+    write_summary(outcome.run_dir)
+
+    assert outcome.status is RunStatus.COMPLETED
+    store = RunStore.open(outcome.run_dir)
+    dataset = humaneval.dataset_ref()
+    assert store.manifest().skipped == []
+    assert store.manifest().datasets == [dataset]
+    records, warnings = store.read_trials()
+    assert warnings == []
+    code_records = [record for record in records if record.condition == CODE_CONDITION_KEY]
+    assert [
+        record.verdict.outcome
+        for record in code_records
+        if isinstance(record.verdict, QualityVerdict)
+    ] == [QualityOutcome.CORRECT, QualityOutcome.INCORRECT]
+    first = code_records[0].verdict
+    assert isinstance(first, QualityVerdict)
+    assert first.sandbox is not None and first.sandbox.passed
+
+    summary = Summary.model_validate_json(
+        (outcome.run_dir / "summary.json").read_text(encoding="utf-8")
+    )
+    assert [item.name for item in summary.datasets] == [dataset.name]
+    assert summary.datasets[0].version == dataset.version
+    assert summary.datasets[0].license == dataset.license
+    markdown = (outcome.run_dir / "summary.md").read_text(encoding="utf-8")
+    assert "## 使った公開の課題" in markdown
+    assert dataset.license in markdown

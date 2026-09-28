@@ -44,7 +44,7 @@ from bench_harness.analysis.compare import (
     render_comparison_markdown,
     write_comparison,
 )
-from bench_harness.analysis.stats import binomial_interval, diff_verdict
+from bench_harness.analysis.stats import binomial_interval, describe, diff_verdict
 from bench_harness.store.rawstore import RunStore, StoreError
 from bench_harness.types import (
     AgentSettings,
@@ -83,6 +83,108 @@ TPS = (20.0, 21.0, 22.0, 23.0)
 TPS_FASTER = (22.0, 23.1, 24.2, 25.3)
 """A のちょうど 1.1 倍。中央値は 23.65 で、差の割合は 10%。"""
 TTFT = (0.50, 0.55, 0.60, 0.65)
+
+
+def test_old_summary_without_phase_fields_remains_readable() -> None:
+    original = Summary(
+        conditions=_manifest(RUN_A, status=RunStatus.COMPLETED),
+        incomplete=False,
+        results=[
+            MetricResult(
+                condition=CONDITION,
+                metric="decode_tps",
+                tier="primary",
+                continuous=describe([20.0, 21.0]),
+            )
+        ],
+    )
+    data = original.model_dump_json(
+        exclude={
+            "output_phases": True,
+            "phase_warnings": True,
+            "output_retokenization_counts": True,
+            "conditions": {"output_retokenization"},
+        }
+    )
+    restored = Summary.model_validate_json(data)
+    assert restored.output_phases == {}
+    assert restored.phase_warnings == []
+    assert restored.output_retokenization_counts == {}
+    assert restored.conditions.output_retokenization is None
+    assert _row(compare_summaries(restored, restored), CONDITION, "decode_tps")
+
+
+def test_old_summary_without_phase_results_stays_unknown_in_new_comparison() -> None:
+    old = Summary(
+        conditions=_manifest(RUN_A, status=RunStatus.COMPLETED),
+        incomplete=False,
+        results=[
+            MetricResult(
+                condition=CONDITION,
+                metric="decode_tps",
+                tier="primary",
+                continuous=describe([20.0, 21.0]),
+            )
+        ],
+    )
+    new = Summary(
+        conditions=_manifest(RUN_B, status=RunStatus.COMPLETED),
+        incomplete=False,
+        results=[
+            MetricResult(
+                condition=CONDITION,
+                metric="decode_tps",
+                tier="primary",
+                continuous=describe([20.0, 21.0]),
+            ),
+            MetricResult(
+                condition=CONDITION,
+                metric="text_chars_per_s",
+                tier="primary",
+                continuous=describe([8.0, 9.0]),
+            ),
+        ],
+    )
+    old = Summary.model_validate_json(
+        old.model_dump_json(
+            exclude={
+                "output_phases": True,
+                "phase_warnings": True,
+                "output_retokenization_counts": True,
+                "conditions": {"output_retokenization"},
+            }
+        )
+    )
+    report = compare_summaries(old, new)
+
+    row = _row(report, CONDITION, "text_chars_per_s")
+    assert row.value_a is None
+    assert row.value_b == pytest.approx(8.5)
+    assert row.verdict is None
+    assert any("不明" in warning or "除外" in warning for warning in report.warnings)
+
+
+def test_phase_warnings_from_both_summaries_reach_comparison() -> None:
+    summary_a = Summary(
+        conditions=_manifest(RUN_A, status=RunStatus.COMPLETED),
+        incomplete=False,
+        phase_warnings=["本文未到達 A: 2 件"],
+    )
+    summary_b = Summary(
+        conditions=_manifest(RUN_B, status=RunStatus.COMPLETED),
+        incomplete=False,
+        phase_warnings=["本文未到達 B: 3 件"],
+    )
+
+    report = compare_summaries(summary_a, summary_b)
+
+    assert any(
+        "計測ラン A" in warning and "本文未到達 A: 2 件" in warning for warning in report.warnings
+    )
+    assert any(
+        "計測ラン B" in warning and "本文未到達 B: 3 件" in warning for warning in report.warnings
+    )
+
 
 OUTPUT_TOKENS = 101
 """生成速度の分子が 100 になるので、時刻の逆算が単純になる。"""
@@ -292,7 +394,10 @@ def test_identical_raw_data_is_within_everywhere_and_paired(tmp_path: Path) -> N
         assert row.verdict.verdict == "within", f"{row.metric} が収まらない"
         assert row.verdict.paired is True, f"{row.metric} が対応のある比較になっていない"
         assert row.diff == pytest.approx(0.0, abs=1e-9)
-    assert report.warnings == [], "設定が同じなのに警告が出ている"
+    assert len(report.warnings) == 2
+    assert all("段階別計測情報が不明 4 件" in warning for warning in report.warnings)
+    assert any(f"計測ラン A (`{RUN_A}`)" in warning for warning in report.warnings)
+    assert any(f"計測ラン B (`{RUN_B}`)" in warning for warning in report.warnings)
     assert report.excluded == []
     assert report.repeatability is not None
     assert report.repeatability.all_within is True
@@ -1180,8 +1285,8 @@ def test_markdown_separates_primary_from_reference(tmp_path: Path) -> None:
     primary_at = text.index("## 主な結果")
     reference_at = text.index("## 参考")
     assert primary_at < reference_at
-    assert primary_at < text.index(CONDITION) < reference_at
-    assert reference_at < text.index("concurrency/c8")
+    assert primary_at < text.index(CONDITION, primary_at) < reference_at
+    assert reference_at < text.index("concurrency/c8", reference_at)
 
 
 def test_markdown_shows_the_judgement_the_pairing_and_the_bootstrap_columns(

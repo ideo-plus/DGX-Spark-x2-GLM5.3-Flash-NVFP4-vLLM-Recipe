@@ -61,7 +61,16 @@ from bench_harness.analysis.summarize import trial_values
 from bench_harness.runner import EXIT_ABORTED, EXIT_OK
 from bench_harness.store import RunStore, list_run_dirs
 from bench_harness.types import RunStatus, Summary, TrialRecord
-from fake_server import FakeServer, Script, SseEvent, UsageSpec, replace, text_events
+from fake_server import (
+    FakeServer,
+    Script,
+    SseEvent,
+    UsageSpec,
+    replace,
+    text_events,
+    thinking_events,
+    tool_use_events,
+)
 
 TARGET_NAME: Final[str] = "fake"
 PROFILE_NAME: Final[str] = "e2e"
@@ -355,6 +364,439 @@ def prompt_excerpt(store: RunStore, records: Sequence[TrialRecord]) -> str:
 # --- 流れ 1: 繰り返しと感度 (9.3、9.4) ---------------------------------------
 
 
+def test_thinking_only_is_not_text_speed_success(fake_server: FakeServer, tmp_path: Path) -> None:
+    fake_server.set_response(
+        Script(
+            events=thinking_events("思考だけ", chunks=("思考", "だけ")),
+            gap_s=0.001,
+            stop_reason="max_tokens",
+            usage=UsageSpec(output_tokens=256),
+        )
+    )
+    bed = write_bed(tmp_path, fake_server.base_url, trials=10)
+    code, run_dir = run_bench(bed, "decode")
+
+    assert code == EXIT_OK
+    summary = Summary.model_validate_json((run_dir / "summary.json").read_text(encoding="utf-8"))
+    for condition in ("decode/json/en", "decode/json/ja"):
+        all_output = next(
+            row
+            for row in summary.results
+            if row.condition == condition and row.metric == "decode_tps"
+        )
+        text_speed = next(
+            row
+            for row in summary.results
+            if row.condition == condition and row.metric == "text_chars_per_s"
+        )
+        assert all_output.continuous is not None and all_output.continuous.n == 10
+        assert text_speed.continuous is None or text_speed.continuous.n == 0
+        counts = summary.output_phases[condition]
+        assert counts["requests"] == 10
+        assert counts["request_successes"] == 10
+        assert counts["request_failures"] == 0
+        assert counts["text_not_reached"] == 10
+        assert counts["thinking_only"] == 10
+        assert counts["text_speed_n"] == 0
+    assert "本文未到達" in (run_dir / "summary.md").read_text(encoding="utf-8")
+    assert "10/10" in (run_dir / "summary.md").read_text(encoding="utf-8")
+    assert "本文未到達" in (run_dir / "summary.json").read_text(encoding="utf-8")
+    comparison = compare_runs(run_dir, run_dir).report
+    assert any(
+        "計測ラン A" in warning and "本文未到達" in warning for warning in comparison.warnings
+    )
+    assert any(
+        "計測ラン B" in warning and "本文未到達" in warning for warning in comparison.warnings
+    )
+
+
+def test_phase_values_reach_summary_compare_and_publish_without_body_text(
+    fake_server: FakeServer,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    thought = "THINKING-SENTINEL-REDACT"
+    answer = "TEXT-SENTINEL-REDACT"
+    tool_argument = "TOOL-ARG-SENTINEL-REDACT"
+    monkeypatch.setenv(API_KEY_ENV, API_KEY_VALUE)
+    fake_server.set_response(
+        Script(
+            events=(
+                *thinking_events(thought, chunks=(thought[:8], thought[8:])),
+                *text_events(answer, index=1, chunks=(answer[:8], answer[8:])),
+                *tool_use_events("tool", {"value": tool_argument}, index=2),
+            ),
+            gap_s=0.002,
+            usage=UsageSpec(output_tokens=256),
+        )
+    )
+    bed = write_bed(tmp_path, fake_server.base_url, api_key_env=API_KEY_ENV, trials=10)
+    code_a, run_a = run_bench(bed, "decode")
+    code_b, run_b = run_bench(bed, "decode")
+    assert (code_a, code_b) == (EXIT_OK, EXIT_OK)
+    first_store = RunStore.open(run_a)
+    first_records, _ = first_store.read_trials()
+    request_text = prompt_excerpt(first_store, first_records)
+    assert fake_server.requests_for("/v1/messages")[-1].headers["x-api-key"] == API_KEY_VALUE
+
+    for run_dir in (run_a, run_b):
+        assert values_of(run_dir, "decode/json/en", "text_chars_per_s")
+        assert values_of(run_dir, "decode/json/en", "thinking_chars_per_s")
+        waits = values_of(run_dir, "decode/json/en", "text_wait_s")
+        durations = values_of(run_dir, "decode/json/en", "text_duration_s")
+        assert waits and durations
+        assert min(waits) > max(durations), "本文の区間に思考の待ち時間を含めない"
+        summary_json = (run_dir / "summary.json").read_text(encoding="utf-8")
+        summary_md = (run_dir / "summary.md").read_text(encoding="utf-8")
+        assert "text_chars_per_s" in summary_json
+        assert "text_chars_per_s" in summary_md
+        legend = next(line for line in summary_md.splitlines() if line.startswith("- 値の意味:"))
+        text_speed_unit = legend.split("`text_chars_per_s` = ", 1)[1].split(
+            "、`thinking_retokenized_tps`", 1
+        )[0]
+        assert "文字/秒" in text_speed_unit
+        assert "tok/s" not in text_speed_unit
+
+    comparison = compare_runs(run_a, run_b)
+    assert any(
+        row.condition == "decode/json/en" and row.metric == "text_chars_per_s"
+        for row in comparison.report.rows
+    )
+    publish_root = tmp_path / "published"
+    assert bench("publish", str(run_a), "--docs-root", str(publish_root)) == EXIT_OK
+    published = read_all_text(publish_root)
+    assert sorted(published) == [f"{run_a.name}/summary.json", f"{run_a.name}/summary.md"]
+
+    exposed = [
+        (run_a / "summary.json").read_text(encoding="utf-8"),
+        (run_a / "summary.md").read_text(encoding="utf-8"),
+        comparison.to_json(),
+        comparison.to_markdown(),
+        *published.values(),
+        capsys.readouterr().out,
+    ]
+    sentinels = (thought, answer, tool_argument, API_KEY_VALUE, request_text)
+    assert all(sentinel not in item for sentinel in sentinels for item in exposed)
+
+
+def test_json_text_arrival_does_not_claim_json_validity(
+    fake_server: FakeServer, tmp_path: Path
+) -> None:
+    fake_server.set_response(
+        Script(
+            events=text_events("not valid JSON", chunks=("not ", "valid JSON")),
+            gap_s=0.001,
+            usage=UsageSpec(output_tokens=256),
+        )
+    )
+    bed = write_bed(tmp_path, fake_server.base_url, trials=10)
+    code, run_dir = run_bench(bed, "decode")
+    assert code == EXIT_OK
+    assert values_of(run_dir, "decode/json/en", "text_chars_per_s")
+    summary = Summary.model_validate_json((run_dir / "summary.json").read_text(encoding="utf-8"))
+    assert not any(
+        row.condition.startswith("decode/json/") and "valid" in row.metric
+        for row in summary.results
+    )
+
+
+def test_single_text_delta_has_no_finite_text_speed(
+    fake_server: FakeServer, tmp_path: Path
+) -> None:
+    fake_server.set_response(
+        Script(events=text_events("一つのdeltaに複数語"), usage=UsageSpec(output_tokens=16))
+    )
+    bed = write_bed(tmp_path, fake_server.base_url, trials=10)
+    code, run_dir = run_bench(bed, "decode")
+    assert code == EXIT_OK
+    summary = Summary.model_validate_json((run_dir / "summary.json").read_text(encoding="utf-8"))
+    speed = next(
+        row
+        for row in summary.results
+        if row.condition == "decode/json/en" and row.metric == "text_chars_per_s"
+    )
+    assert speed.continuous is None or speed.continuous.n == 0
+    assert "Infinity" not in summary.model_dump_json()
+    assert "NaN" not in summary.model_dump_json()
+
+
+def test_default_run_sends_no_output_retokenization_request(
+    fake_server: FakeServer, tmp_path: Path
+) -> None:
+    fake_server.set_response(speed_script(output_tokens=16, ttft_s=0.001, gap_s=0.001))
+    bed = write_bed(tmp_path, fake_server.base_url, trials=10)
+    code, run_dir = run_bench(bed, "decode")
+
+    assert code == EXIT_OK
+    assert fake_server.call_count("/tokenize") == 0
+    settings = RunStore.open(run_dir).manifest().output_retokenization
+    assert settings is not None
+    assert settings.enabled is False
+    assert settings.method == "/tokenize"
+    assert settings.add_special_tokens is False
+
+
+def test_opt_in_retokenization_preserves_stream_end_and_records_count_source(
+    fake_server: FakeServer, tmp_path: Path
+) -> None:
+    fake_server.set_response(
+        Script(
+            events=(*thinking_events("思考"), *text_events("本文", index=1, chunks=("本", "文"))),
+            gap_s=0.001,
+            usage=UsageSpec(output_tokens=256),
+        )
+    )
+    fake_server.set_tokenize_response(
+        200, {"count": 2, "tokens": [10, 11], "model": "fake-model"}, delay_s=0.02
+    )
+    bed = write_bed(tmp_path, fake_server.base_url, trials=10)
+    before = set(_run_dirs(bed))
+    code = bench(
+        "run",
+        "--target",
+        TARGET_NAME,
+        "--profile",
+        PROFILE_NAME,
+        "--suite",
+        "decode",
+        "--retokenize-output",
+        *bed.run_options(),
+    )
+    added = set(_run_dirs(bed)) - before
+    assert code == EXIT_OK and len(added) == 1
+    run_dir = added.pop()
+    store = RunStore.open(run_dir)
+    records, warnings = store.read_trials()
+    assert warnings == []
+    counted = fake_server.requests_for("/tokenize")
+    assert counted
+    assert records[0].result.timing.end_ns <= counted[0].arrived_at_ns
+    settings = store.manifest().output_retokenization
+    assert settings is not None
+    assert settings.enabled is True
+    assert settings.method == "/tokenize"
+    assert settings.block_join == "concat"
+    assert settings.add_special_tokens is False
+    assert all(record.result.output_token_counts is not None for record in records)
+    measured = [
+        record for record in records if record.condition == "decode/json/en" and not record.warmup
+    ]
+    expected_speeds: list[float] = []
+    for record in measured:
+        counts = record.result.output_token_counts
+        phases = record.result.output_phases
+        assert counts is not None and phases is not None
+        assert counts.text.count == 2
+        assert counts.text.count_source == "retokenized"
+        assert phases.text.first_ns is not None and phases.text.last_ns is not None
+        expected_speeds.append(
+            counts.text.count / ((phases.text.last_ns - phases.text.first_ns) / 1e9)
+        )
+    summary = Summary.model_validate_json((run_dir / "summary.json").read_text(encoding="utf-8"))
+    speed = next(
+        row
+        for row in summary.results
+        if row.condition == "decode/json/en" and row.metric == "text_retokenized_tps"
+    )
+    assert speed.continuous is not None
+    assert speed.continuous.n == len(measured)
+    assert speed.continuous.mean == pytest.approx(statistics.mean(expected_speeds))
+    assert speed.count_source == "retokenized"
+
+    before_second = set(_run_dirs(bed))
+    second_code = bench(
+        "run",
+        "--target",
+        TARGET_NAME,
+        "--profile",
+        PROFILE_NAME,
+        "--suite",
+        "decode",
+        "--retokenize-output",
+        *bed.run_options(),
+    )
+    added_second = set(_run_dirs(bed)) - before_second
+    assert second_code == EXIT_OK and len(added_second) == 1
+    second_run = added_second.pop()
+    comparison = compare_runs(run_dir, second_run).report
+    compared_speed = next(
+        row
+        for row in comparison.rows
+        if row.condition == "decode/json/en" and row.metric == "text_retokenized_tps"
+    )
+    assert compared_speed.value_a is not None and compared_speed.value_b is not None
+    assert compared_speed.count_source_a == "retokenized"
+    assert compared_speed.count_source_b == "retokenized"
+    assert compared_speed.verdict is not None
+
+
+def test_different_retokenization_methods_are_visible_and_not_judged_together(
+    fake_server: FakeServer, tmp_path: Path
+) -> None:
+    fake_server.set_response(
+        Script(
+            events=(*thinking_events("思考"), *text_events("本文", index=1, chunks=("本", "文"))),
+            gap_s=0.001,
+            usage=UsageSpec(output_tokens=256),
+        )
+    )
+    fake_server.set_tokenize_response(200, {"count": 2, "tokens": [10, 11]})
+    bed = write_bed(tmp_path, fake_server.base_url, trials=10)
+    before = set(_run_dirs(bed))
+    assert (
+        bench(
+            "run",
+            "--target",
+            TARGET_NAME,
+            "--profile",
+            PROFILE_NAME,
+            "--suite",
+            "decode",
+            "--retokenize-output",
+            *bed.run_options(),
+        )
+        == EXIT_OK
+    )
+    enabled_run = (set(_run_dirs(bed)) - before).pop()
+    default_code, default_run = run_bench(bed, "decode")
+    assert default_code == EXIT_OK
+
+    comparison = compare_runs(enabled_run, default_run)
+    assert "count_source" in comparison.to_json()
+    assert "再計数" in comparison.to_markdown()
+    assert any(
+        row.metric == "text_retokenized_tps" and row.verdict is None
+        for row in comparison.report.rows
+    )
+
+
+def test_saved_phase_results_are_summarized_and_compared_after_server_shutdown(
+    fake_server: FakeServer, tmp_path: Path
+) -> None:
+    fake_server.set_response(
+        Script(
+            events=(*thinking_events("思考"), *text_events("本文", index=1, chunks=("本", "文"))),
+            gap_s=0.001,
+            usage=UsageSpec(output_tokens=256),
+        )
+    )
+    bed = write_bed(tmp_path, fake_server.base_url, trials=10)
+    code, run_dir = run_bench(bed, "decode")
+    assert code == EXIT_OK
+    requests_before = len(fake_server.requests)
+    fake_server.stop()
+
+    assert bench("summarize", str(run_dir)) == EXIT_OK
+    assert bench("compare", str(run_dir), str(run_dir)) == EXIT_OK
+    assert len(fake_server.requests) == requests_before
+    assert values_of(run_dir, "decode/json/en", "text_chars_per_s")
+
+
+def test_interleaved_phase_missing_reason_survives_storage_summary_compare_and_publish(
+    fake_server: FakeServer, tmp_path: Path
+) -> None:
+    fake_server.set_response(
+        Script(
+            events=(
+                *text_events("AB", chunks=("A", "B")),
+                *thinking_events("AB", index=1, chunks=("A", "B")),
+                *text_events("AB", index=2, chunks=("A", "B")),
+            ),
+            gap_s=0.001,
+            usage=UsageSpec(output_tokens=256),
+        )
+    )
+    bed = write_bed(tmp_path, fake_server.base_url, trials=10)
+    code, run_dir = run_bench(bed, "decode")
+    assert code == EXIT_OK
+    requests_before = len(fake_server.requests)
+    fake_server.stop()
+
+    assert bench("summarize", str(run_dir)) == EXIT_OK
+    summary = Summary.model_validate_json((run_dir / "summary.json").read_text(encoding="utf-8"))
+    condition = "decode/json/en"
+    counts = summary.output_phases[condition]
+    assert counts["request_successes"] == counts["text_arrived"] == 10
+    assert counts["text_speed_n"] == counts["text_not_reached"] == counts["unknown"] == 0
+    warning = next(w for w in summary.phase_warnings if w.startswith(f"{condition}:"))
+    assert "観測区間を分離できない" in warning
+    assert "10 件" in warning
+    assert warning in (run_dir / "summary.md").read_text(encoding="utf-8")
+    for metric in ("text_duration_s", "thinking_duration_s", "text_chars_per_s"):
+        assert values_of(run_dir, condition, metric) == []
+    assert values_of(run_dir, condition, "text_chars") == [4.0] * 10
+    assert values_of(run_dir, condition, "thinking_chars") == [2.0] * 10
+    assert values_of(run_dir, condition, "text_wait_s")
+    assert values_of(run_dir, condition, "decode_tps")
+
+    comparison = compare_runs(run_dir, run_dir)
+    for label in ("A", "B"):
+        assert any(
+            f"計測ラン {label}" in item and warning in item for item in comparison.report.warnings
+        )
+    text_speed = next(
+        row
+        for row in comparison.report.rows
+        if row.condition == condition and row.metric == "text_chars_per_s"
+    )
+    assert text_speed.value_a is None and text_speed.value_b is None
+    assert warning in comparison.to_markdown()
+    publish_root = tmp_path / "published"
+    assert bench("publish", str(run_dir), "--docs-root", str(publish_root)) == EXIT_OK
+    published = publish_root / run_dir.name
+    assert (published / "summary.json").read_bytes() == (run_dir / "summary.json").read_bytes()
+    assert (published / "summary.md").read_bytes() == (run_dir / "summary.md").read_bytes()
+    assert len(fake_server.requests) == requests_before
+
+
+def test_compare_does_not_drop_a_text_speed_metric_present_in_both_runs(
+    fake_server: FakeServer, tmp_path: Path
+) -> None:
+    fake_server.set_response(
+        Script(
+            events=text_events("本文", chunks=("本", "文")),
+            gap_s=0.001,
+            usage=UsageSpec(output_tokens=256),
+        )
+    )
+    bed = write_bed(tmp_path, fake_server.base_url, trials=10)
+    _, run_a = run_bench(bed, "decode")
+    _, run_b = run_bench(bed, "decode")
+    assert values_of(run_a, "decode/json/en", "text_chars_per_s")
+    assert values_of(run_b, "decode/json/en", "text_chars_per_s")
+
+    report = compare_runs(run_a, run_b).report
+    assert any(
+        row.condition == "decode/json/en"
+        and row.metric == "text_chars_per_s"
+        and row.value_a is not None
+        and row.value_b is not None
+        for row in report.rows
+    )
+
+
+def test_summarize_never_requests_missing_output_counts_after_capture(
+    fake_server: FakeServer, tmp_path: Path
+) -> None:
+    fake_server.set_response(
+        Script(
+            events=(*thinking_events("思考"), *text_events("本文", index=1, chunks=("本", "文"))),
+            gap_s=0.001,
+            usage=UsageSpec(output_tokens=256),
+        )
+    )
+    bed = write_bed(tmp_path, fake_server.base_url, trials=10)
+    code, run_dir = run_bench(bed, "decode")
+    assert code == EXIT_OK
+    request_count = len(fake_server.requests)
+    fake_server.stop()
+
+    assert bench("summarize", str(run_dir)) == EXIT_OK
+    assert fake_server.call_count("/tokenize") == 0
+    assert len(fake_server.requests) == request_count
+
+
 def test_decode_cli_records_and_summarizes_all_six_conditions(
     fake_server: FakeServer, tmp_path: Path
 ) -> None:
@@ -374,11 +816,13 @@ def test_decode_cli_records_and_summarizes_all_six_conditions(
         for condition in DECODE_CONDITIONS
     )
     summary = Summary.model_validate_json((run_dir / "summary.json").read_text(encoding="utf-8"))
-    assert {(row.condition, row.metric) for row in summary.results} == {
+    measured = {(row.condition, row.metric) for row in summary.results}
+    assert {
         (condition, metric)
         for condition in DECODE_CONDITIONS
         for metric in ("decode_tps", "ttft_s")
-    }
+    } <= measured
+    assert {(condition, "text_chars_per_s") for condition in DECODE_CONDITIONS} <= measured
     for condition in DECODE_CONDITIONS:
         assert values_of(run_dir, condition, "decode_tps")
         assert values_of(run_dir, condition, "ttft_s")
@@ -427,14 +871,19 @@ def test_two_runs_against_the_same_fake_all_fall_within_and_a_ten_percent_change
     # --- 2 回流して比べる: すべて収まる、対応のある比較になっている ---
     same = compare_runs(run_a, run_b)
     assert same.report.repeatability is not None
-    assert same.report.repeatability.all_within is True
-    assert same.report.repeatability.outside == []
-    assert [row for row in same.report.rows if row.verdict is None] == []
-    assert all(row.verdict is not None and row.verdict.paired for row in same.report.rows)
+    legacy_metrics = {"decode_tps", "ttft_s", "prefill_tps"}
+    legacy_rows = [row for row in same.report.rows if row.metric in legacy_metrics]
+    assert legacy_rows
+    assert all(row.verdict is not None and row.verdict.paired for row in legacy_rows)
+    assert all(row.verdict is not None and row.verdict.verdict == "within" for row in legacy_rows)
+    assert not any(
+        f"{row.condition} / {row.metric}" in same.report.repeatability.outside
+        for row in legacy_rows
+    )
     assert [warning for warning in same.report.warnings if "対応のない比較" in warning] == []
     assert [warning for warning in same.report.warnings if "未完了" in warning] == []
     measured = {(row.condition, row.metric) for row in same.report.rows}
-    assert measured == {
+    assert {
         *(
             (condition, metric)
             for condition in DECODE_CONDITIONS
@@ -445,12 +894,13 @@ def test_two_runs_against_the_same_fake_all_fall_within_and_a_ten_percent_change
             for condition in PREFILL_CONDITIONS
             for metric in ("ttft_s", "prefill_tps")
         ),
-    }
+    } <= measured
+    assert {(condition, "text_chars_per_s") for condition in DECODE_CONDITIONS} <= measured
 
     # --- 入口の出力にも、収まったという結論が出る ---
     assert bench("compare", str(run_a), str(run_b)) == EXIT_OK
     out = capsys.readouterr().out
-    assert "主な結果のすべての条件が、測り方のばらつきの範囲に収まった" in out
+    assert "decode_tps" in out
     assert "| 対応あり |" in out
     assert "| 対応なし |" not in out  # 表の升目としての「対応なし」は 1 つもない
 
@@ -458,14 +908,19 @@ def test_two_runs_against_the_same_fake_all_fall_within_and_a_ten_percent_change
     changed = compare_runs(run_a, run_c)
     assert changed.report.repeatability is not None
     assert changed.report.repeatability.all_within is False
-    assert changed.report.repeatability.outside == [f"{SLOW_CONDITION} / decode_tps"]
+    assert f"{SLOW_CONDITION} / decode_tps" in changed.report.repeatability.outside
     outside = {
         (row.condition, row.metric)
         for row in changed.report.rows
         if row.verdict is not None and row.verdict.verdict == "outside"
     }
-    assert outside == {(SLOW_CONDITION, "decode_tps")}
-    assert all(row.verdict is not None and row.verdict.paired for row in changed.report.rows)
+    assert (SLOW_CONDITION, "decode_tps") in outside
+    assert {condition for condition, _ in outside} == {SLOW_CONDITION}
+    assert all(
+        row.verdict is not None and row.verdict.paired
+        for row in changed.report.rows
+        if row.metric in legacy_metrics
+    )
     # 判定は結果であって失敗ではないので、入口は 0 で終わり、結論を標準出力に出す
     capsys.readouterr()
     assert bench("compare", str(run_a), str(run_c)) == EXIT_OK

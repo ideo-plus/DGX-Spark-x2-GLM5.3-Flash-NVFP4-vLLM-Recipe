@@ -224,6 +224,7 @@ async def execute(
     progress: ProgressSink | None = None,
     env: Mapping[str, str] | None = None,
     trials_override: Mapping[str, int] | None = None,
+    retokenize_output: bool = False,
     target_name: str = TARGET_NAME,
     profile_name: str = PROFILE_NAME,
 ) -> RunOutcome:
@@ -234,6 +235,7 @@ async def execute(
             suites=list(suites),
             profile_name=profile_name,
             trials_override=dict(trials_override if trials_override is not None else {}),
+            retokenize_output=retokenize_output,
         ),
         progress if progress is not None else RecordingProgress(),
         targets_path=bed.targets,
@@ -650,6 +652,8 @@ async def test_a_decode_run_completes_and_records_the_conditions(
     assert manifest.profile.decode.trials == 10
     assert manifest.context_limit == 200000
     assert manifest.generator_version >= 1
+    assert manifest.output_retokenization is not None
+    assert manifest.output_retokenization.enabled is False
     assert manifest.skipped == []
     assert re.fullmatch(r"[^+]+\+(g[0-9a-f]{7,}(\.dirty)?|unknown)", manifest.harness_version)
 
@@ -674,6 +678,61 @@ async def test_a_decode_run_completes_and_records_the_conditions(
     assert len(list((outcome.run_dir / "metrics").glob("*.before.prom"))) == 6
     assert len(list((outcome.run_dir / "metrics").glob("*.after.prom"))) == 6
     assert progress.updates[-1][2] == 10
+
+
+async def test_opt_in_recounts_only_after_a_completed_stream(
+    fake_server: FakeServer, tmp_path: Path
+) -> None:
+    fake_server.set_response(text_response("本文"))
+    fake_server.set_tokenize_response(200, {"count": 2, "tokens": [10, 11]})
+    bed = make_bed(tmp_path, fake_server, decode_trials=10)
+
+    outcome = await execute(bed, retokenize_output=True)
+
+    assert outcome.status is RunStatus.COMPLETED
+    manifest = opened(outcome).manifest()
+    assert manifest.output_retokenization is not None
+    assert manifest.output_retokenization.enabled is True
+    counted = fake_server.requests_for("/tokenize")
+    assert counted
+    records = trials_of(outcome)
+    assert records[0].result.timing.end_ns <= counted[0].arrived_at_ns
+    assert records[0].result.output_token_counts is not None
+    assert records[0].result.output_token_counts.text.count == 2
+    assert records[0].result.error is None
+
+
+async def test_cancelled_recount_keeps_the_completed_concurrency_round(
+    fake_server: FakeServer, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake_server.set_response(text_response("本文"))
+    bed = make_bed(tmp_path, fake_server, concurrency_levels=(2,), concurrency_rounds=1)
+    recount_started = asyncio.Event()
+
+    async def wait_during_recount(*_args: Any, **_kwargs: Any) -> Any:
+        recount_started.set()
+        await asyncio.sleep(3600)
+
+    monkeypatch.setattr(runner_module, "recount_output", wait_during_recount)
+    task = asyncio.create_task(execute(bed, suites=[SuiteName.CONCURRENCY], retokenize_output=True))
+    await asyncio.wait_for(recount_started.wait(), timeout=5)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    run_dirs = list_run_dirs(bed.results_root)
+    assert len(run_dirs) == 1
+    records, warnings = RunStore.open(run_dirs[0]).read_trials()
+    assert warnings == []
+    assert len(records) == 2
+    assert records[0].round_id == records[1].round_id
+    assert all(record.result.output_token_counts is not None for record in records)
+    assert all(
+        record.result.output_token_counts.text.reason == "cancelled"
+        for record in records
+        if record.result.output_token_counts is not None
+    )
+    assert fake_server.call_count("/v1/messages") == 3
 
 
 async def test_a_concurrency_run_counts_every_stream_of_a_round(

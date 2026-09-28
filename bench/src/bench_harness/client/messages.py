@@ -38,6 +38,8 @@ from pydantic import JsonValue, SecretStr, ValidationError
 from bench_harness.types import (
     ContentBlock,
     MessagesRequest,
+    OutputPhases,
+    PhaseObservation,
     RequestError,
     RequestErrorKind,
     StreamResult,
@@ -161,6 +163,30 @@ class _BlockAccumulator:
         return ContentBlock(type=self.type, text="".join(self.text_parts))
 
 
+@dataclass
+class _PhaseAccumulator:
+    has_block: bool = False
+    first_ns: int | None = None
+    last_ns: int | None = None
+    char_count: int = 0
+
+    def observe(self, value: Any, stamp_ns: int) -> None:
+        if not isinstance(value, str) or not value:
+            return
+        if self.first_ns is None:
+            self.first_ns = stamp_ns
+        self.last_ns = stamp_ns
+        self.char_count += len(value)
+
+    def result(self) -> PhaseObservation:
+        return PhaseObservation(
+            has_block=self.has_block,
+            first_ns=self.first_ns,
+            last_ns=self.last_ns,
+            char_count=self.char_count,
+        )
+
+
 def _parse_tool_input(raw: str) -> dict[str, JsonValue] | None:
     """`input_json_delta` をつないだ文字列を、写像として読めたときだけ返す。
 
@@ -225,6 +251,8 @@ class _Collector:
         self.server_model: str | None = None
         self.error: RequestError | None = None
         self._blocks: dict[int, _BlockAccumulator] = {}
+        self._thinking = _PhaseAccumulator()
+        self._text = _PhaseAccumulator()
         self._usage_start: dict[str, Any] = {}
         self._usage_delta: dict[str, Any] = {}
 
@@ -248,7 +276,7 @@ class _Collector:
         if event == "message_start":
             self._on_message_start(payload, stamp_ns)
         elif event == "content_block_start":
-            self._on_block_start(payload)
+            self._on_block_start(payload, stamp_ns)
         elif event == "content_block_delta":
             self._on_block_delta(payload, stamp_ns)
         elif event == "message_delta":
@@ -275,7 +303,7 @@ class _Collector:
         if not self._usage_start:
             self._usage_start = _usage_fields(message.get("usage"))
 
-    def _on_block_start(self, payload: dict[str, Any]) -> None:
+    def _on_block_start(self, payload: dict[str, Any], stamp_ns: int) -> None:
         index = _index_of(payload)
         if index is None:
             return
@@ -286,9 +314,13 @@ class _Collector:
         if kind == "text":
             accumulator = _BlockAccumulator(type="text")
             _append_str(accumulator.text_parts, block.get("text"))
+            self._text.has_block = True
+            self._text.observe(block.get("text"), stamp_ns)
         elif kind == "thinking":
             accumulator = _BlockAccumulator(type="thinking")
             _append_str(accumulator.text_parts, block.get("thinking"))
+            self._thinking.has_block = True
+            self._thinking.observe(block.get("thinking"), stamp_ns)
         elif kind == "tool_use":
             name = block.get("name")
             accumulator = _BlockAccumulator(
@@ -319,13 +351,19 @@ class _Collector:
             inferred = _DELTA_BLOCK_TYPE.get(str(kind))
             accumulator = _BlockAccumulator(type=inferred)
             self._blocks[index] = accumulator
+            if inferred == "text":
+                self._text.has_block = True
+            elif inferred == "thinking":
+                self._thinking.has_block = True
         if accumulator.type is None:
             return
-        if kind == "text_delta":
+        if kind == "text_delta" and accumulator.type == "text":
             _append_str(accumulator.text_parts, delta.get("text"))
-        elif kind == "thinking_delta":
+            self._text.observe(delta.get("text"), stamp_ns)
+        elif kind == "thinking_delta" and accumulator.type == "thinking":
             _append_str(accumulator.text_parts, delta.get("thinking"))
-        elif kind == "input_json_delta":
+            self._thinking.observe(delta.get("thinking"), stamp_ns)
+        elif kind == "input_json_delta" and accumulator.type == "tool_use":
             _append_str(accumulator.json_parts, delta.get("partial_json"))
         # `signature_delta` と知らない種類は、中身に足さない
 
@@ -387,6 +425,10 @@ class _Collector:
             blocks=self.blocks(),
             server_model=self.server_model,
             error=error,
+            output_phases=OutputPhases(
+                thinking=self._thinking.result(),
+                text=self._text.result(),
+            ),
         )
 
     def failed(

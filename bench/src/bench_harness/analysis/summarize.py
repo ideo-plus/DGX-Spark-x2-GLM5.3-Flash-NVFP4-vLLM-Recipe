@@ -143,6 +143,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
 
+from bench_harness.analysis.output_phases import phase_metrics
 from bench_harness.analysis.stats import (
     binomial_interval,
     describe,
@@ -169,6 +170,7 @@ from bench_harness.types import (
     ToolCallVerdict,
     TrialFlag,
     TrialRecord,
+    _RetokenizationCounts,
 )
 
 __all__ = [
@@ -207,6 +209,31 @@ METRIC_PREFILL_TPS: Final[str] = "prefill_tps"
 METRIC_ROUND_TOTAL_TPS: Final[str] = "round_total_tps"
 METRIC_ACCURACY: Final[str] = "accuracy"
 METRIC_AGENT_BREAK_RATE: Final[str] = "agent_break_rate"
+METRIC_TEXT_CHARS_PER_S: Final[str] = "text_chars_per_s"
+METRIC_THINKING_CHARS_PER_S: Final[str] = "thinking_chars_per_s"
+METRIC_TEXT_WAIT: Final[str] = "text_wait_s"
+METRIC_THINKING_DURATION: Final[str] = "thinking_duration_s"
+METRIC_TEXT_DURATION: Final[str] = "text_duration_s"
+METRIC_THINKING_CHARS: Final[str] = "thinking_chars"
+METRIC_TEXT_CHARS: Final[str] = "text_chars"
+METRIC_THINKING_RETOKENIZED_TPS: Final[str] = "thinking_retokenized_tps"
+METRIC_TEXT_RETOKENIZED_TPS: Final[str] = "text_retokenized_tps"
+
+RETOKENIZED_METRIC_NAMES: Final[tuple[str, ...]] = (
+    METRIC_THINKING_RETOKENIZED_TPS,
+    METRIC_TEXT_RETOKENIZED_TPS,
+)
+
+PHASE_METRIC_NAMES: Final[tuple[str, ...]] = (
+    METRIC_TEXT_WAIT,
+    METRIC_THINKING_DURATION,
+    METRIC_TEXT_DURATION,
+    METRIC_THINKING_CHARS,
+    METRIC_TEXT_CHARS,
+    METRIC_THINKING_CHARS_PER_S,
+    METRIC_TEXT_CHARS_PER_S,
+    *RETOKENIZED_METRIC_NAMES,
+)
 
 NOT_SCORED_COUNT: Final[str] = "not_scored"
 """採点できなかった件数を入れる `MetricResult.flag_counts` の鍵 (5.7、注 1.2)。"""
@@ -214,9 +241,14 @@ NOT_SCORED_COUNT: Final[str] = "not_scored"
 _NS_PER_S: Final[float] = 1e9
 
 _SUITE_METRICS: Final[dict[SuiteName, tuple[str, ...]]] = {
-    SuiteName.DECODE: (METRIC_DECODE_TPS, METRIC_TTFT),
+    SuiteName.DECODE: (METRIC_DECODE_TPS, METRIC_TTFT, *PHASE_METRIC_NAMES),
     SuiteName.PREFILL: (METRIC_TTFT, METRIC_PREFILL_TPS),
-    SuiteName.CONCURRENCY: (METRIC_DECODE_TPS, METRIC_ROUND_TOTAL_TPS, METRIC_TTFT),
+    SuiteName.CONCURRENCY: (
+        METRIC_DECODE_TPS,
+        METRIC_ROUND_TOTAL_TPS,
+        METRIC_TTFT,
+        *PHASE_METRIC_NAMES,
+    ),
 }
 """まとまりごとに出す**連続の値**と、その並び。ここにないまとまりは出さない。"""
 
@@ -373,6 +405,8 @@ def summarize_run(run_dir: Path) -> SummaryResult:
     notes: list[str] = []
     stages = _stage_counts_by_condition(trials, notes)
     results = _summarize_trials(trials, manifest.profile.min_successes, stages, notes)
+    output_phases, phase_warnings = _phase_conditions(trials)
+    recount_counts = _recount_conditions(trials)
     server_metrics = _server_metrics(deltas, notes)
     summary = Summary(
         conditions=manifest,
@@ -381,8 +415,97 @@ def summarize_run(run_dir: Path) -> SummaryResult:
         agent=_agent_summary(manifest, stages),
         server_metrics=server_metrics,
         datasets=list(manifest.datasets),
+        output_phases=output_phases,
+        phase_warnings=phase_warnings,
+        output_retokenization_counts=recount_counts,
     )
     return SummaryResult(summary=summary, warnings=[*trial_warnings, *delta_warnings, *notes])
+
+
+def _recount_conditions(trials: Sequence[TrialRecord]) -> dict[str, _RetokenizationCounts]:
+    groups: dict[str, list[TrialRecord]] = {}
+    for record in trials:
+        if record.warmup or record.suite not in (SuiteName.DECODE, SuiteName.CONCURRENCY):
+            continue
+        if record.result.output_token_counts is not None:
+            groups.setdefault(record.condition, []).append(record)
+    result: dict[str, _RetokenizationCounts] = {}
+    for condition, records in groups.items():
+        missing: dict[str, int] = {}
+        thinking_counted = 0
+        text_counted = 0
+        for record in records:
+            counts = record.result.output_token_counts
+            assert counts is not None
+            if counts.thinking.count is not None:
+                thinking_counted += 1
+            elif counts.thinking.reason is not None:
+                key = f"thinking:{counts.thinking.reason}"
+                missing[key] = missing.get(key, 0) + 1
+            if counts.text.count is not None:
+                text_counted += 1
+            elif counts.text.reason is not None:
+                key = f"text:{counts.text.reason}"
+                missing[key] = missing.get(key, 0) + 1
+        result[condition] = _RetokenizationCounts(
+            thinking_counted=thinking_counted,
+            text_counted=text_counted,
+            missing_reasons=missing,
+        )
+    return result
+
+
+def _phase_conditions(
+    trials: Sequence[TrialRecord],
+) -> tuple[dict[str, dict[str, int]], list[str]]:
+    groups: dict[str, list[TrialRecord]] = {}
+    for record in trials:
+        if record.warmup or record.suite not in (SuiteName.DECODE, SuiteName.CONCURRENCY):
+            continue
+        groups.setdefault(record.condition, []).append(record)
+    counts_by_condition: dict[str, dict[str, int]] = {}
+    warnings: list[str] = []
+    for condition, records in groups.items():
+        duration_reasons: dict[str, int] = {}
+        counts = {
+            "requests": len(records),
+            "request_successes": sum(record.result.error is None for record in records),
+            "request_failures": sum(record.result.error is not None for record in records),
+            "text_arrived": 0,
+            "text_not_reached": 0,
+            "thinking_only": 0,
+            "no_text": 0,
+            "unknown": 0,
+            "text_speed_n": 0,
+        }
+        for record in records:
+            phase = phase_metrics(record.result)
+            if phase.duration_reason is not None:
+                reason = phase.duration_reason
+                duration_reasons[reason] = duration_reasons.get(reason, 0) + 1
+            if not phase.observed:
+                counts["unknown"] += 1
+            if phase.status == "text":
+                counts["text_arrived"] += 1
+            elif phase.status == "thinking_only":
+                counts["thinking_only"] += 1
+            else:
+                counts["no_text"] += 1
+            if record.result.error is None and phase.text_chars_per_s is not None:
+                counts["text_speed_n"] += 1
+        not_reached = counts["thinking_only"] + counts["no_text"]
+        counts["text_not_reached"] = not_reached
+        if not_reached:
+            warnings.append(
+                f"{condition}: 本文未到達 {not_reached} 件 "
+                f"(うち思考のみ {counts['thinking_only']} 件)"
+            )
+        if counts["unknown"]:
+            warnings.append(f"{condition}: 段階別計測情報が不明 {counts['unknown']} 件")
+        for reason, count in duration_reasons.items():
+            warnings.append(f"{condition}: {reason} {count} 件")
+        counts_by_condition[condition] = counts
+    return counts_by_condition, warnings
 
 
 def write_summary(run_dir: Path) -> tuple[Path, Path]:
@@ -428,11 +551,21 @@ def _condition_values(trials: Sequence[TrialRecord]) -> list[_ConditionValues]:
             condition=condition,
             records=records,
             values={
-                metric: _VALUE_FUNCS[metric](records) for metric in _SUITE_METRICS.get(suite, ())
+                metric: _VALUE_FUNCS[metric](records)
+                for metric in _condition_metric_names(suite, records)
             },
         )
         for (suite, condition), records in groups.items()
     ]
+
+
+def _condition_metric_names(suite: SuiteName, records: Sequence[TrialRecord]) -> tuple[str, ...]:
+    names = _SUITE_METRICS.get(suite, ())
+    if any(record.result.output_phases is not None for record in records):
+        if any(record.result.output_token_counts is not None for record in records):
+            return names
+        return tuple(name for name in names if name not in RETOKENIZED_METRIC_NAMES)
+    return tuple(name for name in names if name not in PHASE_METRIC_NAMES)
 
 
 def _summarize_trials(
@@ -467,7 +600,7 @@ def _summarize_condition(
     tier: Tier = records[0].tier
 
     rows: list[MetricResult] = []
-    for metric in _SUITE_METRICS.get(suite, ()):
+    for metric in data.values:
         metric_values = data.values[metric]
         if metric_values.unusable:
             notes.append(
@@ -492,6 +625,7 @@ def _summarize_condition(
                     min_successes=min_successes,
                 ),
                 flag_counts=flag_counts,
+                count_source="retokenized" if metric in RETOKENIZED_METRIC_NAMES else None,
             )
         )
     proportion_metric = _SUITE_PROPORTION_METRIC.get(suite)
@@ -849,6 +983,19 @@ def _decode_tps(record: TrialRecord) -> float | None:
     return _ratio(usage.output_tokens - 1, _seconds(timing.first_token_ns, timing.last_token_ns))
 
 
+def _text_chars_per_s(record: TrialRecord) -> float | None:
+    return phase_metrics(record.result).text_chars_per_s
+
+
+def _phase_value(record: TrialRecord, metric: str) -> float | None:
+    value = getattr(phase_metrics(record.result), metric)
+    return float(value) if value is not None else None
+
+
+def _phase_values(metric: str) -> Callable[[Sequence[TrialRecord]], _MetricValues]:
+    return lambda records: _collect(records, lambda record: _phase_value(record, metric))
+
+
 def _prefill_tps(record: TrialRecord) -> float | None:
     """入力の処理速度 (トークン/秒)。分子は、内訳を含む入力の全長 (3.1、3.2)。"""
     usage = record.result.usage
@@ -909,6 +1056,10 @@ def _decode_values(records: Sequence[TrialRecord]) -> _MetricValues:
     return _collect(records, _decode_tps, skip=_too_few_output_tokens)
 
 
+def _text_chars_values(records: Sequence[TrialRecord]) -> _MetricValues:
+    return _collect(records, _text_chars_per_s)
+
+
 def _prefill_values(records: Sequence[TrialRecord]) -> _MetricValues:
     return _collect(records, _prefill_tps)
 
@@ -963,6 +1114,15 @@ def _round_total_values(records: Sequence[TrialRecord]) -> _MetricValues:
 _VALUE_FUNCS: Final[dict[str, Callable[[Sequence[TrialRecord]], _MetricValues]]] = {
     METRIC_TTFT: _ttft_values,
     METRIC_DECODE_TPS: _decode_values,
+    METRIC_TEXT_CHARS_PER_S: _text_chars_values,
+    METRIC_THINKING_CHARS_PER_S: _phase_values(METRIC_THINKING_CHARS_PER_S),
+    METRIC_TEXT_WAIT: _phase_values(METRIC_TEXT_WAIT),
+    METRIC_THINKING_DURATION: _phase_values(METRIC_THINKING_DURATION),
+    METRIC_TEXT_DURATION: _phase_values(METRIC_TEXT_DURATION),
+    METRIC_THINKING_CHARS: _phase_values(METRIC_THINKING_CHARS),
+    METRIC_TEXT_CHARS: _phase_values(METRIC_TEXT_CHARS),
+    METRIC_THINKING_RETOKENIZED_TPS: _phase_values(METRIC_THINKING_RETOKENIZED_TPS),
+    METRIC_TEXT_RETOKENIZED_TPS: _phase_values(METRIC_TEXT_RETOKENIZED_TPS),
     METRIC_PREFILL_TPS: _prefill_values,
     METRIC_ROUND_TOTAL_TPS: _round_total_values,
 }
@@ -1009,7 +1169,13 @@ _TABLE_RULE: Final[str] = "|---|---|--:|--:|--:|--:|--:|--:|--:|--:|--:|---|"
 
 _METRIC_LEGEND: Final[str] = (
     "値の意味: `ttft_s` = 最初のトークンまでの時間 (秒)、"
-    "`decode_tps` = 生成速度 (トークン/秒、最初のトークンまでの時間を含めない)、"
+    "`decode_tps` = 思考等を含む全出力の生成速度 (tok/s、最初のトークンまでの時間を含めない)、"
+    "`text_wait_s` = 本文の非空データに到達するまでの秒数、"
+    "`thinking_duration_s`・`text_duration_s` = 各段階の非空データの区間 (秒)、"
+    "`thinking_chars`・`text_chars` = 各段階の文字数、"
+    "`thinking_chars_per_s`・`text_chars_per_s` = 各段階の文字/秒、"
+    "`thinking_retokenized_tps`・`text_retokenized_tps` = 生文字列の再計数トークン/秒"
+    " (生成時の段階別トークン数ではない)、"
     "`prefill_tps` = 入力の処理速度 (トークン/秒)、"
     "`round_total_tps` = 1 回ぶんの合計の生成速度 (トークン/秒)。"
     "集計に入れたのは、成功した、慣らしでない試行だけである。"
@@ -1085,9 +1251,11 @@ def render_markdown(summary: Summary, warnings: Sequence[str] = ()) -> str:
             "",
         ]
     lines += _conditions_section(summary)
-    lines += _warnings_section(manifest, warnings)
+    lines += _warnings_section(manifest, list(dict.fromkeys([*warnings, *summary.phase_warnings])))
+    lines += _output_phases_section(summary)
     lines += _skipped_section(manifest)
     lines += _legend_section(summary)
+    lines += _retokenization_section(summary)
     lines += _results_section("主な結果", summary, "primary")
     lines += _results_section("参考", summary, "reference")
     lines += _quality_section(summary)
@@ -1095,6 +1263,58 @@ def render_markdown(summary: Summary, warnings: Sequence[str] = ()) -> str:
     lines += _server_metrics_section(summary)
     lines += _datasets_section(summary)
     return "\n".join(lines).rstrip("\n") + "\n"
+
+
+def _retokenization_section(summary: Summary) -> list[str]:
+    if not summary.output_retokenization_counts:
+        return []
+    lines = ["## 出力文字列の再計数", "", "再計数値は生成時のトークン内訳ではない。", ""]
+    for condition, counts in summary.output_retokenization_counts.items():
+        missing = (
+            ", ".join(
+                f"{reason} {count} 件" for reason, count in sorted(counts.missing_reasons.items())
+            )
+            or "なし"
+        )
+        lines.append(
+            f"- `{_cell(condition)}`: count_source={counts.count_source}, "
+            f"思考 {counts.thinking_counted} 件、本文 {counts.text_counted} 件、欠測 {missing}"
+        )
+    lines.append("")
+    return lines
+
+
+def _output_phases_section(summary: Summary) -> list[str]:
+    if not summary.output_phases:
+        return []
+    lines = [
+        "## 本文への到達と計測件数",
+        "",
+        "| 条件 | 要求 | 要求成功 | 要求失敗 | 要求成功率 | 本文あり | 本文未到達 | "
+        "思考のみ | 段階別情報不明 | 本文速度の有効件数 |",
+        "|---|--:|--:|--:|--:|--:|--:|--:|--:|--:|",
+    ]
+    for condition, counts in summary.output_phases.items():
+        requests = counts["requests"]
+        successes = counts["request_successes"]
+        rate = f"{successes}/{requests}" if requests else "0/0"
+        values = (
+            f"`{_cell(condition)}`",
+            str(requests),
+            str(successes),
+            str(counts["request_failures"]),
+            rate,
+            str(counts["text_arrived"]),
+            str(counts["text_not_reached"]),
+            str(counts["thinking_only"]),
+            str(counts["unknown"]),
+            str(counts["text_speed_n"]),
+        )
+        lines.append("| " + " | ".join(values) + " |")
+    lines.append("")
+    lines.append("本文ありは本文の到達件数であり、JSONの完全性や妥当性の判定ではない。")
+    lines.append("")
+    return lines
 
 
 def _legend_section(summary: Summary) -> list[str]:

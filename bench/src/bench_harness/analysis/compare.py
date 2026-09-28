@@ -110,6 +110,8 @@ from bench_harness.analysis.stats import diff_verdict, proportion_diff_verdict
 from bench_harness.analysis.summarize import (
     METRIC_ACCURACY,
     METRIC_AGENT_BREAK_RATE,
+    PHASE_METRIC_NAMES,
+    RETOKENIZED_METRIC_NAMES,
     TrialValue,
     summarize_run,
     trial_values,
@@ -129,6 +131,7 @@ from bench_harness.types import (
     Summary,
     TargetDef,
     Tier,
+    _OutputRetokenization,
 )
 
 __all__ = [
@@ -311,8 +314,11 @@ def compare_summaries(
         *_incomplete_warnings(manifest_a, manifest_b),
         *_read_warning_lines(manifest_a, read_warnings_a, "A"),
         *_read_warning_lines(manifest_b, read_warnings_b, "B"),
+        *_phase_warning_lines(summary_a, "A"),
+        *_phase_warning_lines(summary_b, "B"),
         *_setting_warnings(manifest_a, manifest_b, tolerance=tolerance),
         *_informational_warnings(manifest_a, manifest_b),
+        *_retokenization_warnings(manifest_a, manifest_b),
     ]
 
     rows, row_warnings, markers = _build_rows(
@@ -382,6 +388,14 @@ def _read_warning_lines(manifest: RunManifest, warnings: Sequence[str], label: s
     return [
         f"計測ラン {label} (`{manifest.run_id}`) の生データの読み取り: {warning}"
         for warning in warnings
+    ]
+
+
+def _phase_warning_lines(summary: Summary, label: str) -> list[str]:
+    """段階別計測の警告を、どちらの計測ランのものかを添えて並べる。"""
+    return [
+        f"計測ラン {label} (`{summary.conditions.run_id}`) の段階別計測: {warning}"
+        for warning in summary.phase_warnings
     ]
 
 
@@ -563,6 +577,25 @@ def _informational_warnings(manifest_a: RunManifest, manifest_b: RunManifest) ->
     return warnings
 
 
+def _retokenization_warnings(manifest_a: RunManifest, manifest_b: RunManifest) -> list[str]:
+    left = manifest_a.output_retokenization
+    right = manifest_b.output_retokenization
+    if left == right:
+        return []
+
+    def label(setting: _OutputRetokenization | None) -> str:
+        if setting is None:
+            return "記録なし"
+        if not setting.enabled:
+            return "無効"
+        return f"有効 ({setting.method}, add_special_tokens={setting.add_special_tokens})"
+
+    return [
+        f"再計数の方法が異なる (A: {label(left)}, B: {label(right)})。"
+        "段階別の再計数速度は判定しない。"
+    ]
+
+
 # --- 行 (9.1、9.2、9.6) ------------------------------------------------------
 
 
@@ -596,9 +629,16 @@ def _build_rows(
     warnings: list[str] = []
     markers: dict[tuple[str, str], str] = {}
 
+    conditions_a = {condition for condition, _ in index_a}
+    conditions_b = {condition for condition, _ in index_b}
     for key, row_a in index_a.items():
         row_b = index_b.get(key)
         if row_b is None:
+            if key[1] in PHASE_METRIC_NAMES and key[0] in conditions_b:
+                row, warning = _missing_phase_row(key, row_a, None)
+                rows.append(row)
+                warnings.append(warning)
+                markers[key] = "段階別指標が不明"
             continue
         condition, metric = key
         tier: Tier = row_a.tier
@@ -610,14 +650,18 @@ def _build_rows(
 
         value_a = _row_value(row_a)
         value_b = _row_value(row_b)
-        diff = None if value_a is None or value_b is None else value_b - value_a
+        comparable = metric not in RETOKENIZED_METRIC_NAMES or (
+            row_a.count_source == row_b.count_source == "retokenized"
+            and manifest_a.output_retokenization == manifest_b.output_retokenization
+        )
+        diff = None if not comparable or value_a is None or value_b is None else value_b - value_a
         relative_diff = (
             None if diff is None or value_a is None or value_a == 0.0 else diff / value_a
         )
 
         verdict: DiffVerdict | None = None
         marker: str | None = None
-        if row_a.continuous is not None and row_b.continuous is not None:
+        if comparable and row_a.continuous is not None and row_b.continuous is not None:
             verdict, marker, pairing_warning = _continuous_verdict(
                 key,
                 values_a=values_a,
@@ -634,7 +678,11 @@ def _build_rows(
             proportion_verdict = proportion_diff_verdict(row_a.proportion, row_b.proportion)
 
         if verdict is None and proportion_verdict is None and marker is None:
-            marker = "両方の計測ランにそろった値がない"
+            marker = (
+                "再計数の方法または計数元が異なる"
+                if not comparable
+                else "両方の計測ランにそろった値がない"
+            )
         if verdict is None and proportion_verdict is None and marker is not None:
             markers[key] = marker
             warnings.append(
@@ -653,9 +701,42 @@ def _build_rows(
                 relative_diff=relative_diff,
                 verdict=verdict,
                 proportion_verdict=proportion_verdict,
+                count_source_a=row_a.count_source,
+                count_source_b=row_b.count_source,
             )
         )
+    for key, row_b in index_b.items():
+        if key in index_a or key[1] not in PHASE_METRIC_NAMES or key[0] not in conditions_a:
+            continue
+        row, warning = _missing_phase_row(key, None, row_b)
+        rows.append(row)
+        warnings.append(warning)
+        markers[key] = "段階別指標が不明"
     return rows, warnings, markers
+
+
+def _missing_phase_row(
+    key: tuple[str, str], row_a: MetricResult | None, row_b: MetricResult | None
+) -> tuple[ComparisonRow, str]:
+    condition, metric = key
+    present = row_a if row_a is not None else row_b
+    assert present is not None
+    row = ComparisonRow(
+        condition=condition,
+        metric=metric,
+        tier=present.tier,
+        value_a=_row_value(row_a) if row_a is not None else None,
+        value_b=_row_value(row_b) if row_b is not None else None,
+        count_source_a=row_a.count_source if row_a is not None else None,
+        count_source_b=row_b.count_source if row_b is not None else None,
+    )
+    missing = "A" if row_a is None else "B"
+    kind = "再計数指標" if metric in RETOKENIZED_METRIC_NAMES else "段階別指標"
+    return (
+        row,
+        f"`{condition}` の `{metric}` は計測ラン {missing} の{kind}が不明なので、"
+        "比較から除外した。",
+    )
 
 
 def _row_value(row: MetricResult) -> float | None:
