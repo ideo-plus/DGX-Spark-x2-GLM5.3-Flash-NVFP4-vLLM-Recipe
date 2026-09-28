@@ -1,0 +1,124 @@
+{
+  "derivation": {
+    "conversion": {
+      "args": [
+        "--source-repo",
+        "RedHatAI/GLM-5.3-Flash-NVFP4",
+        "--source-revision",
+        "18d55bfd5a2194887738da73753975c9d3842f46",
+        "--pattern",
+        ".*\\.layers\\.(?:0|1|2)\\.mlp\\.(?:gate|up|down)_proj$|.*\\.layers\\.\\d+\\.mlp\\.shared_experts\\.(?:gate|up|down)_proj$|.*\\.layers\\.(?:3|7|11|15|19|23|27|31|35|39|43)\\.self_attn\\.(?:q_a_proj|kv_a_proj_with_mqa|q_b_proj|o_proj)$|.*\\.layers\\.(?:0|1|2|4|5|6|8|9|10|12|13|14|16|17|18|20|21|22|24|25|26|28|29|30|32|33|34|36|37|38|40|41|42|44)\\.self_attn\\.(?:o_proj|f_b_proj|g_b_proj|q_proj|k_proj|v_proj|b_proj|f_a_proj|g_a_proj)$|(?:.*\\.)?lm_head$|.*\\.layers\\.(?:45)\\.self_attn\\.(?:q_a_proj|kv_a_proj_with_mqa|q_b_proj|o_proj)$|.*\\.layers\\.(?:45)\\.mlp\\.experts\\.\\d+\\.(?:gate_proj|up_proj|down_proj)$",
+        "--format",
+        "nvfp4a16"
+      ],
+      "commit": "949fb93060f4a87cc81313e2ba80b1286243fc3f",
+      "target_pattern": ".*\\.layers\\.(?:0|1|2)\\.mlp\\.(?:gate|up|down)_proj$|.*\\.layers\\.\\d+\\.mlp\\.shared_experts\\.(?:gate|up|down)_proj$|.*\\.layers\\.(?:3|7|11|15|19|23|27|31|35|39|43)\\.self_attn\\.(?:q_a_proj|kv_a_proj_with_mqa|q_b_proj|o_proj)$|.*\\.layers\\.(?:0|1|2|4|5|6|8|9|10|12|13|14|16|17|18|20|21|22|24|25|26|28|29|30|32|33|34|36|37|38|40|41|42|44)\\.self_attn\\.(?:o_proj|f_b_proj|g_b_proj|q_proj|k_proj|v_proj|b_proj|f_a_proj|g_a_proj)$|(?:.*\\.)?lm_head$|.*\\.layers\\.(?:45)\\.self_attn\\.(?:q_a_proj|kv_a_proj_with_mqa|q_b_proj|o_proj)$|.*\\.layers\\.(?:45)\\.mlp\\.experts\\.\\d+\\.(?:gate_proj|up_proj|down_proj)$",
+      "tool": "experiments/k2-quant"
+    },
+    "name": "k2s4",
+    "origin": {
+      "repo": "RedHatAI/GLM-5.3-Flash-NVFP4",
+      "revision": "18d55bfd5a2194887738da73753975c9d3842f46"
+    }
+  },
+  "files": [
+    {
+      "path": "chat_template.jinja",
+      "sha256": "0c4099f3382d6c92700dfb99725025360966fd73032f0ecf32377c0d9e6309c5",
+      "size": 10950
+    },
+    {
+      "path": "config.json",
+      "sha256": "1982eef945d188d6a33d5359cdaa0d042a32f47d30c1126aa77ca6666fd78f33",
+      "size": 84722
+    },
+    {
+      "path": "generation_config.json",
+      "sha256": "e9e93ee323895fa5e8e160f1f9826fd98b6bd7b3935435f423c3554f88bfa3ac",
+      "size": 177
+    },
+    {
+      "path": "model-00001-of-00010.safetensors",
+      "sha256": "cae9c7925e12f2d674e1e1eb9de141b78408ebd88e105ed896437d89ba6eaf6a",
+      "size": 17911499792
+    },
+    {
+      "path": "model-00002-of-00010.safetensors",
+      "sha256": "655209b68548860beeec1d3f8d1314f9c825a529de2a7407503acf51f93e84b3",
+      "size": 18939022940
+    },
+    {
+      "path": "model-00003-of-00010.safetensors",
+      "sha256": "ac936fdf04bcf1525ce6437d9507abfa75eb8a0c6ff182691c73c35eb9d7d791",
+      "size": 19117823188
+    },
+    {
+      "path": "model-00004-of-00010.safetensors",
+      "sha256": "a5bb259cca0fb1bfb62e1788e1020550df9b22ce220586970f1d1ebab23319e2",
+      "size": 18883421808
+    },
+    {
+      "path": "model-00005-of-00010.safetensors",
+      "sha256": "d1f893fbf6ffd91d6e796d589baf6c145e1270b87f66a622deef6d344306c6d2",
+      "size": 19117821444
+    },
+    {
+      "path": "model-00006-of-00010.safetensors",
+      "sha256": "73b47311afe5b8f9ba07ee0b42078c71d8f34293ea4858323d927fc7ea8bd9e7",
+      "size": 18883418992
+    },
+    {
+      "path": "model-00007-of-00010.safetensors",
+      "sha256": "6733057f259ddbf022dbc437f853b935b516c9149b4c5c0ad6fa020233d495da",
+      "size": 19117822100
+    },
+    {
+      "path": "model-00008-of-00010.safetensors",
+      "sha256": "53991ace9eecf1fcc2f822b36a0f08532cf2fd1b943ce7b949ad1b5b85afb26c",
+      "size": 18883419784
+    },
+    {
+      "path": "model-00009-of-00010.safetensors",
+      "sha256": "496a707e0fb4b0078177e9b8a00e9c2a6dbfb08c5372933bec0d563fef7b24b4",
+      "size": 19117819164
+    },
+    {
+      "path": "model-00010-of-00010.safetensors",
+      "sha256": "927c486886ea1fde678aebcf56ef9ce1568e355bf87b90b58af3e98d35f1ca04",
+      "size": 8852662240
+    },
+    {
+      "path": "model.safetensors.index.json",
+      "sha256": "cf718335c2c7884c09e45db84485b4ab6d6237d6c998a9bb569b2293165ebf51",
+      "size": 17267795
+    },
+    {
+      "path": "model_mtp.safetensors",
+      "sha256": "349822ed7687a7aa536936de45048ad44230bebdd56477daac698d12ff285c51",
+      "size": 4266032076
+    },
+    {
+      "path": "processor_config.json",
+      "sha256": "aae38374c94b08cc9b0547c6e64f05b951bd9735cea571c6988f5ed552bed3ed",
+      "size": 909
+    },
+    {
+      "path": "recipe.yaml",
+      "sha256": "c90bdcc6cd502c44af68ed4017740fe448d213f537a1a9509dc6437b9833c673",
+      "size": 1200
+    },
+    {
+      "path": "tokenizer.json",
+      "sha256": "0cfe2c099a7702a0921abc315ee039deb51e4a34b4818fc509bd27fa3dc4acc1",
+      "size": 20217541
+    },
+    {
+      "path": "tokenizer_config.json",
+      "sha256": "77af7d4769cd62c107b90495cac9b0ba81573c86486821bfba2980c04285ec7a",
+      "size": 790
+    }
+  ],
+  "generated_at": "2026-09-28T01:21:34.546330Z",
+  "kind": "derived",
+  "total_bytes": 183128347612
+}
