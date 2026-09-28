@@ -22,4 +22,8 @@ fi
 unset CLAUDE_CODE_OAUTH_TOKEN ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN
 CLAUDE_CONFIG_DIR=$account_dir
 export CLAUDE_CONFIG_DIR
+# TAKT が起動したエージェントであることの印。.claude/settings.json の PreToolUse フック
+# (scripts/hooks/takt_dotdir_guard.py) が、これを見て .takt/ を読むのを断る
+TAKT_AGENT=1
+export TAKT_AGENT
 exec "${TAKT_CLAUDE_REAL_CLI:-claude}" "$@"
