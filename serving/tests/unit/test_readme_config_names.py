@@ -1,10 +1,12 @@
-"""README の使い方に出てくる構成名が、実物の構成の定義に実在することを確かめる試験 (tasks.md 6.5)。
+"""README の使い方に出てくる構成名が、実物の構成の定義に実在することを確かめる試験 (tasks.md 6.5、
+issue #103)。
 
 `serving/README.md` の「使い方 (段の順)」は、計測者が読んで打つ、`serve` の呼び出しの並びである。
 ここに書いた構成名が、`serving/config/configs.toml` に実在しない名前だと、書いてあるとおりに
 打っても断られる。この試験は、README のコード塊 (```bash ... ```) に現れる
 `serve <サブコマンド> <構成名>` の構成名が、`config.load_configs` でそのまま読み込める実物の
-構成の定義に実在することを、実際に読み込んで固定する。
+構成の定義に実在することを、実際に読み込んで固定する。対象は `serving/README.md`・`README.md`・
+`README.ja.md` の 3 本である (issue #103: ルートの 2 本も、起動の手順のコード塊で構成名を使う)。
 
 対象にするのは、構成名を第一の引数に取ると `serving/README.md` の「サブコマンド」の表が
 定める並び (`check`、`pull-image`、`image-licenses`、`fetch`、`verify`、`start`、`smoke`、
@@ -21,6 +23,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+import pytest
+
 from serving_kit import config as c
 
 # --- コミットしたファイルの場所 ----------------------------------------
@@ -30,7 +34,13 @@ SERVING_DIR = Path(__file__).resolve().parents[2]
 
 REPO_ROOT = SERVING_DIR.parent
 CONFIGS_PATH = SERVING_DIR / "config" / "configs.toml"
-README_PATH = SERVING_DIR / "README.md"
+
+README_PATHS = (
+    SERVING_DIR / "README.md",
+    REPO_ROOT / "README.md",
+    REPO_ROOT / "README.ja.md",
+)
+"""構成名の実在を確かめる対象の 3 本 (issue #103 で、ルートの 2 本も対象に加えた)。"""
 
 # --- README のコード塊からの抽出 ----------------------------------------
 
@@ -104,14 +114,29 @@ def _config_names_referenced(readme_text: str) -> list[str]:
     return names
 
 
-def test_readme_bash_blocks_reference_real_config_names() -> None:
+@pytest.mark.parametrize(
+    "readme_path", README_PATHS, ids=lambda path: str(path.relative_to(REPO_ROOT))
+)
+def test_readme_bash_blocks_reference_real_config_names(readme_path: Path) -> None:
     """README のコード塊の構成名は、すべて `config.load_configs` で読める実物に実在する。"""
-    readme_text = README_PATH.read_text(encoding="utf-8")
+    readme_text = readme_path.read_text(encoding="utf-8")
     referenced = _config_names_referenced(readme_text)
     assert referenced, (
-        "README のコード塊から、serve <サブコマンド> <構成名> の形を 1 つも取れなかった"
+        f"{readme_path} のコード塊から、serve <サブコマンド> <構成名> の形を 1 つも取れなかった"
     )
 
     configs = c.load_configs(CONFIGS_PATH, REPO_ROOT)
     missing = sorted({name for name in referenced if name not in configs})
-    assert not missing, f"serving/README.md に、実在しない構成名がある: {missing}"
+    assert not missing, f"{readme_path} に、実在しない構成名がある: {missing}"
+
+
+def test_the_root_readmes_start_the_marlin_config() -> None:
+    """ルートの README 2 本は、起動の手順のコード塊で `glm53-tp2-mtp3-marlin` を使う
+
+    (issue #103: 45 tok/s に届いた構成)。
+    """
+    for readme_path in (REPO_ROOT / "README.md", REPO_ROOT / "README.ja.md"):
+        referenced = _config_names_referenced(readme_path.read_text(encoding="utf-8"))
+        assert "glm53-tp2-mtp3-marlin" in referenced, (
+            f"{readme_path} の起動の手順のコード塊に glm53-tp2-mtp3-marlin がない"
+        )

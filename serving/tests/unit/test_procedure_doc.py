@@ -130,7 +130,7 @@ def test_the_procedure_covers_every_serve_command() -> None:
 _CONFIG_LIKE: Final[re.Pattern[str]] = re.compile(
     r"`((?:probe|p1|netcheck)-[a-z0-9-]+(?:<連番>)?)`"
 )
-"""構成の名前らしい語 (この 3 つの接頭辞が、`configs.toml` の 7 つの名前を覆う)。"""
+"""構成の名前らしい語 (この 3 つの接頭辞が、`probe-`/`p1-`/`netcheck-` の名前を覆う)。"""
 
 _PLANNED_CONFIGS: Final[dict[str, str]] = {
     "p1-nvfp4-tp2-x<連番>": "段 3",
@@ -140,9 +140,20 @@ _PLANNED_CONFIGS: Final[dict[str, str]] = {
 
 _MADE_HERE: Final[str] = "この段で作る"
 
+_DOCUMENTED_ELSEWHERE: Final[dict[str, str]] = {
+    "glm53-tp2-mtp3-marlin": "k2-derived-weights-procedure.md"
+}
+"""`docs/vllm-baseline/procedure.md` (P1 の基盤の手順書) では扱わず、別の手順書に載せる構成
+(issue #103)。`_CONFIG_LIKE` は `probe-`/`p1-`/`netcheck-` の接頭辞しか拾わないので、派生の
+重みの構成 (`glm53-tp2-mtp3-marlin`) は、この対応表で「どこで扱うか」を明示する。"""
+
 
 def test_every_config_name_in_the_procedure_is_real_or_marked() -> None:
-    """構成の名前が実在するか、まだ作らないものは「この段で作る」と書いた行にだけある。"""
+    """構成の名前が実在するか、まだ作らないものは「この段で作る」と書いた行にだけある。
+
+    コミット済みの全構成が、この手順書か、`_DOCUMENTED_ELSEWHERE` が指す別の手順書のどちらかに
+    現れる (issue #103)。
+    """
     text = _procedure_text()
     real = set(c.load_configs(CONFIGS_PATH, REPO_ROOT))
 
@@ -159,10 +170,18 @@ def test_every_config_name_in_the_procedure_is_real_or_marked() -> None:
                 f"「{_MADE_HERE}」と書いていない行で使っている: {line.strip()}"
             )
 
-    assert real <= seen, f"手順書に出てこない構成: {sorted(real - seen)}"
+    assert real - set(_DOCUMENTED_ELSEWHERE) <= seen, (
+        f"手順書に出てこない構成: {sorted(real - set(_DOCUMENTED_ELSEWHERE) - seen)}"
+    )
     assert set(_PLANNED_CONFIGS) <= seen, (
         f"手順書に、作る段を書いていない構成がある: {sorted(set(_PLANNED_CONFIGS) - seen)}"
     )
+    for name, doc in _DOCUMENTED_ELSEWHERE.items():
+        assert name in real, f"_DOCUMENTED_ELSEWHERE の {name} が、コミット済みの構成にない"
+        other_path = REPO_ROOT / "docs" / "vllm-baseline" / doc
+        assert name in other_path.read_text(encoding="utf-8"), (
+            f"{other_path} に、構成の名前 {name} がない"
+        )
 
 
 # --- 3. 要件 8.1 の順序 -------------------------------------------------

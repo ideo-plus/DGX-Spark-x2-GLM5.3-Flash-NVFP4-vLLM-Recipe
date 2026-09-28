@@ -357,3 +357,35 @@ ssh spark-5083 docker run --rm --network none \
 - **§4〜§7**: 構成の名前を `p2-nope-tp2-full-k2s4`、`--configs` を `tp2-full-k2s4.toml` にします。照合の記録は `state/k2s4.derived.verified.json` です。
 
 **この重みを vLLM で読むには、#79 の vLLM の修正 (重ね合わせ `k2s2b`) が前提です (未確認)。** 起動は、`--weights k2s4 --vllm-overlay k2s2b` で生成した構成で行う想定ですが、層 45 の NVFP4A16 の fused MoE の scheme が正しく当たるかは、実機での確認事項です。読めなかった場合は、Issue #99 のとおり、vLLM の重ね合わせを別に扱います。
+
+## 10. ⚠ コミット済みの構成 glm53-tp2-mtp3-marlin で起動する (k2s4 + MTP N = 3 + --moe-backend marlin)
+
+45 tok/s に届いた構成 (issue #103) です。`k2s4` は §1〜§4 の第 4 段の読み替えで変換・取り込み・照合済み (`state/k2s4.derived.verified.json`)、重ね合わせ `k2s2b` は [重ねて起こす手順書](k2-vllm-overlay-procedure.md) §3 の `serve push` で配布済みという前提です。この構成は `serving/config/configs.toml` にコミット済みなので、ここまでの派生の構成と違って `--configs` を付けません。実測は [`../results/2026-09-28-k2-stage3.md`](../results/2026-09-28-k2-stage3.md) です。
+
+```bash
+uv run --directory serving serve check glm53-tp2-mtp3-marlin
+```
+
+⚠ 了承を得てから実行する。両台で、重みのファイルのページキャッシュだけを捨てる (root 不要。PR #90。読み取りの権限だけで行い、ファイルの中身は変えない)。
+
+```bash
+for node in spark-153d spark-5083; do
+  ssh -o BatchMode=yes -o ConnectTimeout=5 "$node" \
+    'find /home/j5ik2o/vllm-baseline/models -type f -exec dd if={} iflag=nocache count=0 status=none \; 2>/dev/null; grep -E "^(MemFree|Cached)" /proc/meminfo'
+done
+```
+
+⚠ 了承を得てから実行する。`serve start` は、2 台でコンテナを起こす。`serve smoke` は、短い要求を 1 つずつ送る (応答の本文は画面に出すだけで、どこにも残さない)。
+
+```bash
+uv run --directory serving serve start glm53-tp2-mtp3-marlin --yes
+
+uv run --directory serving serve smoke glm53-tp2-mtp3-marlin
+```
+
+⚠ 了承を得てから実行する。`serve stop` は、2 台の自分のコンテナを止めて消す。`serve stop` は記録を回収しないので、必ず `serve logs` を先に打つ。
+
+```bash
+uv run --directory serving serve logs glm53-tp2-mtp3-marlin
+uv run --directory serving serve stop --yes
+```

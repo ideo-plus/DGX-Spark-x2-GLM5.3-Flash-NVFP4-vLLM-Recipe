@@ -45,6 +45,10 @@
 14. §5 が 9 つの関門と `memory_free` を述べ、§6 の `serve start` の前に、⚠ と「了承を得てから」の
     直後に、両台でページキャッシュを捨てる固定のコマンド
     (`ssh … 'sudo /usr/local/sbin/spark-drop-caches'`) の塊がある。§8 が、この対策 (#84) を指す
+15. §10 が、コミット済みの構成 `glm53-tp2-mtp3-marlin` (重み `k2s4` + MTP N=3 +
+    `--moe-backend marlin`) での起動を述べる。読み取りだけの `serve check`、root 不要でページ
+    キャッシュを捨てる塊 (`iflag=nocache`。PR #90) が `serve start` より前にあり、実測の記録
+    (`docs/results/2026-09-28-k2-stage3.md`) を指す (issue #103)
 
 RED: 文書がなければ、`read_text` で `pytest.fail` する。道具の写しや `derived-import` が
 まだなければ、その理由を示して落とす。
@@ -1150,3 +1154,54 @@ def test_section_9_describes_the_stage_4_target_as_layer_45_fp8_experts_in_nvfp4
     ]
 
     assert describing, "`--preset k2s4` と、層 45・FP8・NVFP4A16 を同じ段落に書いた説明がない"
+
+
+# --- 17. §10 コミット済みの構成 glm53-tp2-mtp3-marlin での起動 (issue #103) -------------
+
+MARLIN_CONFIG: Final[str] = "glm53-tp2-mtp3-marlin"
+MARLIN_RESULTS_DOC: Final[str] = "2026-09-28-k2-stage3.md"
+
+STAGE_MARLIN_MARKERS: Final[tuple[str, ...]] = (
+    f"serve check {MARLIN_CONFIG}",
+    f"serve start {MARLIN_CONFIG}",
+    "iflag=nocache",
+    *_NODE_HOSTS,
+    MARLIN_RESULTS_DOC,
+)
+"""§10 (コミット済みの構成 `glm53-tp2-mtp3-marlin` での起動。issue #103) に要る印。
+
+読み取りだけの `serve check`、起動の `serve start`、root 不要のページキャッシュを捨てる
+コマンド (`iflag=nocache`、PR #90)、両台のホスト名、実測の記録 (`docs/results/` の日付付きの
+ファイル名)。
+"""
+
+
+def _section_10(text: str) -> str:
+    return _section(text, 10)
+
+
+@pytest.mark.parametrize("marker", STAGE_MARLIN_MARKERS)
+def test_section_10_describes_starting_the_committed_marlin_config(marker: str) -> None:
+    """§10 に、コミット済みの構成 glm53-tp2-mtp3-marlin での起動に要る印がある (issue #103)。"""
+    assert marker in _section_10(read_text(DOC_PATH))
+
+
+def _drop_caches_block_in_section_10() -> tuple[CodeBlock, CodeBlock]:
+    """§10 の、ページキャッシュを捨てる塊 (root 不要) と、その後ろの最初の `serve start` の塊。"""
+    section = _section_10(read_text(DOC_PATH))
+    blocks = code_blocks(section)
+    drops = [block for block in blocks if "iflag=nocache" in block.commands]
+    starts = [block for block in blocks if MACHINE_CALLS["serve start"].search(block.commands)]
+    assert drops, "§10 に、ページキャッシュを捨てる塊 (iflag=nocache) がない"
+    assert starts, "§10 に `serve start` の塊がない"
+    return drops[0], starts[0]
+
+
+def test_section_10_drops_the_page_cache_before_the_start_on_both_nodes() -> None:
+    """§10 で、ページキャッシュを捨てる塊 (root 不要、PR #90) が `serve start` の塊より前に
+    あり、両台 (spark-153d、spark-5083) を対象にする (issue #103)。"""
+    drop, start = _drop_caches_block_in_section_10()
+
+    assert drop.open_line < start.open_line
+    for host in _NODE_HOSTS:
+        assert host in drop.commands, f"{host} が、§10 のページキャッシュを捨てる塊にない"
