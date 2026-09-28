@@ -151,12 +151,21 @@ ASK_MARKS: Final[tuple[str, ...]] = ("⚠", "了承を得てから")
 MACHINE_CALLS: Final[dict[str, re.Pattern[str]]] = {
     "ssh": re.compile(r"\bssh +"),
     "docker run": re.compile(r"\bdocker +run\b"),
+    "docker stop": re.compile(r"\bdocker +stop\b"),
     "serve push": re.compile(r"\bserve +push(?![\w-])"),
     "serve verify": re.compile(r"\bserve +verify(?![\w-])"),
     "serve start": re.compile(r"\bserve +start(?![\w-])"),
     "serve stop": re.compile(r"\bserve +stop(?![\w-])"),
+    "serve autostart set": re.compile(r"\bserve +autostart +set(?![\w-])"),
+    "serve autostart clear": re.compile(r"\bserve +autostart +clear(?![\w-])"),
+    "vllm-autostart-install": re.compile(r"\bvllm-autostart-install\b"),
+    "vllm-autostart-uninstall": re.compile(r"\bvllm-autostart-uninstall\b"),
+    "loginctl enable-linger": re.compile(r"\bloginctl +enable-linger\b"),
+    "loginctl disable-linger": re.compile(r"\bloginctl +disable-linger\b"),
 }
-"""実機を操作する呼び出し (Spark に入る、コンテナを起こす、配る、照合する、起動する、止める)。"""
+"""実機を操作する呼び出し (Spark に入る、コンテナを起こす・止める、配る、照合する、起動する、
+止める、自動起動を指定する、見張りを設置・撤去する、linger を切り替える。issue #88 で
+`docker stop`・`autostart set/clear`・見張りの install/uninstall・linger の 4 種を足した)。"""
 
 
 def ask_mark_problems(text: str) -> tuple[set[str], list[str]]:

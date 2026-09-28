@@ -395,8 +395,10 @@ def test_the_commands_are_typed_in_the_required_order() -> None:
 _MUTATING_CALL: Final[re.Pattern[str]] = re.compile(
     r"\bserve +(?:push|pull-image|image-licenses|fetch|verify|start|stop|probe)(?![\w-])"
     r"|\bserve +netcheck +(?:bandwidth|sanity|ab)(?![\w-])"
+    r"|\bserve +autostart +(?:set|clear)(?![\w-])"
 )
-"""Spark の状態を変える 11 のコマンド (`serving/README.md` のサブコマンドの表)。"""
+"""Spark の状態を変える 13 のコマンド (`serving/README.md` のサブコマンドの表。issue #88 で
+`autostart set`/`clear` を足した)。"""
 
 
 def test_every_mutating_block_is_preceded_by_the_ask_mark() -> None:

@@ -1,0 +1,18 @@
+[Unit]
+Description=Watch and auto-restart the designated vLLM baseline inference server (issue #88)
+# 短い間隔で異常終了を繰り返すときの backstop。見張り自身の異常終了 (バグ・クラッシュ) に
+# だけ効く。推論サーバーの立ち上げ直し (halted の判定) は、見張りの中の状態機械が行う
+# (ops/vllm-autostart/README.md の D4 を参照)。
+StartLimitIntervalSec=600
+StartLimitBurst=5
+
+[Service]
+Type=simple
+# %h はこのユーザーのホーム (j5ik2o では /home/j5ik2o)。nodes.toml の remote_root と一致する
+# ことを、serving/tests/unit/test_vllm_autostart_ops.py で固定している。
+ExecStart=/usr/bin/python3 %h/vllm-baseline/payload/vllm-autostart/vllm_autostart.py --remote-root %h/vllm-baseline
+Restart=on-failure
+RestartSec=30
+
+[Install]
+WantedBy=default.target

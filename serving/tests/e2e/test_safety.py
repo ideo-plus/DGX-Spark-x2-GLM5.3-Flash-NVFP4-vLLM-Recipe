@@ -57,7 +57,7 @@ from serving_kit import remote as remote_mod
 from serving_kit import weights as weights_mod
 from serving_kit.netcheck import _round_tag  # 回の札を、実装と同じ形で作るため (private だが読む)
 from serving_kit.plan import LABEL_CONFIG_SHA256, LABEL_OWNER, OWNER
-from serving_kit.types import ContainerPlan, NodeRole
+from serving_kit.types import ContainerPlan, LaunchRecord, NodeRole
 
 PlanMap = Mapping[NodeRole, ContainerPlan]
 """台ごとの、組み立てたコンテナの計画 (`k.container_plans` / `plan_mod.build_plans` の返り値)。"""
@@ -329,6 +329,72 @@ def _pull_image_script(*, digests: Sequence[str] = (k.IMAGE_REF,)) -> tuple[Rule
             replies=(Reply(stdout=json.dumps(list(digests)) + "\n"),),
         ),
     )
+
+
+# --- autostart (issue #88) ---------------------------------------------------
+
+
+def _autostart_launch_record_script(plans: PlanMap) -> tuple[Rule, ...]:
+    """`serve autostart set` が両台で読む `state/<構成>.launch.json`
+    (計画と sha が一致する台本)。
+    """
+    record = LaunchRecord(
+        config_name=k.SERVE_CONFIG,
+        image_digest=k.IMAGE_REF,
+        weights=None,
+        started_at=k.PLAN_BUILD_TIME,
+        plans=tuple(plans[role] for role in k.ROLES),
+        config_sha256=plans["head"].labels[LABEL_CONFIG_SHA256],
+        repo_commit=k.REPO_COMMIT,
+        repo_dirty=False,
+        gates=(),
+    )
+    text = record.model_dump_json()
+    return tuple(
+        Rule(
+            prefix=("cat",),
+            node=role,
+            when=lambda argv: argv[-1].endswith(".launch.json"),
+            replies=(Reply(stdout=text),),
+        )
+        for role in k.ROLES
+    )
+
+
+_AUTOSTART_DESIGNATION_JSON = (
+    '{"schema_version":1,"role":"head","config":null,"config_sha256":null,'
+    '"ready_timeout_s":null,"ports":[],"weights_record":null,'
+    f'"designated_at":"2026-09-22T00:00:00Z","repo_commit":"{k.REPO_COMMIT}","repo_dirty":false}}'
+)
+_AUTOSTART_STATUS_JSON = (
+    '{"schema_version":1,"role":"head","config":null,"container_name":null,'
+    '"state":"idle","reason":"","updated_at":"2026-09-22T00:00:00Z","started_at":null,'
+    '"ready_at":null,"container_state":null,"container_exit_code":null,'
+    '"last_health_status":null,"last_probe_status":null,"consecutive_start_failures":0}'
+)
+
+
+def _autostart_status_script() -> tuple[Rule, ...]:
+    """`serve autostart status` が両台で読む、指定と状態の 2 ファイル (未指定の見本)。"""
+    rules: list[Rule] = []
+    for role in k.ROLES:
+        rules.append(
+            Rule(
+                prefix=("cat",),
+                node=role,
+                when=lambda argv: argv[-1].endswith("/autostart.json"),
+                replies=(Reply(stdout=_AUTOSTART_DESIGNATION_JSON),),
+            )
+        )
+        rules.append(
+            Rule(
+                prefix=("cat",),
+                node=role,
+                when=lambda argv: argv[-1].endswith("/autostart.status.json"),
+                replies=(Reply(stdout=_AUTOSTART_STATUS_JSON),),
+            )
+        )
+    return tuple(rules)
 
 
 @dataclass(frozen=True)
@@ -813,6 +879,36 @@ def _build_world(
         script=_image_licenses_script(inspect_plans),
     )
 
+    # --- autostart set / clear / status (issue #88) ----------------------------
+    repo_autostart_set = k.make_repo(base / "autostart-set", port=k.UNUSED_PORT)
+    autostart_set_config, autostart_set_nodes = k.load_config_and_nodes(
+        repo_autostart_set, k.SERVE_CONFIG
+    )
+    autostart_set_plans = k.container_plans(autostart_set_config, autostart_set_nodes)
+    run(
+        "autostart_set",
+        ["autostart", "set", k.SERVE_CONFIG, "--yes"],
+        repo_autostart_set,
+        script=_autostart_launch_record_script(autostart_set_plans),
+        default=Reply(),
+    )
+
+    repo_autostart_clear = k.make_repo(base / "autostart-clear", port=k.UNUSED_PORT)
+    run(
+        "autostart_clear",
+        ["autostart", "clear", "--yes"],
+        repo_autostart_clear,
+        default=Reply(),
+    )
+
+    repo_autostart_status = k.make_repo(base / "autostart-status", port=k.UNUSED_PORT)
+    run(
+        "autostart_status",
+        ["autostart", "status"],
+        repo_autostart_status,
+        script=_autostart_status_script(),
+    )
+
     # --- fetch / verify -------------------------------------------------------
     repo_fetch = k.make_repo(base / "fetch", port=k.UNUSED_PORT)
     fetch_config, fetch_nodes = k.load_config_and_nodes(repo_fetch, k.FETCH_CONFIG)
@@ -1103,6 +1199,9 @@ def test_every_scenario_reached_the_expected_conclusion(world: World) -> None:
     expected = {
         "manifest": cli.EXIT_OK,
         "push": cli.EXIT_OK,
+        "autostart_set": cli.EXIT_OK,
+        "autostart_clear": cli.EXIT_OK,
+        "autostart_status": cli.EXIT_OK,
         "check": cli.EXIT_OK,
         "pull_image": cli.EXIT_OK,
         "image_licenses": cli.EXIT_OK,

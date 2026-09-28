@@ -42,6 +42,7 @@ from fake_runner import FakeRunner, Reply, Rule
 from fake_vllm import FakeVllm, Fault, MessagesReply
 from meminfo_sample import meminfo_rule
 from serving_kit import __version__, cli
+from serving_kit import autostart as autostart_mod
 from serving_kit import guards as g
 from serving_kit import image as im
 from serving_kit import lifecycle as lc
@@ -157,8 +158,13 @@ EXPECTED_COMMANDS: tuple[tuple[str, ...], ...] = (
     ("netcheck", "ab"),
     ("watch",),
     ("thinking",),
+    ("autostart",),
+    ("autostart", "set"),
+    ("autostart", "clear"),
+    ("autostart", "status"),
 )
-"""design.md 「入口 › cli」の表の、すべてのコマンド (drift の見張り)。"""
+"""design.md 「入口 › cli」の表の、すべてのコマンド (drift の見張り。issue #88 で `autostart`
+の 3 つの子を足した)。"""
 
 
 # --- 試験用のリポジトリ ---------------------------------------------------
@@ -652,7 +658,21 @@ def test_netcheck_without_a_subcommand_is_a_precondition(
 ) -> None:
     """`serve netcheck` だけでは、何を確かめるか決まらないので 1 で終わる。"""
     assert cli.main(["netcheck"]) == cli.EXIT_PRECONDITION
-    assert "netcheck" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert "netcheck" in err
+    assert "serve netcheck は、links / bandwidth / sanity / ab の 1 つを選ぶこと。" in err
+
+
+def test_autostart_without_a_subcommand_is_a_precondition(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """[SCN-G-N1] `serve autostart` だけでは、set/clear/status のどれか決まらないので、
+    `_NESTED_HANDLERS` の鍵から組み立てた案内とともに、終了コード 1 で終わる。
+    """
+    assert cli.main(["autostart"]) == cli.EXIT_PRECONDITION
+    err = capsys.readouterr().err
+    assert "autostart" in err
+    assert "serve autostart は、set / clear / status の 1 つを選ぶこと。" in err
 
 
 # --- 終了コードの写し (main の 1 か所) -------------------------------------
@@ -672,6 +692,8 @@ _ERRORS: tuple[tuple[BaseException, int], ...] = (
     (lc.LifecycleError("起こせなかった"), cli.EXIT_FAILED),
     (pr.ProbeError("片付けが終わらなかった"), cli.EXIT_FAILED),
     (nc.NetcheckError("片付けが終わらなかった"), cli.EXIT_FAILED),
+    (cli.PushError("配布できなかった"), cli.EXIT_FAILED),
+    (autostart_mod.AutostartError("配布できなかった"), cli.EXIT_FAILED),
 )
 
 

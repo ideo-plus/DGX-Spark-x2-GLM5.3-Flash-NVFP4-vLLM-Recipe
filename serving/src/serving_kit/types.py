@@ -814,6 +814,64 @@ class LaunchRecord(_Frozen):
     空きを後から読める。"""
 
 
+# --- 自動起動の指定と状態 (issue #88 P6) ---------------------------------
+
+
+class AutostartWeightsExpectation(_Frozen):
+    """自動起動の指定に含める、重みの照合の期待値 (design.md 「guards」の `weights_verified`)。
+
+    Spark 上の見張りは `serving_kit` を import しないので、`guards.weights_record_path` を
+    呼べない。この期待値 (道筋そのものと、比べる値) を、Mac が指定に埋め込む。
+    """
+
+    path: str = Field(min_length=1)
+    scope: VerificationScope
+    file_count: NonNegativeInt
+    total_bytes: NonNegativeInt
+    fields: dict[str, str]
+
+
+class AutostartDesignation(_Frozen):
+    """自動起動の指定 (`serve autostart set` が `state/autostart.json` に配る)。
+
+    `config` が `None` のときは、`serve autostart clear` が配った「指定なし」を表す。
+    見張りは、`config` が `None` のとき、`docker run` を 1 度も流さない。
+    """
+
+    schema_version: int = 1
+    role: NodeRole
+    config: str | None = None
+    config_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    ready_timeout_s: PositiveInt | None = None
+    ports: tuple[int, ...] = ()
+    weights_record: AutostartWeightsExpectation | None = None
+    designated_at: datetime
+    repo_commit: str = Field(min_length=1)
+    repo_dirty: bool
+
+
+class AutostartStatus(_Frozen):
+    """見張りが書く状態 (`state/autostart.status.json`)。Spark 側 (標準ライブラリだけの
+    script) が書くので、Mac 側は読むだけで、この型では作らない。すべて省略可にして、
+    指定がまだ無い・古い版のときでも読めるようにする。
+    """
+
+    schema_version: int | None = None
+    role: NodeRole | None = None
+    config: str | None = None
+    container_name: str | None = None
+    state: str | None = None
+    reason: str | None = None
+    updated_at: str | None = None
+    started_at: str | None = None
+    ready_at: str | None = None
+    container_state: str | None = None
+    container_exit_code: int | None = None
+    last_health_status: int | None = None
+    last_probe_status: int | None = None
+    consecutive_start_failures: int | None = None
+
+
 class StartOutcome(_Frozen):
     """起動の結末 (design.md 「lifecycle」の `start`、System Flows の起動)。
 

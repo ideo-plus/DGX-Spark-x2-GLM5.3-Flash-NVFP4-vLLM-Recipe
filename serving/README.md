@@ -96,6 +96,9 @@ uv run serve stop --yes
 | `serve netcheck ab <構成> --env K=V [--repeat <回>]` | 足す設定の A/B を、交互に流して比べる | **変える** |
 | `serve watch <構成> [--thermal-threshold <℃>]` | 連続の負荷の間、外から見張る (読み取りだけ。GPU の温度・SM クロック・電力・使用率、ACPI 熱区域、hwmon (`mlx5`/`nvme`/`acpitz`) の温度、コアごとの CPU 使用率、コアごとの周波数の上限 (`scaling_max_freq`) を観察し、`unresponsive`/`stalled`/`thermal` の出来事を見つける) | 変えない |
 | `serve thinking <構成>` | thinking の深さの渡し方を確かめる (HTTP だけ) | 変えない |
+| `serve autostart set <構成>` | Spark 上の見張り (`ops/vllm-autostart`) が自動で起こす構成を指定する (両台の `launch.json` の `config_sha256` が、この計画と一致するときだけ配る) | **変える** |
+| `serve autostart clear` | 自動で起こす構成の指定を解除する (`config: null` を配るだけ) | **変える** |
+| `serve autostart status` | 両台の指定と、見張りの状態を、`cat` で読むだけで示す | 変えない |
 
 すべてのコマンドに共通の引数:
 
@@ -164,12 +167,12 @@ traceback を出さずに、`エラー: <1 行>` として標準エラーに出�
 
 | 置き場所 | 何を置くか | 配布の宛先にできるか |
 |---|---|---|
-| `payload/` | Spark で流すスクリプト、`spark-power-caps.default`、`k2-quant/` (変換の道具 `experiments/k2-quant/k2_quant` の写し。試験でバイト単位の同一を固定) (`serving/payload/` の中身) | できる |
+| `payload/` | Spark で流すスクリプト、`spark-power-caps.default`、`k2-quant/` (変換の道具 `experiments/k2-quant/k2_quant` の写し。試験でバイト単位の同一を固定)、`vllm-autostart/` (見張りの script・unit・install/uninstall。`ops/vllm-autostart/` の写し。issue #88 P6) (`serving/payload/` の中身) | できる |
 | `models/` | 重み (本体) | できない |
 | `probe/` | 縮小の確認用の、設定とトークナイザ | できない |
 | `cache/` | JIT などのキャッシュ | できない |
 | `logs/` | 通信の記録 (NCCL) | できない |
-| `state/` | 起動の記録と、照合の結果の記録 | できる |
+| `state/` | 起動の記録、照合の結果の記録、自動起動の指定 (`autostart.json`) と見張りの状態 (`autostart.status.json`。issue #88 P6) | できる |
 
 作ることと配ることは別である。`serve push` は、6 つを `mkdir -p` で作ってから、`payload/`
 だけを配る (置き場所を消す道は、この道具のどこにもない)。重み、確認用、キャッシュ、記録の
