@@ -9,31 +9,23 @@
 コーディングエージェントのワークフロー道具 `takt` のバックエンドとして、Anthropic 互換の
 `/v1/messages` から呼ばれる想定である。目的・制約・段階 (P0〜P8) の全体は [`PLAN.md`](PLAN.md) を参照。
 
-## 現在の結果 (探り `probe` の水準)
+## 現在の結果
 
-1 本の生成速度 (decode tok/s)、MTP の N = 3、同日に探り (出力 128 トークン) で測った値。
+構成 `glm53-tp2-mtp3-marlin` を、確認の段 (`fast`、少ないサンプル数、出力 256 トークン) で測った値。
 
-| 重み | code/en | code/ja | prose/en | prose/ja |
-|---|---:|---:|---:|---:|
-| 元の NVFP4 の重み (MTP N=3) | 33.99 | 29.31 | 29.75 | 27.85 |
-| ＋ 残っていた BF16 の重みを FP8 に (`k2s2b`) | 42.45 | 37.73 | 39.62 | 34.80 |
-| ＋ それらの重みを NVFP4 に (`k2s3`) | 48.00 | 40.62 | 42.30 | 38.26 |
+| 項目 | 値 | 基準 |
+|---|---:|---:|
+| 生成速度 (1 本、コード・英語) | 45.0 tok/s | 45 tok/s |
+| 生成速度 (1 本、コード・日本語) | 43.9 tok/s | — |
+| 生成速度 (1 本、散文・英語) | 46.3 tok/s | — |
+| 生成速度 (1 本、散文・日本語) | 42.2 tok/s | 30 tok/s |
+| 生成速度 (同時 2 本の 1 本あたり) | 27.2 tok/s | 30 tok/s |
+| 入力の処理 (32k トークン、cold) | 1,326 tok/s | 2,000 tok/s |
 
-確認の段 (`fast`、出力 256 トークン) の `k2s3`・MTP N = 3 の値は **42.14 / 39.18 / 40.67 / 39.67**。コード・英語は、基準の 45 tok/s にまだ約 7% 届かない ([記録](docs/results/2026-09-28-k2-stage3.md))。
-
-投機的デコードなしでは、元の重みで **約 14.0 tok/s** にとどまる。
-
-これらは**少ないサンプル数の探りの値**であり、候補を素早く比べるためのもので、成功の判定には使わない。
-確認の段 (出力 256 トークン) の値と、最終の大量サンプルでの検証は [`docs/results/`](docs/results/)
-にある (例: [FP8、アテンションの一部まで](docs/results/2026-09-27-k2-stage2a.md)、
-[FP8、アテンションの射影すべて](docs/results/2026-09-27-k2-stage2b.md)、[NVFP4](docs/results/2026-09-28-k2-stage3.md))。成功の基準に対する判定そのものは、
-P0〜P7 をすべて終えたあと **P8** でまとめて行う。
-
-成功の基準 (表と根拠の全体は [`PLAN.md` §3](PLAN.md#3-成功の基準) を参照): 生成速度 (コード・英語)
-**45 tok/s** (2026-09-27 に 60 から見直した。業務で使えるドラフターでは 60 に届く見込みが無いと
-分かったため。詳細は [`docs/results/2026-09-27-k3-drafter-bound.md`](docs/results/2026-09-27-k3-drafter-bound.md))、
-生成速度 (散文・日本語) **30 tok/s**、エージェントの安定性 (会話 10 万トークンまで、ツール呼び出しの
-誤りが 1% 未満)、`takt` の負荷を想定した 72 時間の連続稼働。
+この段の品質の確認 (ツール呼び出し、HumanEval+、needle 8k・32k) では、壊れは見つかっていない。
+値は少ないサンプル数のもので、成功の基準に対する判定は、**P8** で大量のサンプル数で行う。
+記録: [`docs/results/2026-09-28-k2-stage3.md`](docs/results/2026-09-28-k2-stage3.md)。
+成功の基準の全体は [`PLAN.md` §3](PLAN.md#3-成功の基準) にある。
 
 ## 仕組み
 
@@ -44,11 +36,12 @@ P0〜P7 をすべて終えたあと **P8** でまとめて行う。
   デバイスとして見え、両方が使われる (all-reduce の busbw は実測で約 186.9 Gbps)。
 - **MTP の投機的デコード、N = 3** — モデル付属の multi-token-prediction ヘッド (MIT) であり、
   非商用の第三者のドラフターではない。
-- **残っていた BF16 の重みの量子化** (このリポジトリの中では「K2」と呼ぶ。[ADR 0006](docs/decisions/0006-path-pruning.md)
-  で残した 3 つの速くする道の 2 つ目で、ファイル形式の名前ではない): vLLM がそのままでは量子化できなかった BF16 の重み (MLA・KDA のアテンションの射影、共有の
-  専門家、dense の MLP、`lm_head`) を、[`experiments/k2-quant`](experiments/k2-quant/README.md)
-  (ゼロから書いた、CPU だけで動く、GPU もネットワークも使わない道具) で、手元で FP8 (第 2a・2b 段) に、
-  続けて NVFP4A16 (重みだけ NVFP4、第 3 段) に変換する。
+- **重み**: 公開の NVFP4 の checkpoint の専門家はそのまま使い、BF16 か FP8 で残っていた重みの大半
+  (アテンションの射影、共有の専門家、dense の MLP、`lm_head`、MTP の層の射影と専門家) を、
+  [`experiments/k2-quant`](experiments/k2-quant/README.md) (ゼロから書いた、CPU だけで動く道具) で、
+  手元で NVFP4A16 (重みだけ NVFP4) に変換する (MLA の `kv_b_proj`、indexer、MTP の `eh_proj` は BF16 のまま)。できた派生の重み `k2s4` は、`serving/weights/` の
+  マニフェストで固定する。
+- **MoE のカーネル**: すべての MoE の層で `--moe-backend marlin` (重みだけ 4 bit、活性は BF16) を使う。
 - その派生の重みを読み込むために要る vLLM のモデルコードの直しは、イメージを作り直さず、**読み取り
   専用の bind mount で重ねる**上書きファイルとして当てる
   ([`experiments/k2-vllm-overlay`](experiments/k2-vllm-overlay/README.md))。これにより、探りの回ごとに
@@ -97,7 +90,15 @@ P0〜P7 をすべて終えたあと **P8** でまとめて行う。
 8. 手元で FP8・NVFP4 に変換した重みに固有の手順は、
    [`docs/vllm-baseline/k2-derived-weights-procedure.md`](docs/vllm-baseline/k2-derived-weights-procedure.md)
    と [`docs/vllm-baseline/k2-vllm-overlay-procedure.md`](docs/vllm-baseline/k2-vllm-overlay-procedure.md)
-   を参照。
+   を参照。推奨の構成 (重み `k2s4` + MTP N=3 + `--moe-backend marlin`) は
+   `glm53-tp2-mtp3-marlin` である。派生の重みと重ね合わせを配って照合した後に:
+
+   ```bash
+   uv run --directory serving serve check glm53-tp2-mtp3-marlin
+   uv run --directory serving serve start glm53-tp2-mtp3-marlin --yes
+   ```
+
+   `serve start --yes` は 2 台の状態を変える。了承を得てから実行する。
 9. 計測には `bench` を使う ([`bench/README.md`](bench/README.md) 参照)。候補を素早く比べるなら
    `probe`、有望な候補を確かめるなら `fast`、記録するなら `quick`/`full`。
 
@@ -118,13 +119,8 @@ DFlash2 ドラフターなど) は使わない。GLM-5.3-Flash の重みは、�
 
 ## 状況・既知の限界
 
-- **コード・英語の 60 tok/s は、業務で使えるドラフターでは届かない。** その水準の公開値は、
-  どれも非商用の深いドラフターを使っている。基準は 2026-09-27 に 45 tok/s へ見直した (詳細は
-  [`docs/results/2026-09-27-k3-drafter-bound.md`](docs/results/2026-09-27-k3-drafter-bound.md))。
-- **同時 2 本の 1 本あたりの速さは、まだ目標に届かない** (`k2s2b` で約 24 tok/s、目標は 30 tok/s)。
-- **起動には `instanttensor` の速い経路でも約 5 分かかる** (ふつうの `mmap` での読み込みは約 13 分)。
-- **`k2s3` の確認の段のコード・英語は 42.1 tok/s** で、基準の 45 tok/s に約 7% 届かない
-  ([`docs/results/2026-09-28-k2-stage3.md`](docs/results/2026-09-28-k2-stage3.md))。
-- **P8 (すべての成功基準に対する、大量サンプルでの最終検証) はまだ行っていない。** この README の値は
-  すべて探りの水準のもので、300 試行によるエージェントの安定性の判定は、いまのところ元の重みでしか
-  行っていない ([`docs/results/2026-09-24-agent-20k.md`](docs/results/2026-09-24-agent-20k.md))。
+- **同時 2 本の 1 本あたりの速さは、目標に届いていない** (27.2 tok/s、目標は 30 tok/s)。
+- **32k の入力の処理は、目標に届いていない** (1,326 tok/s、目標は 2,000 tok/s)。MTP を使う構成では、
+  プレフィックスキャッシュがほとんど当たらない。
+- **起動には約 5 分かかる** (ページキャッシュを捨てたうえで `instanttensor` を使う)。
+- **P8 (すべての成功基準に対する、大量サンプルでの最終検証) は、まだ行っていない。**

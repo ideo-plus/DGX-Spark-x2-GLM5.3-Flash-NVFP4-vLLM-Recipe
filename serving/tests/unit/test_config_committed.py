@@ -9,13 +9,19 @@
   API を持たない指定 (`--headless`) だけである
 - 縮小の確認、取得、読み取り、通信の確認の構成が `select_config` で選べる
 - 第一の構成は、**直結の値がないという理由だけ**で選べない (requirements 4.7)
-- どの構成にも、投機的デコードの指定がない (requirements 6.7)
+- `allow_speculative = true` でない構成には、投機的デコードの指定がない。`allow_speculative =
+  true` の構成 (`glm53-tp2-mtp3-marlin`) は、モデル付属の MTP を N = 3 で使う (requirements
+  6.7、design.md 6.7、ADR 0006 K1 で「構成ごとに許す」に変えた。issue #103)
+- コミットした `glm53-tp2-mtp3-marlin` (重み `k2s4` + MTP N=3 + `--moe-backend marlin`) から、
+  2 台ぶんの固定した引数の列ができ、`description` と `--moe-backend` の `why` が実測に基づく
+  (issue #103)
 
 この試験は、Spark に 1 度も触らない (読み込みと、純粋な組み立てだけを流す)。
 """
 
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Mapping
 from datetime import UTC, datetime
@@ -71,8 +77,30 @@ EXPECTED_NAMES = frozenset(
         "netcheck-bandwidth",
         "netcheck-bandwidth-ib",
         "netcheck-sanity",
+        "glm53-tp2-mtp3-marlin",
     }
 )
+
+MARLIN_CONFIG = "glm53-tp2-mtp3-marlin"
+MARLIN_IMAGE_REF = "sha256:9df45888d2d726a1818be1005ace819808d4a1e8b4ec01a3efa7bc7f10a40c90"
+MARLIN_MOUNT_AT = "/models/k2s4"
+MARLIN_WEIGHTS_LABEL = (
+    "derived:k2s4:RedHatAI/GLM-5.3-Flash-NVFP4@18d55bfd5a2194887738da73753975c9d3842f46"
+)
+MARLIN_RESULTS_DOC = "docs/results/2026-09-28-k2-stage3.md"
+
+MARLIN_CONFIG_SHA256 = "80a7fd6b1cb19309fef25fbbad7811a5569460016dec8e574430d91ef667ba72"
+"""`glm53-tp2-mtp3-marlin` の `config-sha256` (issue #103)。
+
+構成の値 (フラグ、値、イメージ、重み、ノードの値) を 1 つでも変えると変わるので、この
+1 行が、意図しない変更の見張りになる。`description` / `why` / 根拠 / `ready_timeout_s` を
+直しても変わらない。
+
+Issue #103 が指す、実機で起動・計測した構成 (リポジトリの外、Git の対象外) の構成名だけを
+`glm53-tp2-mtp3-marlin` に置き換え、この試験と同じ直結の値と `STARTED_AT` で
+`load_configs` → `select_config` → `build_plans` に通して求めた。構成名は `--name` を
+通じて値に効くので、置き換えてから求めている。
+"""
 
 FABRIC_HEAD_ADDR = "192.168.100.1"
 FABRIC_WORKER_ADDR = "192.168.100.2"
@@ -145,17 +173,19 @@ def test_committed_nodes_carry_the_measured_fabric_values() -> None:
 # --- 固定した引数の列 --------------------------------------------------
 
 
-def _label_argv(role: str) -> tuple[str, ...]:
+def _label_argv(
+    role: str, *, config: str, sha256: str, image: str, weights: str
+) -> tuple[str, ...]:
     """ラベルの列 (鍵の順。重みを持つ構成なので 8 つ)。"""
     labels = {
-        "vllm-baseline.config": "p1-nvfp4-tp2",
-        "vllm-baseline.config-sha256": CONFIG_SHA256,
-        "vllm-baseline.image": IMAGE_REF,
+        "vllm-baseline.config": config,
+        "vllm-baseline.config-sha256": sha256,
+        "vllm-baseline.image": image,
         "vllm-baseline.kind": "serve",
         "vllm-baseline.owner": "serving-kit",
         "vllm-baseline.role": role,
         "vllm-baseline.started-at": STARTED_LABEL,
-        "vllm-baseline.weights": WEIGHTS_LABEL,
+        "vllm-baseline.weights": weights,
     }
     argv: list[str] = []
     for key in sorted(labels):
@@ -224,7 +254,9 @@ _HEAD_ARGV: tuple[str, ...] = (
     "never",
     "--name",
     "vb-p1-nvfp4-tp2-head",
-    *_label_argv("head"),
+    *_label_argv(
+        "head", config="p1-nvfp4-tp2", sha256=CONFIG_SHA256, image=IMAGE_REF, weights=WEIGHTS_LABEL
+    ),
     *_DOCKER_ARGV,
     "-e",
     f"VLLM_HOST_IP={FABRIC_HEAD_ADDR}",
@@ -258,7 +290,13 @@ _WORKER_ARGV: tuple[str, ...] = (
     "never",
     "--name",
     "vb-p1-nvfp4-tp2-worker",
-    *_label_argv("worker"),
+    *_label_argv(
+        "worker",
+        config="p1-nvfp4-tp2",
+        sha256=CONFIG_SHA256,
+        image=IMAGE_REF,
+        weights=WEIGHTS_LABEL,
+    ),
     *_DOCKER_ARGV,
     "-e",
     f"VLLM_HOST_IP={FABRIC_WORKER_ADDR}",
@@ -326,6 +364,196 @@ def test_the_two_nodes_differ_only_where_they_must() -> None:
     }
 
 
+# --- glm53-tp2-mtp3-marlin の固定した引数の列 (issue #103) --------------
+
+
+_MARLIN_OVERLAY_SRC = f"{REMOTE_ROOT}/payload/vllm-overlay/k2s2b/vllm"
+_MARLIN_DIST_PACKAGES = "/usr/local/lib/python3.12/dist-packages/vllm"
+
+
+def _marlin_overlay_mount(rel: str) -> str:
+    """重ね合わせ (vllm-overlay k2s2b。ADR 0007 の第 2b 段、#79) の 1 ファイルぶんの `--mount`。"""
+    return (
+        f"type=bind,source={_MARLIN_OVERLAY_SRC}/{rel},"
+        f"target={_MARLIN_DIST_PACKAGES}/{rel},readonly"
+    )
+
+
+_MARLIN_DOCKER_ARGV: tuple[str, ...] = (
+    "--restart",
+    "no",
+    "--gpus",
+    "all",
+    "--ipc",
+    "host",
+    "--shm-size",
+    "16g",
+    "--ulimit",
+    "memlock=-1",
+    "--network",
+    "host",
+    "--mount",
+    f"type=bind,source={REMOTE_ROOT}/models/k2s4,target={MARLIN_MOUNT_AT},readonly",
+    "--mount",
+    f"type=bind,source={REMOTE_ROOT}/cache,target=/root/.cache",
+    "--mount",
+    f"type=bind,source={REMOTE_ROOT}/logs,target=/logs",
+    "--mount",
+    _marlin_overlay_mount("model_executor/layers/vocab_parallel_embedding.py"),
+    "--mount",
+    _marlin_overlay_mount("models/glm5next/common/model.py"),
+    "--mount",
+    _marlin_overlay_mount("models/glm5next/common/kda.py"),
+    "--device",
+    "/dev/infiniband",
+)
+
+_MARLIN_TAIL_ARGV: tuple[str, ...] = (
+    *_TAIL_ARGV,
+    "--speculative-config",
+    '{"method":"mtp","num_speculative_tokens":3}',
+    "--load-format",
+    "instanttensor",
+    "--moe-backend",
+    "marlin",
+)
+
+_MARLIN_HEAD_ARGV: tuple[str, ...] = (
+    "docker",
+    "run",
+    "-d",
+    "--pull",
+    "never",
+    "--name",
+    "vb-glm53-tp2-mtp3-marlin-head",
+    *_label_argv(
+        "head",
+        config=MARLIN_CONFIG,
+        sha256=MARLIN_CONFIG_SHA256,
+        image=MARLIN_IMAGE_REF,
+        weights=MARLIN_WEIGHTS_LABEL,
+    ),
+    *_MARLIN_DOCKER_ARGV,
+    "-e",
+    f"VLLM_HOST_IP={FABRIC_HEAD_ADDR}",
+    "-e",
+    f"NCCL_SOCKET_IFNAME=={FABRIC_IFNAME}",
+    "-e",
+    f"GLOO_SOCKET_IFNAME={FABRIC_IFNAME}",
+    "-e",
+    "NCCL_DEBUG=INFO",
+    "-e",
+    "NCCL_DEBUG_SUBSYS=INIT,NET",
+    "-e",
+    "NCCL_DEBUG_FILE=/logs/nccl.%h.%p.log",
+    MARLIN_IMAGE_REF,
+    MARLIN_MOUNT_AT,
+    "--served-model-name",
+    "glm-5-3-flash",
+    "--host",
+    "10.0.1.60",
+    "--port",
+    "8000",
+    "--tensor-parallel-size",
+    "2",
+    "--nnodes",
+    "2",
+    "--node-rank",
+    "0",
+    *_MARLIN_TAIL_ARGV,
+)
+
+_MARLIN_WORKER_ARGV: tuple[str, ...] = (
+    "docker",
+    "run",
+    "-d",
+    "--pull",
+    "never",
+    "--name",
+    "vb-glm53-tp2-mtp3-marlin-worker",
+    *_label_argv(
+        "worker",
+        config=MARLIN_CONFIG,
+        sha256=MARLIN_CONFIG_SHA256,
+        image=MARLIN_IMAGE_REF,
+        weights=MARLIN_WEIGHTS_LABEL,
+    ),
+    *_MARLIN_DOCKER_ARGV,
+    "-e",
+    f"VLLM_HOST_IP={FABRIC_WORKER_ADDR}",
+    "-e",
+    f"NCCL_SOCKET_IFNAME=={FABRIC_IFNAME}",
+    "-e",
+    f"GLOO_SOCKET_IFNAME={FABRIC_IFNAME}",
+    "-e",
+    "NCCL_DEBUG=INFO",
+    "-e",
+    "NCCL_DEBUG_SUBSYS=INIT,NET",
+    "-e",
+    "NCCL_DEBUG_FILE=/logs/nccl.%h.%p.log",
+    MARLIN_IMAGE_REF,
+    MARLIN_MOUNT_AT,
+    "--served-model-name",
+    "glm-5-3-flash",
+    "--host",
+    "10.0.1.60",
+    "--port",
+    "8000",
+    "--tensor-parallel-size",
+    "2",
+    "--nnodes",
+    "2",
+    "--node-rank",
+    "1",
+    "--headless",
+    *_MARLIN_TAIL_ARGV,
+)
+
+
+def test_committed_marlin_config_builds_the_fixed_argv() -> None:
+    """コミットした `glm53-tp2-mtp3-marlin` から、2 台ぶんの固定した引数の列ができる (issue #103)。
+
+    値を 1 つでも変える (`--moe-backend` を落とす、overlay の `--mount` の順を変える、
+    `NCCL_DEBUG_SUBSYS` を変える等) と、argv の完全一致と `config-sha256` の両方が外れる。
+    """
+    nodes = _with_fabric(_load_nodes())
+    config = c.select_config(_load_configs(), MARLIN_CONFIG, nodes)
+    plans = p.build_plans(config, nodes, STARTED_AT)
+
+    assert tuple(plan.node for plan in plans) == ("head", "worker")
+    assert plans[0].argv == _MARLIN_HEAD_ARGV
+    assert plans[1].argv == _MARLIN_WORKER_ARGV
+    # 2 台のラベルの `config-sha256` は同じ (同じ構成の 1 つのサーバーである)
+    assert (
+        plans[0].labels[p.LABEL_CONFIG_SHA256]
+        == plans[1].labels[p.LABEL_CONFIG_SHA256]
+        == MARLIN_CONFIG_SHA256
+    )
+
+
+def test_the_marlin_nodes_differ_only_where_they_must() -> None:
+    """`glm53-tp2-mtp3-marlin` の 2 台の差が、役割そのものを表すものだけである (issue #103)。"""
+    nodes = _with_fabric(_load_nodes())
+    config = c.select_config(_load_configs(), MARLIN_CONFIG, nodes)
+    head, worker = p.build_plans(config, nodes, STARTED_AT)
+
+    only_head = set(head.argv) - set(worker.argv)
+    only_worker = set(worker.argv) - set(head.argv)
+    assert only_head == {
+        "vb-glm53-tp2-mtp3-marlin-head",
+        f"{p.LABEL_ROLE}=head",
+        f"VLLM_HOST_IP={FABRIC_HEAD_ADDR}",
+        "0",
+    }
+    assert only_worker == {
+        "vb-glm53-tp2-mtp3-marlin-worker",
+        f"{p.LABEL_ROLE}=worker",
+        f"VLLM_HOST_IP={FABRIC_WORKER_ADDR}",
+        "1",
+        "--headless",
+    }
+
+
 # --- 選べる構成、選べない構成 ------------------------------------------
 
 
@@ -385,15 +613,20 @@ def test_two_node_configs_are_refused_only_for_the_missing_fabric(name: str) -> 
     assert [line.split(":", 1)[0] for line in lines] == expected
 
 
-# --- 投機的デコードがない ----------------------------------------------
+# --- 投機的デコードは allow_speculative ごとの許可 (design.md 6.7、ADR 0006 K1) ------
 
 
 _SPECULATIVE = ("--speculative-config", "--spec-method", "--spec-model", "--spec-tokens")
 
 
-def test_no_config_asks_for_speculative_decoding() -> None:
-    """どの構成にも、投機的デコードの指定がない (requirements 6.7、design の Decision 5)。"""
-    for name, config in _load_configs().items():
+def test_configs_without_the_allowance_have_no_speculative_setting() -> None:
+    """`allow_speculative = true` でない構成には、投機的デコードの指定がない (issue #103)。"""
+    configs = _load_configs()
+    without_allowance = {
+        name: config for name, config in configs.items() if not config.allow_speculative
+    }
+    assert without_allowance, "allow_speculative が偽の構成が 1 つもない"
+    for name, config in without_allowance.items():
         for section in ("docker", "args", "env"):
             settings: Mapping[str, object] = getattr(config, section)
             for key, setting in settings.items():
@@ -402,6 +635,34 @@ def test_no_config_asks_for_speculative_decoding() -> None:
                 written = f"{flag_text} {value_text}"
                 for flag in _SPECULATIVE:
                     assert flag not in written, f"{name}.{section}.{key} に {flag} がある"
+
+
+def test_the_marlin_config_allows_mtp_with_three_draft_tokens() -> None:
+    """`glm53-tp2-mtp3-marlin` は `allow_speculative = true` で、モデル付属の MTP を N = 3 で
+    使う (design.md 6.7、ADR 0006 K1、issue #103)。"""
+    config = _load_configs()[MARLIN_CONFIG]
+    assert config.allow_speculative is True
+
+    setting = next(
+        setting for setting in config.args.values() if setting.flag == "--speculative-config"
+    )
+    assert setting.value is not None
+    assert json.loads(setting.value) == {"method": "mtp", "num_speculative_tokens": 3}
+
+
+def test_the_marlin_config_records_the_measured_reason() -> None:
+    """`glm53-tp2-mtp3-marlin` の説明と `--moe-backend` の理由が、実測に基づく (issue #103)。"""
+    config = _load_configs()[MARLIN_CONFIG]
+    assert "実機では未確認" not in config.description
+    assert MARLIN_RESULTS_DOC in config.description
+
+    moe_backend = next(
+        setting for setting in config.args.values() if setting.flag == "--moe-backend"
+    )
+    assert "実験" not in moe_backend.why
+    assert "43.8" in moe_backend.why
+    assert "45.0" in moe_backend.why
+    assert MARLIN_RESULTS_DOC in moe_backend.why
 
 
 def test_every_setting_carries_provenance() -> None:

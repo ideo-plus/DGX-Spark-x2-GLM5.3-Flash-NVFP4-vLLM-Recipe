@@ -10,31 +10,24 @@ become the backend for `takt`, a coding-agent workflow tool, called through the 
 `/v1/messages` API. See [`PLAN.md`](PLAN.md) for the full goal, constraints, and phased plan
 (P0–P8).
 
-## Current results (probe-level)
+## Current results
 
-Single stream, decode tokens/sec, MTP N=3, same-day probe runs with 128-token outputs:
+Configuration `glm53-tp2-mtp3-marlin`, measured at the confirmation stage (`fast`, small samples,
+256-token outputs):
 
-| Weights | code/en | code/ja | prose/en | prose/ja |
-|---|---:|---:|---:|---:|
-| Original NVFP4 (MTP N=3) | 33.99 | 29.31 | 29.75 | 27.85 |
-| + remaining BF16 weights quantized to FP8 (`k2s2b`) | 42.45 | 37.73 | 39.62 | 34.80 |
-| + those weights quantized to NVFP4 instead (`k2s3`) | 48.00 | 40.62 | 42.30 | 38.26 |
+| Metric | Value | Criterion |
+|---|---:|---:|
+| Decode, single stream, code/en | 45.0 tok/s | 45 tok/s |
+| Decode, single stream, code/ja | 43.9 tok/s | — |
+| Decode, single stream, prose/en | 46.3 tok/s | — |
+| Decode, single stream, prose/ja | 42.2 tok/s | 30 tok/s |
+| Decode, 2 streams, per stream | 27.2 tok/s | 30 tok/s |
+| Prefill, 32k tokens (cold) | 1,326 tok/s | 2,000 tok/s |
 
-Confirmation stage (`fast`, 256-token outputs), `k2s3` with MTP N=3: **42.14 / 39.18 / 40.67 / 39.67** — code/en is still about 7% short of the 45 tok/s criterion ([record](docs/results/2026-09-28-k2-stage3.md)).
-
-Without speculative decoding, the original weights sit around **~14.0 tok/s**.
-
-These are **probe-level numbers from small samples**, meant to compare candidates quickly, not to
-judge success. Confirmation-stage (256-token) numbers and the final large-sample verification live
-in [`docs/results/`](docs/results/) (e.g. [FP8, attention partly](docs/results/2026-09-27-k2-stage2a.md),
-[FP8, all attention projections](docs/results/2026-09-27-k2-stage2b.md), [NVFP4](docs/results/2026-09-28-k2-stage3.md)); the pass/fail judgment against the success
-criteria itself is deferred to phase **P8**, run once at the end over all phases.
-
-Success criteria (see [`PLAN.md` §3](PLAN.md#3-成功の基準) for the full table and rationale):
-generation speed code/en **45 tok/s** (revised down from 60 on 2026-09-27 once it became clear no
-license-OK drafter reaches 60 — see [`docs/results/2026-09-27-k3-drafter-bound.md`](docs/results/2026-09-27-k3-drafter-bound.md)),
-prose/ja **30 tok/s**, agent stability (tool-call error rate under 1% up to 100k-token
-conversations), and a 72-hour continuous run under `takt`-like load.
+Quality checks at this stage (tool calls, HumanEval+, needle 8k/32k) found no breakage. These are
+small-sample numbers; the pass/fail judgment against every success criterion is made in phase
+**P8** with large samples. Records: [`docs/results/2026-09-28-k2-stage3.md`](docs/results/2026-09-28-k2-stage3.md).
+The full success criteria are in [`PLAN.md` §3](PLAN.md#3-成功の基準).
 
 ## How it works
 
@@ -45,12 +38,13 @@ conversations), and a 72-hour continuous run under `takt`-like load.
   uses as two RoCE devices (measured all-reduce busbw ~186.9 Gbps).
 - **MTP speculative decoding, N=3** — the model's own multi-token-prediction head (MIT-licensed),
   not a non-commercial third-party drafter.
-- **Quantizing the remaining BF16 weights** (called "K2" inside this repository — the second of the
-  three speed-up paths kept in [ADR 0006](docs/decisions/0006-path-pruning.md); it is not a file
-  format): the BF16 weights vLLM couldn't quantize out of the box (attention projections in MLA and
-  KDA, shared experts, dense MLPs, `lm_head`) are converted locally to FP8 (stage 2a/2b) and then to
-  NVFP4A16 (weight-only NVFP4, stage 3) with [`experiments/k2-quant`](experiments/k2-quant/README.md),
-  a from-scratch, CPU-only, GPU/network-free tool.
+- **Weights**: the published NVFP4 checkpoint's experts as-is, with most weights it left in BF16
+  or FP8 (attention projections, shared experts, dense MLPs, `lm_head`, and the MTP layer's
+  projections and experts) converted locally to NVFP4A16 (weight-only NVFP4; MLA `kv_b_proj`, the indexer, and the MTP
+  `eh_proj` stay BF16) by
+  [`experiments/k2-quant`](experiments/k2-quant/README.md), a from-scratch, CPU-only tool. The
+  result is the derived weight set `k2s4`, pinned by a manifest in `serving/weights/`.
+- **MoE kernel**: `--moe-backend marlin` (weight-only 4-bit, BF16 activations) for all MoE layers.
 - vLLM model-code fixes needed to load those derived weights are applied as **read-only
   bind-mounted overlay files** on top of the unmodified image
   ([`experiments/k2-vllm-overlay`](experiments/k2-vllm-overlay/README.md)), so no image rebuild is
@@ -102,6 +96,16 @@ procedure.
 8. For the locally converted (FP8/NVFP4) weights specifically, see
    [`docs/vllm-baseline/k2-derived-weights-procedure.md`](docs/vllm-baseline/k2-derived-weights-procedure.md)
    and [`docs/vllm-baseline/k2-vllm-overlay-procedure.md`](docs/vllm-baseline/k2-vllm-overlay-procedure.md).
+   The recommended configuration (weights `k2s4` + MTP N=3 + `--moe-backend marlin`) is
+   `glm53-tp2-mtp3-marlin`; once the derived weights and overlay have been distributed
+   and verified:
+
+   ```bash
+   uv run --directory serving serve check glm53-tp2-mtp3-marlin
+   uv run --directory serving serve start glm53-tp2-mtp3-marlin --yes
+   ```
+
+   `serve start --yes` changes state on both nodes — get operator approval first.
 9. To measure, use `bench` (see [`bench/README.md`](bench/README.md)): `probe` to compare
    candidates quickly, `fast` to confirm a promising one, `quick`/`full` to record.
 
@@ -123,15 +127,8 @@ and facts measured in this repo's own environment. Every non-trivial choice is r
 
 ## Status and known limitations
 
-- **60 tok/s (code/en) is not reachable with license-OK drafters.** All public results at that
-  level use a non-commercial deep drafter; the criterion was revised down to 45 tok/s on
-  2026-09-27 — see [`docs/results/2026-09-27-k3-drafter-bound.md`](docs/results/2026-09-27-k3-drafter-bound.md).
-- **2-stream concurrency is still below the per-stream target** (~24 tok/s per stream at `k2s2b`
-  versus a 30 tok/s target).
-- **Startup still takes ~5 minutes** even with the `instanttensor` fast path (plain `mmap` load is
-  ~13 minutes).
-- **code/en is 42.1 tok/s at the confirmation stage with `k2s3`**, about 7% below the 45 tok/s
-  criterion ([`docs/results/2026-09-28-k2-stage3.md`](docs/results/2026-09-28-k2-stage3.md)).
-- **P8 (final, large-sample validation against every success criterion) has not run yet.** All
-  numbers in this README are exploratory/probe scale; the 300-trial agent-stability judgment so
-  far exists only for the original weights ([`docs/results/2026-09-24-agent-20k.md`](docs/results/2026-09-24-agent-20k.md)).
+- **2-stream concurrency is below the per-stream target** (27.2 tok/s per stream, target 30).
+- **32k prefill is below the target** (1,326 tok/s, target 2,000), and the prefix cache rarely hits
+  with MTP enabled.
+- **Startup takes ~5 minutes** (`instanttensor` after evicting the page cache).
+- **P8 (large-sample verification of every success criterion) has not been run yet.**
