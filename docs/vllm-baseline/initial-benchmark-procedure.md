@@ -34,7 +34,7 @@ uv run --directory bench bench run --target p2-nope-tp2-smoke --suite decode --p
 - `--suite decode` を**明示します**。省くと速さの 3 つ (`decode` / `prefill` / `concurrency`) が既定で流れます (`bench/src/bench_harness/cli.py` の `DEFAULT_SUITES`)。この試行では `concurrency` を使いません。`prefill` の狙いの入力は 8k / 32k / 128k なので、4096 では 6 条件とも送る前に飛びます。
 - `serve smoke` で非ストリーミングの短い応答を確認した後、bench の前提確認が `POST /v1/messages` を 1 件送り、`usage` と出力の中身があることを確かめます。満たされなければ計測ランのディレクトリを作らずに終了の値 1 で止まります。ここが SSE 応答の最初の関門です。
 - `bench` が送る要求は**すべて SSE** です (`MessagesRequest.stream` は `Literal[True]`)。非ストリーミングで叩く道はありません。最初のトークンまでの時間と受け取った事象の数が記録され、途中で壊れれば `stream_error` または `protocol` として残ります。
-- `decode` は 4 条件 (`code`/`prose` × `en`/`ja`) で、`quick` では 48 要求です。狙いの入力の長さを持たない条件なので、4096 でも飛びません。試行を増減するなら `--set decode.trials=N` ですが、**下限は 10** です (`types.py` の `ge=10`)。下回ると設定の誤りとして終了の値 1 になります。
+- `decode` は 6 条件 (`code`/`prose`/`json` × `en`/`ja`) で、`quick` では 6 × (10 試行 + 慣らし 2) = 72 要求です。前述の bench 前提確認の 1 要求は含みません。狙いの入力の長さを持たない条件なので、4096 でも飛びません。試行を増減するなら `--set decode.trials=N` ですが、**下限は 10** です (`types.py` の `ge=10`)。下回ると設定の誤りとして終了の値 1 になります。
 
 ## 4. ツール呼び出しを確かめる
 

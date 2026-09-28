@@ -654,23 +654,25 @@ async def test_a_decode_run_completes_and_records_the_conditions(
     assert re.fullmatch(r"[^+]+\+(g[0-9a-f]{7,}(\.dirty)?|unknown)", manifest.harness_version)
 
     records = trials_of(outcome)
-    assert len(records) == 40  # 4 つの条件 × 10 回
+    assert len(records) == 60  # 6 つの条件 × 10 回
     assert {record.condition for record in records} == {
         "decode/code/en",
         "decode/code/ja",
         "decode/prose/en",
         "decode/prose/ja",
+        "decode/json/en",
+        "decode/json/ja",
     }
     assert all(record.run_id == outcome.run_id for record in records)
     assert all(record.result.error is None for record in records)
 
     deltas, delta_warnings = opened(outcome).read_metric_deltas()
     assert delta_warnings == []
-    assert len(deltas) == 4
+    assert len(deltas) == 6
     assert all(row.before_available and row.after_available for row in deltas)
     assert any(row.derived.spec_acceptance_rate is not None for row in deltas)
-    assert len(list((outcome.run_dir / "metrics").glob("*.before.prom"))) == 4
-    assert len(list((outcome.run_dir / "metrics").glob("*.after.prom"))) == 4
+    assert len(list((outcome.run_dir / "metrics").glob("*.before.prom"))) == 6
+    assert len(list((outcome.run_dir / "metrics").glob("*.after.prom"))) == 6
     assert progress.updates[-1][2] == 10
 
 

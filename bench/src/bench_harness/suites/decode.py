@@ -1,22 +1,22 @@
 """生成速度のまとまり (task 3.2: suites/decode)。
 
-コードと散文、英語と日本語を掛け合わせた 4 つの条件 (`decode/{code,prose}/{en,ja}`)
+コード、散文、JSON と英語・日本語を掛け合わせた 6 つの条件
+(`decode/{code,prose,json}/{en,ja}`)
 で、試行ごとに違う、長く書かせる指示を送る。まとまりの共通の部品
 (`suites/base.py`) の上に薄く載るだけで、条件の計画と、試行ごとの入力の
 組み立てだけをこの module が受け持つ (design.md「suites」の decode の行)。
 
 ## 指示の作り方
 
-話題は、領域 (`_CODE_DOMAINS_*`、`_PROSE_TOPICS_*`) と切り口
-(`_CODE_FOCUSES_*`、`_PROSE_ANGLES_*`) の 2 つの小さな型紙の掛け合わせ
+話題は、領域・題材と切り口の 2 つの小さな型紙の掛け合わせ
 (8 × 4 = 32 通り) から選ぶ。選び方 (`_topic_index`) は、試行の番号と慣らし
 かどうかだけで決まる添字で、乱数を使わない。本番の試行は添字 0 から、
 慣らしの試行は別の範囲 (`_WARMUP_TOPIC_OFFSET` から) を使うので、同じ番号
 でも慣らしと本番で違う話題になる。32 通りが 20 を超えるので、同じ条件の
 最初の 20 本の本番の試行は、必ず違う話題になる。
 
-話題のほかに、文中に入れる架空の管理番号だけを `random.Random(trial_seed(...))`
-で決める。`trial_seed` は `run_id` を含まない (base.py) ので、計測ランを
+code と prose の管理番号は `random.Random(trial_seed(...))` で、JSON の管理番号は
+同じ seed からの計算で決める。`trial_seed` は `run_id` を含まない (base.py) ので、計測ランを
 またいでも、同じ番号の試行は同じ指示になる。
 
 話題も文中の題材も、すべて架空である (11.1: クリーンルーム。実在の企業や
@@ -58,7 +58,7 @@ from bench_harness.types import ConditionPlan, Lang, SkippedCondition, SuiteName
 
 __all__ = ["DecodeSuite", "decode_suite"]
 
-_KINDS: Final[tuple[str, ...]] = ("code", "prose")
+_KINDS: Final[tuple[str, ...]] = ("code", "prose", "json")
 _LANGS: Final[tuple[Lang, ...]] = ("en", "ja")
 
 _SYSTEM_LINE: Final[str] = (
@@ -146,6 +146,59 @@ _PROSE_ANGLES_JA: Final[tuple[str, ...]] = (
     "技術の審査委員会向けに",
 )
 
+_JSON_TOPICS_EN: Final[tuple[str, ...]] = (
+    "weather balloon inspection logs",
+    "deep sea station supply transfers",
+    "lighthouse lens maintenance visits",
+    "pneumatic mail delivery rounds",
+    "greenhouse irrigation checks",
+    "expedition archive catalog entries",
+    "model train signal inspections",
+    "puzzle box vending machine restocks",
+)
+_JSON_TOPICS_JA: Final[tuple[str, ...]] = (
+    "気球観測隊の点検記録",
+    "深海調査基地の備品移送記録",
+    "灯台のレンズの保守訪問記録",
+    "空気管郵便の配達記録",
+    "温室の散水点検記録",
+    "探検資料の目録記録",
+    "模型鉄道の信号点検記録",
+    "からくり箱の自動販売機の補充記録",
+)
+_JSON_WARMUP_TOPICS_EN: Final[tuple[str, ...]] = (
+    "fictional kite festival registrations",
+    "fictional paper boat race entries",
+    "fictional lantern workshop reservations",
+    "fictional clock tower tour bookings",
+    "fictional cloud atlas annotations",
+    "fictional shell museum loans",
+    "fictional miniature garden visits",
+    "fictional snow globe repairs",
+)
+_JSON_WARMUP_TOPICS_JA: Final[tuple[str, ...]] = (
+    "凧祭りの参加登録",
+    "紙舟競走の参加記録",
+    "ランタン工房の予約記録",
+    "時計塔見学の予約記録",
+    "雲図鑑の注記",
+    "貝殻博物館の貸出記録",
+    "箱庭の見学記録",
+    "スノードームの修理記録",
+)
+_JSON_ANGLES_EN: Final[tuple[str, ...]] = (
+    "organized by location",
+    "organized by assigned team",
+    "organized by inspection phase",
+    "organized by priority",
+)
+_JSON_ANGLES_JA: Final[tuple[str, ...]] = (
+    "場所ごとに整理した",
+    "担当班ごとに整理した",
+    "点検段階ごとに整理した",
+    "優先度ごとに整理した",
+)
+
 
 class DecodeSuite:
     """生成速度のまとまり (design.md suites の decode の行)。"""
@@ -170,11 +223,15 @@ class DecodeSuite:
         self, ctx: SuiteContext, cond: ConditionPlan
     ) -> AsyncIterator[TrialRecord]:
         kind, lang = _parse_condition_key(cond.key)
-        build = _code_instruction if kind == "code" else _prose_instruction
         for trial_index, warmup in iter_trials(cond):
             seed = trial_seed(ctx.profile.seed, cond.key, trial_index, warmup=warmup)
             topic_index = _topic_index(trial_index, warmup=warmup)
-            instruction = build(lang, seed, topic_index)
+            if kind == "code":
+                instruction = _code_instruction(lang, seed, topic_index)
+            elif kind == "prose":
+                instruction = _prose_instruction(lang, seed, topic_index)
+            else:
+                instruction = _json_instruction(lang, seed, topic_index, warmup=warmup)
             nonce = cold_prefix_nonce(ctx, cond, trial_index=trial_index, warmup=warmup)
             record = await run_trial(
                 ctx,
@@ -269,4 +326,40 @@ def _prose_instruction(lang: Lang, seed: int, index: int) -> str:
         f"い。少なくとも {_PROSE_MIN_CHARS_JA} 字になるまで、途中で切り上げたり要約し"
         "たりせずに書き続けてください。日本語の文章だけで、コードや箇条書きを使わずに"
         "書いてください。"
+    )
+
+
+def _json_instruction(lang: Lang, seed: int, index: int, *, warmup: bool) -> str:
+    if lang == "en":
+        topics = _JSON_WARMUP_TOPICS_EN if warmup else _JSON_TOPICS_EN
+        angles = _JSON_ANGLES_EN
+    else:
+        topics = _JSON_WARMUP_TOPICS_JA if warmup else _JSON_TOPICS_JA
+        angles = _JSON_ANGLES_JA
+    topic = topics[index % len(topics)]
+    angle = angles[(index // len(topics)) % len(angles)]
+    tracking_number = 1000 + seed % 9000
+    if lang == "en":
+        return (
+            f"Write a single long JSON array of fictional {topic}, {angle}. "
+            f"Use {tracking_number} as the fictional internal case number for this dataset. "
+            "Each array element must be a record object with the same fixed English "
+            "field names: id, name, status, timestamp, quantity, and tags. Use a unique "
+            "id, a string name and status, an ISO 8601 timestamp, a numeric quantity, "
+            "and an array of string tags for every record. Write at least 60 distinct "
+            "records and keep writing until the array is complete; do not stop early. "
+            "Output only the JSON array, with no explanation before or after it and no "
+            "Markdown code fence. Use English for all string values."
+        )
+    return (
+        f"架空の{topic}を、{angle}単一の長い JSON 配列として書いてください。"
+        f"このデータ集合の架空の管理番号は {tracking_number} です。"
+        "配列の各要素は同じ固定フィールドを持つ記録オブジェクトにしてください。"
+        "キーは英語の id、name、status、timestamp、quantity、tags とし、"
+        "id は一意の数値、name と status は文字列、timestamp は ISO 8601 形式の日時、"
+        "quantity は数値、tags は文字列の配列にしてください。"
+        "name、status、tags の文字列の値は日本語にしてください。"
+        "少なくとも 60 件の異なる記録を書き、"
+        "配列が完成するまで途中で止めずに書き続けてください。"
+        "出力は JSON 配列だけにし、前後の説明や Markdown のコードブロックを付けないでください。"
     )

@@ -5,8 +5,9 @@
 # 全ての項目を、既定値と同じであっても省略せずに書く。このファイルが、すべて
 # のつまみを見渡せる場所になるようにするため
 #
-# `probe` は探り (候補の比較、1 回 数分)、`fast` は確認 (有望な候補だけ、
-# 15〜20 分)、`quick` は記録の最小、`full` は公開する結果を作る本番 (issue #39)。
+# `probe` は探り (候補の比較)、`fast` は確認 (有望な候補だけ。
+# JSON 追加前の 4 条件では 15〜20 分の見込み)、`quick` は記録の最小、
+# `full` は公開する結果を作る本番 (issue #39)。
 # 差は主に試行の回数と出力の上限で、それ以外はそろえてある
 #
 # TOML には null (未設定) を書く記法がないので、既定が `None` の項目
@@ -171,11 +172,12 @@ conversations_per_stage = 5
 threshold = 0.01
 max_tokens = 256
 
-# 探り (probe)。候補を比べるときに 1 回 数分で回す。quick を元に decode と quality だけを
-# 縮めた。decode は 4 条件 × (10 + 慣らし 1) = 44 要求、出力の上限は 44 × 128 = 5,632
+# 探り (probe)。候補を比べるときに使う。quick を元に decode と quality だけを
+# 縮めた。decode は 6 条件 × (10 + 慣らし 1) = 66 要求、出力の上限は 66 × 128 = 8,448
 # トークン。quality は ツール 5 + コード 1 + 探す課題 1 = 7 要求、出力の上限は
 # 5×512 + 1×1024 + 1×512 = 4,096 トークン。decode と quality を合わせて約 5 分
-# (2026-09-25 に N=2 で実測、issue #39)。prefill・concurrency・agent は quick のまま
+# (2026-09-25 に JSON 追加前の 4 条件で N=2 を実測、issue #39)。現行の 6 条件の所要時間は未計測。
+# prefill・concurrency・agent は quick のまま
 # (issue の指定範囲)。decode.trials は ge=10 の下限なので、慣らしと max_tokens で縮める
 [profiles.probe]
 seed = 0
@@ -252,13 +254,14 @@ conversations_per_stage = 5
 threshold = 0.01
 max_tokens = 256
 
-# 確認 (fast)。有望な候補だけを 15〜20 分で確かめる。quick を元に decode、concurrency、
-# quality を縮めた。decode は 44 要求、出力の上限は 44 × 256 = 11,264 トークン。
+# 確認 (fast)。有望な候補だけに使う。quick を元に decode、concurrency、
+# quality を縮めた。decode は 6 条件 × (10 + 慣らし 1) = 66 要求、出力の上限は 66 × 256 = 16,896 トークン。
 # concurrency は (2 回 + 慣らし 1 回) × (1+2+4) = 21 本、上限 21 × 128 = 2,688
 # トークン (ほかに包みと文書の count_tokens)。quality は ツール 10 + コード 10 +
 # 探す課題 2 = 22 要求、上限は 10×512 + 10×2048 + 2×512 = 26,624 トークン。時間は
-# この機械 (1 本 14〜30 tok/s) で 15〜20 分の見込み (issue #39 の目安。実測は未確認。
-# 上限どおり生成すると 23〜48 分だが、コードの回答は上限の前に終わる)。
+# JSON 追加前の 4 条件では、この機械 (1 本 14〜30 tok/s) で 15〜20 分の見込み
+# (issue #39 の目安。実測は未確認。上限どおり生成すると 23〜48 分だが、コードの回答は
+# 上限の前に終わる)。現行の 6 条件の所要時間は未計測。
 # prefill・agent は quick のまま (issue の指定範囲)
 [profiles.fast]
 seed = 0
