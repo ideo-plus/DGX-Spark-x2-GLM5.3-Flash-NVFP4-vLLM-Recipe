@@ -1,4 +1,4 @@
-# k2-quant: 選んだモジュールを FP8 (重みだけ、チャネルごと) か NVFP4A16 (重みだけ NVFP4) にする変換の道具 (K2 の第 1 段・第 2a 段・第 2b 段・第 3 段)
+# k2-quant: 選んだモジュールを FP8 (重みだけ、チャネルごと) か NVFP4A16 (重みだけ NVFP4) にする変換の道具 (K2 の第 1 段・第 2a 段・第 2b 段・第 3 段・第 4 段)
 
 K2 の第 1 段 (Issue #56)。vLLM を直さずに量子化できる部分 (共有の専門家・dense) を、FP8 E4M3 の重みと、
 出力チャネルごとの対称スケールに変換する。この段の目的は、「変換 → vLLM で読み込み → Marlin FP8 で読む」の
@@ -8,7 +8,9 @@ K2 の第 1 段 (Issue #56)。vLLM を直さずに量子化できる部分 (共�
 KDA のまとめていない射影、`lm_head` も選べるようにしたもの (下の「第 2a 段 (`--preset k2s2a`)」)。第 2b 段
 (Issue #79) の `--preset k2s2b` は、それに KDA のまとめた層の 6 射影を足したもの (下の「第 2b 段
 (`--preset k2s2b`)」)。第 3 段 (Issue #95) の `--preset k2s3` は、`k2s2b` と同じ対象を、FP8 ではなく
-NVFP4A16 (重みだけ NVFP4) にする (下の「第 3 段 (`--preset k2s3`)」)。既定 (`--preset` を渡さない、または
+NVFP4A16 (重みだけ NVFP4) にする (下の「第 3 段 (`--preset k2s3`)」)。第 4 段 (Issue #99)
+の `--preset k2s4` は、`k2s3` の対象に、MTP の層 (層 45) の MLA の射影 4 つと、層 45 の FP8 の
+専門家を NVFP4A16 で足す (下の「第 4 段 (`--preset k2s4`)」)。既定 (`--preset` を渡さない、または
 `--preset k2s1`) は、第 1 段のままである。
 
 この道具は、CPU だけで動く。GPU もネットワークも使わない。実機での実行と、vLLM での読み込みは対話側が行う
@@ -31,9 +33,10 @@ NVFP4A16 (重みだけ NVFP4) にする (下の「第 3 段 (`--preset k2s3`)」
 
 既定に含めないもの:
 
-- **専門家 (`mlp.experts.*`)**: NVFP4 (層 3〜44) と FP8 (層 45、MTP) のままにする。変換できる形
-  (BF16・F16・F32 の `weight` だけを持つモジュール) ではないので、専門家を拾う正規表現は、道具が
-  終了 1 で止まる。
+- **専門家 (`mlp.experts.*`)**: 層 3〜44 (NVFP4) はそのままにする。変換できる形 (BF16・F16・F32、
+  または `--preset k2s4` の入力として受け付ける F8_E4M3 の `weight` を持つモジュール) ではないので、
+  これらの専門家を拾う正規表現は、道具が終了 1 で止まる。層 45 (MTP) の専門家は FP8 で、`k2s4`
+  (Issue #99。下の「第 4 段 (`--preset k2s4`)」) で NVFP4A16 に変換できる。
 - **MTP の `eh_proj`**: vLLM (`vllm/models/glm5next/common/mtp.py:49`、commit 0961bbae) の
   `eh_proj` は `self.eh_proj = nn.Linear(config.hidden_size * 2, config.hidden_size, bias=False)`
   で、`quant_config` を受けない plain `nn.Linear` なので、FP8 の `eh_proj` を読み込めない。Issue は
@@ -135,6 +138,32 @@ uv run --directory experiments/k2-quant python -m k2_quant --preset k2s2b \
 
 ```bash
 uv run --directory experiments/k2-quant python -m k2_quant --preset k2s3 \
+  --source <入力の重み> --output <出力> \
+  --source-repo RedHatAI/GLM-5.3-Flash-NVFP4 --source-revision 18d55bfd5a2194887738da73753975c9d3842f46
+```
+
+### 第 4 段 (`--preset k2s4`)
+
+`--preset k2s4` は、`--preset k2s3` の対象に、MTP の層 (層 45。`text_config.layer_types` には
+載らない層で、その並びの要素数を層番号にする) の MLA の射影 4 つと、層 45 の FP8 の専門家を
+NVFP4A16 で足す (Issue #99)。`--pattern` とは同時に使えない。
+
+| 対象 | 名前 |
+|---|---|
+| 第 3 段の対象 | 上の表 (`--preset k2s3` と同じ 21 個) |
+| 層 45 の MLA の射影 | `layers.45.self_attn.{q_a_proj,kv_a_proj_with_mqa,q_b_proj,o_proj}` |
+| 層 45 の専門家 | `layers.45.mlp.experts.N.{gate,up,down}_proj` (FP8 の入力。下の「FP8 の専門家を入力にする」) |
+
+- 選ばない: 層 45 の `kv_b_proj` と indexer (`indexer.wq_b`)、`eh_proj` (本体の層・第 1〜3 段と同じ
+  理由。上の「既定に含めないもの」)。
+- 層 45 の専門家は FP8 (`weight` が F8_E4M3、`weight_scale` あり) で入力される。既存の対象 (BF16・
+  F16・F32 の `weight`) とは別の経路で、BF16 相当に戻してから NVFP4A16 に詰める (下の「FP8 の専門家を
+  入力にする」)。
+- 変換の結果を vLLM で読み込むには、#79 の vLLM の修正 (重ね合わせ `k2s2b`) が前提。vLLM が層 45 の
+  NVFP4A16 の fused MoE を読めるかは、実機での確認事項 (未確認。下の「6. 未確認事項」)。
+
+```bash
+uv run --directory experiments/k2-quant python -m k2_quant --preset k2s4 \
   --source <入力の重み> --output <出力> \
   --source-repo RedHatAI/GLM-5.3-Flash-NVFP4 --source-revision 18d55bfd5a2194887738da73753975c9d3842f46
 ```
@@ -255,6 +284,37 @@ vLLM の側 (ソースで確かめたと Issue に書いてある。この READM
 `null` (重みだけの量子化なので、元の専門家の group とは異なり `input_activations` は無い)。`targets` の
 組み立てと `ignore` の更新は、FP8 の group と同じ仕組みを共有する。
 
+対象が既存 group の target に当たったときの扱いは、その対象が FP8 の専門家を入力にしたか (下の
+「FP8 の専門家を入力にする」) で分かれる。FP8 の専門家を入力にしていない対象 (`k2s1`・`k2s2a`・
+`k2s2b`・`k2s3` の通常の射影) が既存 group の target に当たれば、FP8 と同じく、書く前に終了 1 で
+止まる (Issue #95 の契約のまま。`candidates` の判定は適用されない)。
+
+### FP8 の専門家を入力にする (`--preset k2s4`。Issue #99)
+
+層 45 (MTP) の専門家は、元の `config.json` で FP8 (`weight` が F8_E4M3、`weight_scale` が F32、
+block ごとの静的スケール。`strategy=block`) として量子化されている。`--preset k2s4` は、この FP8 を
+受け付け、元の量子化設定に従って BF16 相当 (float32) に戻してから、NVFP4A16 に詰め直す。
+
+- 受け付ける入力は、`weight` (F8_E4M3、2 次元) と `weight_scale` (2 次元、BF16/F16/F32) の 2 つだけを
+  持つモジュール。`weight_scale` が無い、余分なパラメータがある、`weight` と `weight_scale` が別の
+  shard にある、のいずれかなら、書く前に終了 1 で止まる。
+- 戻し方は、その専門家を覆う既存 group (`config.json` の `config_groups`) の `weights` から読む。
+  `format=float-quantized`、`type=float`、`num_bits=8`、`strategy=block`、`symmetric=true`、
+  `block_structure` (2 次元の block の大きさ) でなければ、実機の値を憶測せず終了 1 で止まる
+  (`block` 以外の strategy には未対応)。戻し方は `Q.to(float32) * scale.to(float32)` を、
+  `scale` の各要素を block の大きさへ展開して掛ける。
+- 戻した値は、既存の対象と同じ経路で NVFP4A16 に詰める (上の「NVFP4A16」の表・式と同じ)。
+- 出力では、元の `weight`・F32 の `weight_scale` は shard にも index にも残らない (NVFP4A16 の
+  `weight_scale` は F8_E4M3 で、同じ名前になるため、元の `weight_scale` は写さない)。
+- `config.json` では、その専門家を覆っていた既存 group (`group_1` など) を、その group の target に
+  当たる候補 (checkpoint で `.weight` を持つモジュールのうち、その target に当たるもの。`.weight`
+  を持たないモジュール、たとえば既存の NVFP4 の専門家 (`weight_packed` だけを持つ) は候補に数え
+  ない) が全部変換されたときだけ取り除き、新しい group (NVFP4A16。名前は入力で未使用の最小) に
+  置き換える。一部だけを選ぶ `--pattern` は、書く前に終了 1 で止まる (残りの候補が、どの group に
+  も属さなくなるため)。この置き換えは、当たった対象が全部 FP8 の専門家 (入力) のときだけ働く。
+  FP8 の専門家でない対象が、この group や他の既存 group の target に当たれば、候補にかかわらず
+  即座に終了 1 になる (上の「NVFP4A16」の節)。
+
 ## 3. 出力
 
 入力のディレクトリと同じ構成の、新しいディレクトリを作る。`--output` は、存在しないパスか、存在する
@@ -268,9 +328,13 @@ vLLM の側 (ソースで確かめたと Issue に書いてある。この READM
   ディレクトリと、`.` で始まる項目は写さず、実行の終わりの標準出力に列挙する。
 - `model.safetensors.index.json`: 作り直す。FP8 は、変換したモジュールの `<module>.weight_scale` を
   `weight` と同じ shard に足す。NVFP4A16 は、`<module>.weight` を消し、`weight_packed`・`weight_scale`・
-  `weight_global_scale` の 3 つを、元の `weight` と同じ shard に載せる。どちらも `metadata.total_size` を
-  再計算し、index に載っていない shard の中身は、index に足さない。
-- `config.json`: 上の group を足したもの。
+  `weight_global_scale` の 3 つを、元の `weight` と同じ shard に載せる。FP8 の専門家を入力にした場合
+  (`--preset k2s4`) は、元の F32 の `<module>.weight_scale` も index から消える (NVFP4A16 の
+  `weight_scale` に同じ名前で置き換わるため)。どちらも `metadata.total_size` を再計算し、index に
+  載っていない shard の中身は、index に足さない。
+- `config.json`: 上の group を足したもの。FP8 の専門家を入力にした場合は、その専門家を覆っていた
+  既存 group を取り除き (対象の候補が全部変換されたときだけ)、新しい group (名前は入力の
+  `config_groups` で未使用の最小) に置き換える。
 - `manifest.json`: 出力のすべてのファイル (manifest 自身を除く) の `path`・`size`・`sha256` (`path` 順) と、
   `total_bytes`、変換の条件 (`tool`、`tool_version`、元の repo と revision、`pattern`、`args`、変換した
   `modules`、`format`、`weight_dtype`、`scale_dtype`、`strategy`。NVFP4A16 は `group_size`、
@@ -453,3 +517,14 @@ docker run --rm --network none \
     短縮)、品質。読めなかった場合は、Issue #95 のとおり、vLLM の重ね合わせを別に扱う。
   - 相対 Frobenius 誤差の実機データでの実測値 (`tests/test_nvfp4.py` の合成データでの実測値は
     0.09467066079378128。上限 0.2)。
+- 第 4 段 (`--preset k2s4`。Issue #99):
+  - 実機 (RedHatAI 版) の `config.json` の `group_1` (層 45 の専門家を覆う group) の
+    `strategy`・`block_structure`・`scale_dtype` の実際の値。この repo にある値
+    (`strategy=block`、`block_structure=[128,128]`、`scale_dtype=torch.float32`) は、
+    `docs/research/2026-09-26-k2-quant-survey.md` の Z.AI 版の記載と合成試験の値が根拠で、
+    RedHatAI 版そのものでは未確認 (違えば道具が終了 1 で止まる)。
+  - 層 45 の専門家の数と形 (`n_routed_experts`・`moe_intermediate_size` が本体の層と同じかは未確認)。
+  - vLLM (#79 の修正を当てたもの) が、層 45 の NVFP4A16 の fused MoE の scheme を正しく読めるか。
+    読めなかった場合は、Issue #99 のとおり、vLLM の重ね合わせを別に扱う。
+  - MTP の 1 ステップの短縮の見込み (約 3.5〜4 ms、約 5%。2026-09-28 の `k2s3`・N=3 の内訳からの
+    推定で、実測ではない)。

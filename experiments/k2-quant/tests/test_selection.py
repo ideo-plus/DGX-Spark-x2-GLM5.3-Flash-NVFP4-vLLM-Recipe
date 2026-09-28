@@ -461,3 +461,74 @@ def test_scale_sharing_groups_orders_members_within_a_group_by_name() -> None:
     groups = selection.scale_sharing_groups(shuffled)
 
     assert groups == (tuple(sorted(shuffled)),)
+
+
+# --- 第 4 段 (`k2s4`): FP8 の専門家を入力として受け付ける (C2a。Issue #99) ------------------------
+
+
+def _fp8_tensors(
+    module: str, weight_shape: tuple[int, int], scale_shape: tuple[int, int]
+) -> dict[str, TensorInfo]:
+    """FP8 入力の `weight` (F8_E4M3) と `weight_scale` (F32) を持つ、checkpoint のヘッダの見本。"""
+    return {
+        f"{module}.weight": _info(f"{module}.weight", "F8_E4M3", weight_shape),
+        f"{module}{selection.SCALE_SUFFIX}": _info(
+            f"{module}{selection.SCALE_SUFFIX}", "F32", scale_shape
+        ),
+    }
+
+
+def test_validate_targets_accepts_fp8_weight_with_a_matching_scale() -> None:
+    """FP8 (`weight` が F8_E4M3、2 次元の `weight_scale` あり) の対象は通り、
+    `fp8_input_modules` がそのモジュールを返す (C2a)。
+    """
+    module = "model.language_model.layers.45.mlp.experts.0.gate_proj"
+    tensors = _fp8_tensors(module, (128, 256), (1, 2))
+
+    selection.validate_targets([module], tensors)
+
+    assert selection.fp8_input_modules([module], tensors) == (module,)
+
+
+def test_validate_targets_rejects_fp8_module_with_an_extra_parameter() -> None:
+    """FP8 の対象に `weight`・`weight_scale` 以外のパラメータ (`.bias`) があれば拒否する
+    (`weight` が F8_E4M3 でも、他のパラメータを許すのは `weight_scale` だけ) (C2a)。
+    """
+    module = "model.language_model.layers.45.mlp.experts.0.gate_proj"
+    tensors = {
+        **_fp8_tensors(module, (128, 256), (1, 2)),
+        f"{module}.bias": _info(f"{module}.bias", "F8_E4M3", (128,)),
+    }
+
+    with pytest.raises(selection.SelectionError):
+        selection.validate_targets([module], tensors)
+
+
+def test_validate_targets_rejects_bf16_weight_with_a_weight_scale_parameter() -> None:
+    """`weight` が BF16 (F8_E4M3 でない) なら、`weight_scale` が付いていても FP8 入力として
+    扱わず、想定外のパラメータとして拒否する (C2a)。
+    """
+    module = "model.language_model.layers.0.mlp.gate_proj"
+    tensors = {
+        f"{module}.weight": _info(f"{module}.weight", "BF16", (8, 4)),
+        f"{module}{selection.SCALE_SUFFIX}": _info(
+            f"{module}{selection.SCALE_SUFFIX}", "F32", (8, 1)
+        ),
+    }
+
+    with pytest.raises(selection.SelectionError):
+        selection.validate_targets([module], tensors)
+
+
+def test_fp8_input_modules_returns_only_the_fp8_inputs_among_the_selected_modules() -> None:
+    """`fp8_input_modules` は、選ばれたモジュールのうち FP8 入力 (F8_E4M3 の `weight`) のものだけを
+    返し、BF16 のモジュールは含まない (C2a)。
+    """
+    fp8_module = "model.language_model.layers.45.mlp.experts.0.gate_proj"
+    bf16_module = "model.language_model.layers.0.mlp.gate_proj"
+    tensors = {
+        **_fp8_tensors(fp8_module, (128, 256), (1, 2)),
+        f"{bf16_module}.weight": _info(f"{bf16_module}.weight", "BF16", (8, 4)),
+    }
+
+    assert selection.fp8_input_modules([fp8_module, bf16_module], tensors) == (fp8_module,)

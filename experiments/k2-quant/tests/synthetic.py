@@ -92,14 +92,12 @@ MLA_LAYER_TYPE: str = "deepseek_sparse_attention"
 """実機 `config.json` の `text_config.layer_types` の値 (`serving/config/configs.toml` の
 `probe-pinned` の注記が、先頭 4 層をそのまま取ったものとして示している)。"""
 
-STAGE2_LAYER_TYPES: tuple[str, ...] = (
-    KDA_LAYER_TYPE,
-    KDA_LAYER_TYPE,
-    KDA_LAYER_TYPE,
-    MLA_LAYER_TYPE,
+STAGE2_LAYER_TYPES: tuple[str, ...] = tuple(
+    MLA_LAYER_TYPE if layer % 4 == 3 else KDA_LAYER_TYPE for layer in range(45)
 )
-"""第 2a 段の合成 checkpoint の層種の並び。層 0〜2 が KDA、層 3 が MLA。層 45 (MTP) は
-並びに載らない。"""
+"""第 2a 段の合成 checkpoint の層種の並び。実機と同じ 45 要素 (`layer % 4 == 3` が MLA。KDA 34 層、
+MLA 11 層)。層 0 は KDA、層 3 は MLA (テンソルがある層と一致する)。層 45 (MTP) は、この並びの
+要素数 (45) そのものが層番号になり、並びに載らない (`presets.mtp_layer`。Issue #99)。"""
 
 _STAGE2_PREFIX: str = "model.language_model"
 _KDA_LAYER: str = f"{_STAGE2_PREFIX}.layers.0"
@@ -183,6 +181,35 @@ STAGE3_SINGLETON_SCALE_MODULES: tuple[str, ...] = tuple(
 """第 3 段の対象のうち、`STAGE3_SHARED_SCALE_GROUPS` のどの組にも属さない、単独で
 `weight_global_scale` を持つモジュール (9 個)。"""
 
+
+# --- 第 4 段 (`--preset k2s4`)。層 45 (MTP) の MLA の射影と FP8 の専門家を足す (Issue #99) ------
+
+STAGE4_MTP_MLA_MODULES: tuple[str, ...] = (
+    f"{_MTP_LAYER}.self_attn.q_a_proj",
+    f"{_MTP_LAYER}.self_attn.kv_a_proj_with_mqa",
+    f"{_MTP_LAYER}.self_attn.q_b_proj",
+    f"{_MTP_LAYER}.self_attn.o_proj",
+)
+"""第 4 段が足す、層 45 (MTP) の MLA の射影 4 つ。`kv_b_proj` と indexer は、本体の層と同じく
+対象外のまま。`o_proj` は、第 2a〜3 段では選ばれない (`STAGE2_UNTOUCHED_MODULES` に載る) が、
+第 4 段では選ばれる。"""
+
+STAGE4_FP8_EXPERT_MODULES: tuple[str, ...] = tuple(
+    f"{_MTP_LAYER}.mlp.experts.{expert}.{projection}"
+    for expert in (0, 1)
+    for projection in ("gate_proj", "up_proj", "down_proj")
+)
+"""第 4 段が足す、層 45 (MTP) の FP8 の専門家 2 つ (`gate_proj`・`up_proj`・`down_proj` の 6 個)。
+専門家 0 は索引外 shard、専門家 1 は索引付き shard にある。"""
+
+STAGE4_TARGET_MODULES: tuple[str, ...] = (
+    *STAGE2B_TARGET_MODULES,
+    *STAGE4_MTP_MLA_MODULES,
+    *STAGE4_FP8_EXPERT_MODULES,
+)
+"""第 4 段の選び方が拾うモジュール名 (31 個)。第 2b 段の 21 個に、層 45 の MLA の射影 4 つと
+FP8 の専門家 6 つを足す。"""
+
 STAGE2_KDA_GATE_IGNORE_NAMES: Mapping[str, str] = {
     f"{_KDA_LAYER}.self_attn.f_a_proj": f"{_KDA_LAYER}.self_attn.forget_gate.f_a_proj",
     f"{_KDA_LAYER}.self_attn.f_b_proj": f"{_KDA_LAYER}.self_attn.forget_gate.f_b_proj",
@@ -222,6 +249,37 @@ def _vector(length: int, *, seed: int) -> torch.Tensor:
     """BF16 の 1 次元テンソル (`norm.weight` に当たる)。"""
     generator = torch.Generator().manual_seed(seed)
     return torch.randn(length, generator=generator).to(torch.bfloat16)
+
+
+FP8_BLOCK_MAX: float = 448.0
+"""E4M3 の絶対値の上限 (試験側の独立参照実装で使う。`k2_quant.fp8.FP8_MAX` と同じ値)。"""
+
+
+def _fp8_block_matrix(
+    rows: int, cols: int, *, seed: int, block: tuple[int, int] = (128, 128)
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """ブロックごとの FP8 E4M3 の `weight` と F32 の `weight_scale` (層 45 の専門家の入力)。
+
+    試験側の独立参照実装 (`k2_quant.fp8`・`k2_quant.convert` の関数は使わない): ブロックごとの
+    スケールは `amax(|W|, block) / 448` (0 のブロックは `finfo(float32).eps`)。量子化は
+    `clamp(W / scale, -448, 448).to(float8_e4m3fn)`。入力は素の正規分布 (`_matrix` の全 0 の行・
+    100 倍大きい要素は持たせない。1 つの block (128×128) が多くの行にまたがるため、その性質を
+    持たせるとブロック全体の精度が崩れ、量子化の丸め誤差の試験が不安定になる)。`weight_scale` の
+    形は `(rows // block[0], cols // block[1])`。
+    """
+    block_h, block_w = block
+    if rows % block_h != 0 or cols % block_w != 0:
+        raise ValueError(f"shape ({rows}, {cols}) is not a multiple of block {block}")
+    generator = torch.Generator().manual_seed(seed)
+    weight = torch.randn(rows, cols, generator=generator)
+    blocked = weight.reshape(rows // block_h, block_h, cols // block_w, block_w)
+    amax = blocked.abs().amax(dim=(1, 3), keepdim=True)
+    scale = amax / FP8_BLOCK_MAX
+    scale = torch.where(scale == 0, torch.full_like(scale, torch.finfo(torch.float32).eps), scale)
+    quantized = torch.clamp(blocked / scale, -FP8_BLOCK_MAX, FP8_BLOCK_MAX).to(torch.float8_e4m3fn)
+    quantized = quantized.reshape(rows, cols)
+    scale = scale.reshape(rows // block_h, cols // block_w)
+    return quantized, scale
 
 
 def _group_0() -> dict[str, Any]:
@@ -379,11 +437,25 @@ def _stage2_shard_tensors() -> dict[str, dict[str, torch.Tensor]]:
     列数 (入力の次元) は、すべて 16 の倍数にする (`--preset k2s3` の NVFP4A16 は、対象の入力の
     次元が 16 の倍数であることを要求する。#95)。`norm` だけ 1 次元のまま。専門家の
     `weight_packed` 等の形は変えない。`_matrix` の性質 (全 0 の行、1 要素だけ 100 倍) は維持する。
+
+    層 45 には、MLA の射影 4 つ (`q_a_proj`・`kv_a_proj_with_mqa`・`q_b_proj`・`kv_b_proj`) と
+    indexer (`wq_b`)、FP8 の専門家 2 つ (`weight`・`weight_scale` が block 128×128 で量子化された
+    `gate_proj`・`up_proj`・`down_proj`) も持つ (`--preset k2s4`。Issue #99)。専門家 0 は索引外
+    shard、専門家 1 は索引付き shard に置き、両方の置き場所で FP8 入力を扱えることを確かめる。
     """
     kda = f"{_KDA_LAYER}.self_attn"
     mla = f"{_MLA_LAYER}.self_attn"
     shared = f"{_MLA_LAYER}.mlp.shared_experts"
     mtp = _MTP_LAYER
+    mtp_attn = f"{mtp}.self_attn"
+    mtp_expert0 = f"{mtp}.mlp.experts.0"
+    mtp_expert1 = f"{mtp}.mlp.experts.1"
+    gate0, gate0_scale = _fp8_block_matrix(128, 256, seed=53)
+    up0, up0_scale = _fp8_block_matrix(128, 256, seed=54)
+    down0, down0_scale = _fp8_block_matrix(256, 128, seed=55)
+    gate1, gate1_scale = _fp8_block_matrix(128, 256, seed=56)
+    up1, up1_scale = _fp8_block_matrix(128, 256, seed=57)
+    down1, down1_scale = _fp8_block_matrix(256, 128, seed=58)
     return {
         SHARD_NAMES[0]: {
             f"{kda}.q_proj.weight": _matrix(4, 32, seed=21),
@@ -420,10 +492,27 @@ def _stage2_shard_tensors() -> dict[str, dict[str, torch.Tensor]]:
             f"{_STAGE2_PREFIX}.embed_tokens.weight": _matrix(16, 32, seed=43),
             f"{_STAGE2_PREFIX}.norm.weight": _vector(4, seed=44),
             f"{mtp}.eh_proj.weight": _matrix(4, 16, seed=45),
+            f"{mtp_expert1}.gate_proj.weight": gate1,
+            f"{mtp_expert1}.gate_proj.weight_scale": gate1_scale,
+            f"{mtp_expert1}.up_proj.weight": up1,
+            f"{mtp_expert1}.up_proj.weight_scale": up1_scale,
+            f"{mtp_expert1}.down_proj.weight": down1,
+            f"{mtp_expert1}.down_proj.weight_scale": down1_scale,
         },
         NON_INDEXED_SHARD: {
             f"{mtp}.self_attn.o_proj.weight": _matrix(4, 32, seed=46),
             f"{mtp}.mlp.shared_experts.down_proj.weight": _matrix(4, 48, seed=47),
+            f"{mtp_attn}.q_a_proj.weight": _matrix(4, 32, seed=48),
+            f"{mtp_attn}.kv_a_proj_with_mqa.weight": _matrix(6, 32, seed=49),
+            f"{mtp_attn}.q_b_proj.weight": _matrix(4, 32, seed=50),
+            f"{mtp_attn}.kv_b_proj.weight": _matrix(6, 32, seed=51),
+            f"{mtp_attn}.indexer.wq_b.weight": _matrix(4, 32, seed=52),
+            f"{mtp_expert0}.gate_proj.weight": gate0,
+            f"{mtp_expert0}.gate_proj.weight_scale": gate0_scale,
+            f"{mtp_expert0}.up_proj.weight": up0,
+            f"{mtp_expert0}.up_proj.weight_scale": up0_scale,
+            f"{mtp_expert0}.down_proj.weight": down0,
+            f"{mtp_expert0}.down_proj.weight_scale": down0_scale,
         },
     }
 
@@ -490,3 +579,22 @@ def build_stage2_checkpoint(root: Path) -> None:
     """
     config = _config(None, (), ignore_base=STAGE2_IGNORE_NAMES, layer_types=STAGE2_LAYER_TYPES)
     _write_checkpoint(root, _stage2_shard_tensors(), config)
+
+
+SPLIT_FP8_SCALE_MODULE: str = f"{_MTP_LAYER}.mlp.experts.1.down_proj"
+"""`weight` と `weight_scale` を別々の shard に分ける対象
+(`build_stage2_checkpoint_with_split_fp8_scale` の回帰試験用。Issue #99)。専門家 1 は既定で
+`SHARD_NAMES[2]` にあるので、`weight_scale` だけを `SHARD_NAMES[1]` (別の索引付き shard) に移す。"""
+
+
+def build_stage2_checkpoint_with_split_fp8_scale(root: Path) -> None:
+    """第 2 段の合成 checkpoint を作るが、`SPLIT_FP8_SCALE_MODULE` の `weight_scale` だけを
+    `SHARD_NAMES[1]` に移し、`weight` は `SHARD_NAMES[2]` に残したまま `root` に作る (既存なら
+    上書き)。`weight` と `weight_scale` が別の shard にあるときに断る回帰試験に使う (Issue #99)。
+    """
+    shards = _stage2_shard_tensors()
+    scale_name = f"{SPLIT_FP8_SCALE_MODULE}.weight_scale"
+    moved_scale = shards[SHARD_NAMES[2]].pop(scale_name)
+    shards[SHARD_NAMES[1]][scale_name] = moved_scale
+    config = _config(None, (), ignore_base=STAGE2_IGNORE_NAMES, layer_types=STAGE2_LAYER_TYPES)
+    _write_checkpoint(root, shards, config)

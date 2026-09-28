@@ -26,9 +26,15 @@ from typing import Any, Final
 import torch
 
 from k2_quant import TOOL_NAME, TOOL_VERSION, nvfp4
-from k2_quant.fp8 import FP8_DTYPE_NAME, SCALE_DTYPE_NAME, quantize_per_channel
+from k2_quant.fp8 import (
+    FP8_DTYPE_NAME,
+    SCALE_DTYPE_NAME,
+    dequantize_block,
+    quantize_per_channel,
+    validate_block_shapes,
+)
 from k2_quant.presets import FORMAT_NVFP4A16, resolve_selection
-from k2_quant.quant_config import add_fp8_channel_group, add_nvfp4a16_group
+from k2_quant.quant_config import add_fp8_channel_group, add_nvfp4a16_group, fp8_block_structure
 from k2_quant.safetensors_file import (
     DTYPE_ITEMSIZE,
     ShardEntry,
@@ -41,7 +47,9 @@ from k2_quant.safetensors_file import (
     write_shard,
 )
 from k2_quant.selection import (
+    SCALE_SUFFIX,
     WEIGHT_SUFFIX,
+    fp8_input_modules,
     module_name,
     scale_sharing_groups,
     select_modules,
@@ -53,7 +61,6 @@ INDEX_NAME: Final = "model.safetensors.index.json"
 CONFIG_NAME: Final = "config.json"
 MANIFEST_NAME: Final = "manifest.json"
 SHARD_SUFFIX: Final = ".safetensors"
-SCALE_SUFFIX: Final = ".weight_scale"
 PACKED_SUFFIX: Final = ".weight_packed"
 GLOBAL_SCALE_SUFFIX: Final = ".weight_global_scale"
 HASH_CHUNK_SIZE: Final = 64 << 20
@@ -83,6 +90,9 @@ class ConversionPlan:
     skipped: tuple[str, ...]
     weight_format: str
     global_scales: Mapping[str, float]
+    fp8_inputs: Mapping[str, tuple[int, int]]
+    """FP8 入力のモジュール名 → block の大きさ `(高さ, 幅)` (Issue #99)。FP8 入力でない対象は
+    含まない。"""
 
 
 def _torch_reader(tensor: torch.Tensor) -> Callable[[], Iterator[bytes]]:
@@ -101,26 +111,50 @@ def _original_reader(
     return read
 
 
+def _read_weight(
+    source: Path,
+    header: ShardHeader,
+    module: str,
+    fp8_inputs: Mapping[str, tuple[int, int]],
+) -> torch.Tensor:
+    """対象の値を読む (Issue #99)。FP8 入力なら `weight` と `weight_scale` を読んで
+    `fp8.dequantize_block` で戻し、それ以外は `read_tensor` でそのまま読む。"""
+    weight_info = header.tensors[f"{module}{WEIGHT_SUFFIX}"]
+    block_structure = fp8_inputs.get(module)
+    if block_structure is None:
+        return read_tensor(source, weight_info, data_start=header.data_start)
+    scale_info = header.tensors[f"{module}{SCALE_SUFFIX}"]
+    quantized = read_tensor(source, weight_info, data_start=header.data_start)
+    scale = read_tensor(source, scale_info, data_start=header.data_start)
+    return dequantize_block(quantized, scale, block_structure)
+
+
+def _shard_for_tensor(headers: Mapping[str, ShardHeader], tensor_name: str) -> str | None:
+    """`tensor_name` を持つ shard の名前 (無ければ `None`)。"""
+    for shard_name, header in headers.items():
+        if tensor_name in header.tensors:
+            return shard_name
+    return None
+
+
 def _global_scales(
     source: Path,
     headers: Mapping[str, ShardHeader],
     modules: Sequence[str],
+    fp8_inputs: Mapping[str, tuple[int, int]],
 ) -> dict[str, float]:
     """まとめた層の組ごとの全体スケール。組は shard をまたいでもよい (読むだけで済ませる)。"""
-    location: dict[str, tuple[str, TensorInfo]] = {}
+    location: dict[str, str] = {}
     for shard_name, header in headers.items():
         for module in modules:
-            info = header.tensors.get(f"{module}{WEIGHT_SUFFIX}")
-            if info is not None:
-                location[module] = (shard_name, info)
+            if f"{module}{WEIGHT_SUFFIX}" in header.tensors:
+                location[module] = shard_name
     scales: dict[str, float] = {}
     for group in scale_sharing_groups(modules):
         amax = 0.0
         for member in group:
-            shard_name, info = location[member]
-            weight = read_tensor(
-                source / shard_name, info, data_start=headers[shard_name].data_start
-            )
+            shard_name = location[member]
+            weight = _read_weight(source / shard_name, headers[shard_name], member, fp8_inputs)
             amax = max(amax, float(weight.to(torch.float32).abs().amax()))
         scale = nvfp4.global_scale_for(amax)
         for member in group:
@@ -169,12 +203,31 @@ def plan_conversion(
     modules = select_modules(tensors, resolved_pattern)
     validate_targets(modules, tensors)
     validate_fused_groups(modules, tensors)
+    fp8_modules = fp8_input_modules(modules, tensors)
+    if fp8_modules and resolved_format != FORMAT_NVFP4A16:
+        raise ConversionError(
+            f"FP8 input modules require --format {FORMAT_NVFP4A16}: {list(fp8_modules)}"
+        )
     global_scales: dict[str, float] = {}
+    fp8_inputs: dict[str, tuple[int, int]] = {}
     if resolved_format == FORMAT_NVFP4A16:
+        for module in fp8_modules:
+            block_structure = fp8_block_structure(config, module)
+            weight_info = tensors[f"{module}{WEIGHT_SUFFIX}"]
+            scale_info = tensors[f"{module}{SCALE_SUFFIX}"]
+            validate_block_shapes(module, weight_info.shape, scale_info.shape, block_structure)
+            weight_shard = _shard_for_tensor(headers, f"{module}{WEIGHT_SUFFIX}")
+            scale_shard = _shard_for_tensor(headers, f"{module}{SCALE_SUFFIX}")
+            if weight_shard != scale_shard:
+                raise ConversionError(f"{module}: weight and weight_scale are in different shards")
+            fp8_inputs[module] = block_structure
         for module in modules:
             nvfp4.validate_shape(module, tensors[f"{module}{WEIGHT_SUFFIX}"].shape)
-        global_scales = _global_scales(source, headers, modules)
-        new_config = add_nvfp4a16_group(config, modules=modules)
+        global_scales = _global_scales(source, headers, modules, fp8_inputs)
+        candidates = [m for m in map(module_name, tensors) if m is not None]
+        new_config = add_nvfp4a16_group(
+            config, modules=modules, fp8_input_modules=fp8_modules, candidates=candidates
+        )
     else:
         new_config = add_fp8_channel_group(config, modules=modules)
     shards = tuple(
@@ -214,6 +267,7 @@ def plan_conversion(
         skipped=tuple(skipped),
         weight_format=resolved_format,
         global_scales=global_scales,
+        fp8_inputs=fp8_inputs,
     )
 
 
@@ -237,7 +291,9 @@ def execute_plan(
         source = plan.source / shard.name
         destination = output / shard.name
         if shard.converted:
-            _rewrite_shard(source, destination, shard, plan.weight_format, plan.global_scales)
+            _rewrite_shard(
+                source, destination, shard, plan.weight_format, plan.global_scales, plan.fp8_inputs
+            )
         else:
             _copy_or_link(source, destination, link=link)
     for name in plan.other_files:
@@ -307,14 +363,20 @@ def _rewrite_shard(
     shard: ShardPlan,
     weight_format: str,
     global_scales: Mapping[str, float],
+    fp8_inputs: Mapping[str, tuple[int, int]],
 ) -> None:
     converted = set(shard.converted)
     data_start = shard.header.data_start
+    # FP8 入力の元の weight_scale (F32) は、変換後の weight_scale (NVFP4A16 の F8_E4M3) と
+    # 同名になるため写さない (Issue #99。要件18)。
+    skip_names = {f"{module}{SCALE_SUFFIX}" for module in converted if module in fp8_inputs}
     entries: list[ShardEntry] = []
     for name, info in shard.header.tensors.items():
+        if name in skip_names:
+            continue
         module = module_name(name)
         if module is not None and module in converted:
-            weight = read_tensor(source, info, data_start=data_start)
+            weight = _read_weight(source, shard.header, module, fp8_inputs)
             if weight_format == FORMAT_NVFP4A16:
                 entries.extend(_nvfp4a16_entries(module, weight, global_scales[module]))
             else:

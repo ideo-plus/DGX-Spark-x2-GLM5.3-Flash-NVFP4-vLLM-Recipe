@@ -347,3 +347,13 @@ ssh spark-5083 docker run --rm --network none \
 - **§4〜§7**: 構成の名前を `p2-nope-tp2-full-k2s3`、`--configs` を `tp2-full-k2s3.toml` にします。照合の記録は `state/k2s3.derived.verified.json` です。
 
 **この重みを vLLM で読むには、#79 の vLLM の修正 (重ね合わせ `k2s2b`) が前提です (未確認)。** 起動は、`--weights k2s3 --vllm-overlay k2s2b` で生成した構成で行う想定ですが、NVFP4A16 の scheme が `k2s2b` の重ね合わせ (KDA の複製分割 `f_a`/`g_a`、MLA の `fused_qkv_a_proj`) に正しく当たるか、Marlin NVFP4 で 32 行の分割が動くかは、実機での確認事項です。読めなかった場合は、Issue #95 のとおり、vLLM の重ね合わせを別に扱います。
+
+**第 4 段 (`k2s4`。Issue #99):** 同じ道具に `--preset k2s4` を付けると、`k2s3` の対象に、MTP の層 (層 45。`text_config.layer_types` には載らない層) の MLA の射影 4 つ (`self_attn.q_a_proj`・`kv_a_proj_with_mqa`・`q_b_proj`・`o_proj`) と、層 45 の専門家 (`mlp.experts.N.{gate,up,down}_proj`。元は **FP8**) を **NVFP4A16** に変換して足します。層 45 の `kv_b_proj`・indexer・`eh_proj` は、本体の層と同じく対象にしません。専門家は元が FP8 (`weight` が F8_E4M3、block ごとの静的スケール) なので、`config.json` の元の量子化設定 (`strategy=block` など) に従って戻してから NVFP4A16 に詰めます。手順は、上の第 3 段の読み替えの `k2s3` を `k2s4` にしたものです。
+
+- **§1 (道具の配布)**: 道具の写しは、9 ファイルのまま中身が変わります (`serve push` で配り直します)。
+- **§1 (変換)**: 置き場所を `/home/j5ik2o/vllm-baseline/models/k2s4` (構成の中では `{remote_root}/models/k2s4`) にし、`-m k2_quant` の引数を `--preset k2s4` にします。上のコード塊の `k2s2a`/`k2s2b`/`k2s3` の置き場所と `--preset` を、すべて `k2s4` に読み替えます。
+- **§2 (取り込み)**: `--name k2s4`、写す先は `serving/var/k2s4/`、コミットする派生のマニフェストは `serving/weights/k2s4.manifest.json` です。道具の manifest の `format` は `nvfp4a16`、`args` の末尾に `--format nvfp4a16` が入ります。
+- **§3 (構成の生成)**: `--weights k2s4` を付け、出力は `tp2-full-k2s4.toml` にそろえます。構成の名前は `p2-nope-tp2-full-k2s4` になります。
+- **§4〜§7**: 構成の名前を `p2-nope-tp2-full-k2s4`、`--configs` を `tp2-full-k2s4.toml` にします。照合の記録は `state/k2s4.derived.verified.json` です。
+
+**この重みを vLLM で読むには、#79 の vLLM の修正 (重ね合わせ `k2s2b`) が前提です (未確認)。** 起動は、`--weights k2s4 --vllm-overlay k2s2b` で生成した構成で行う想定ですが、層 45 の NVFP4A16 の fused MoE の scheme が正しく当たるかは、実機での確認事項です。読めなかった場合は、Issue #99 のとおり、vLLM の重ね合わせを別に扱います。

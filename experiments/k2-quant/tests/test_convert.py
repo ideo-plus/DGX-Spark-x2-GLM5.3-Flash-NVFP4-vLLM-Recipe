@@ -53,7 +53,7 @@ from safetensors import safe_open
 from safetensors.torch import load_file, save_file
 
 import synthetic
-from k2_quant import TOOL_NAME, TOOL_VERSION, nvfp4
+from k2_quant import TOOL_NAME, TOOL_VERSION, fp8, nvfp4
 from k2_quant import safetensors_file as sf
 from k2_quant.__main__ import main
 from k2_quant.fp8 import dequantize_per_channel
@@ -964,12 +964,13 @@ def test_stage2a_preset_keeps_the_kda_f_a_proj_in_bf16_and_its_forget_gate_ignor
     assert ignore_name in ignore
 
 
-@pytest.mark.parametrize("preset", ["k2s2a", "k2s2b", "k2s3"])
+@pytest.mark.parametrize("preset", ["k2s2a", "k2s2b", "k2s3", "k2s4"])
 def test_stage2_presets_refuse_a_config_without_layer_types_and_write_nothing(
     tmp_path: Path, preset: str
 ) -> None:
     """`text_config.layer_types` が無い config (第 1 段の合成 checkpoint) では、`--preset k2s2a` も
-    `--preset k2s2b` も `--preset k2s3` も、終了 1 で、出力ディレクトリを作らない (C2)。
+    `--preset k2s2b` も `--preset k2s3` も `--preset k2s4` も、終了 1 で、出力ディレクトリを
+    作らない (C2)。
     """
     source = tmp_path / "source"
     output = tmp_path / "output"
@@ -1346,6 +1347,10 @@ def test_a_pattern_matching_only_weight_packed_modules_is_refused_before_writing
     """`.weight` を持たず、既に `weight_packed` を持つモジュール (専門家) だけに当たる
     `--pattern` は、`--format nvfp4a16` でも、書く前に終了 1 で断り、出力先を作らない。専門家の
     `weight_packed`・`weight_scale`・`weight_global_scale` と衝突する名前は生成されない (C5)。
+
+    層 3 の専門家に絞る (層 45 の FP8 の専門家は `.weight` を持つため、`.*\\.mlp\\.experts\\.…`
+    のように層を絞らない正規表現は、`--preset k2s4` (Issue #99) の追加後は層 45 の FP8 の専門家にも
+    当たってしまい、この試験の前提 (`.weight` を持たない専門家だけに当たる) が崩れる)。
     """
     source = tmp_path / "source"
     output = tmp_path / "output"
@@ -1359,7 +1364,7 @@ def test_a_pattern_matching_only_weight_packed_modules_is_refused_before_writing
         _run(
             source,
             output,
-            pattern=r".*\.mlp\.experts\.\d+\.gate_proj$",
+            pattern=r".*\.layers\.3\.mlp\.experts\.\d+\.gate_proj$",
             format_=NVFP4A16_FORMAT,
         )
         == 1
@@ -1710,3 +1715,323 @@ def test_the_groups_global_scale_uses_the_amax_across_shards_when_the_group_is_s
     # 組全体の amax は shard_b 側の 10.0 (shard_a だけの amax 1.0 を使うと違う値になる)
     expected = 448.0 * 6.0 / 10.0
     assert q_a_scale == pytest.approx(expected, rel=1e-5)
+
+
+# --- 第 4 段 (`--preset k2s4`)。層 45 (MTP) の MLA の射影と FP8 の専門家を足す (Issue #99) --------
+
+MTP_LAYER = "model.language_model.layers.45"
+MTP_EXPERT_0 = f"{MTP_LAYER}.mlp.experts.0"
+MTP_EXPERT_1 = f"{MTP_LAYER}.mlp.experts.1"
+FP8_BLOCK_STRUCTURE = (128, 128)
+"""合成 checkpoint の層 45 の FP8 の専門家の block の形 (`synthetic._group_1` の
+`block_structure` と同じ)。"""
+
+MTP_NEW_MLA_TENSORS: tuple[str, ...] = (
+    f"{MTP_LAYER}.self_attn.q_a_proj",
+    f"{MTP_LAYER}.self_attn.kv_a_proj_with_mqa",
+    f"{MTP_LAYER}.self_attn.q_b_proj",
+    f"{MTP_LAYER}.self_attn.kv_b_proj",
+    f"{MTP_LAYER}.self_attn.indexer.wq_b",
+)
+"""`--preset k2s4` (Issue #99) を足す前には無かった、層 45 の新しい MLA の射影 (`o_proj` は
+既存の合成 checkpoint に既にあり、`STAGE2_UNTOUCHED_MODULES` で既に確かめているので含めない)。"""
+
+
+def test_stage4_preset_converts_all_31_targets_to_nvfp4a16(tmp_path: Path) -> None:
+    """`--preset k2s4` は、`k2s2b`/`k2s3` と同じ 21 個に、層 45 の MLA の射影 4 つと FP8 の専門家
+    6 つを足した 31 個すべてを NVFP4A16 (U8 の `weight_packed`、F8_E4M3 の `weight_scale`、
+    F32 の `weight_global_scale`) に変換し、`.weight` はどの対象にも残らない (C1 / C3)。
+    """
+    source = tmp_path / "source"
+    output = tmp_path / "output"
+    synthetic.build_stage2_checkpoint(source)
+
+    assert _run(source, output, preset="k2s4") == 0
+
+    modules = _manifest_conversion(output)["modules"]
+    assert sorted(modules) == sorted(synthetic.STAGE4_TARGET_MODULES)
+    converted = _load_tensors(output)
+    for module in synthetic.STAGE4_TARGET_MODULES:
+        assert converted[f"{module}.weight_packed"].dtype == torch.uint8, module
+        assert converted[f"{module}.weight_scale"].dtype == torch.float8_e4m3fn, module
+        assert converted[f"{module}.weight_global_scale"].dtype == torch.float32, module
+        assert f"{module}.weight" not in converted, module
+
+
+def test_stage4_fp8_expert_dequantizes_close_to_the_original_value_and_shares_scale_within_gate_up(
+    tmp_path: Path,
+) -> None:
+    """層 45 の FP8 の専門家を NVFP4A16 に戻した値が、FP8 を戻した値に近く (要素ごと
+    `weight_scale.float()/G` 以下、相対 Frobenius 誤差 <= 0.2)、各専門家の `gate_proj` と
+    `up_proj` の `weight_global_scale` が同値になる (C3。SCN-C3-P1)。
+    """
+    source = tmp_path / "source"
+    output = tmp_path / "output"
+    synthetic.build_stage2_checkpoint(source)
+
+    assert _run(source, output, preset="k2s4") == 0
+
+    original = _load_tensors(source)
+    converted = _load_tensors(output)
+    for module in synthetic.STAGE4_FP8_EXPERT_MODULES:
+        original_weight = original[f"{module}.weight"]
+        original_scale = original[f"{module}.weight_scale"]
+        fp8_restored = fp8.dequantize_block(original_weight, original_scale, FP8_BLOCK_STRUCTURE)
+
+        packed = converted[f"{module}.weight_packed"]
+        scale = converted[f"{module}.weight_scale"]
+        global_scale = converted[f"{module}.weight_global_scale"]
+        restored = nvfp4.dequantize_tensor_group(packed, scale, global_scale)
+
+        assert restored.shape == fp8_restored.shape, module
+        g = float(global_scale[0])
+        block_scale = scale.to(torch.float32) / g
+        bound = block_scale.repeat_interleave(nvfp4.GROUP_SIZE, dim=1)
+        assert bool(((fp8_restored - restored).abs() <= bound + 1e-3).all()), module
+        norm = float(torch.linalg.vector_norm(fp8_restored))
+        assert norm > 0.0, module
+        relative = float(torch.linalg.vector_norm(fp8_restored - restored) / norm)
+        assert relative <= 0.2, module
+
+    for expert in (MTP_EXPERT_0, MTP_EXPERT_1):
+        gate_scale = float(converted[f"{expert}.gate_proj.weight_global_scale"][0])
+        up_scale = float(converted[f"{expert}.up_proj.weight_global_scale"][0])
+        assert gate_scale == up_scale, expert
+
+
+def test_stage4_fp8_expert_original_weight_and_scale_do_not_survive_and_fp8_format_is_refused(
+    tmp_path: Path,
+) -> None:
+    """層 45 の FP8 の専門家の元の `weight`・F32 の `weight_scale` は出力の shard にも index にも
+    残らず、`weight_scale` は NVFP4A16 の F8_E4M3 の `(128, 16)` だけになる。同じ専門家を選ぶ
+    `--pattern` を `--format fp8` にすると、書く前に終了 1 になる (C3。SCN-C3-N1)。
+    """
+    source = tmp_path / "source"
+    output = tmp_path / "output"
+    synthetic.build_stage2_checkpoint(source)
+    module = f"{MTP_EXPERT_0}.gate_proj"
+
+    assert _run(source, output, preset="k2s4") == 0
+
+    with safe_open(str(output / synthetic.NON_INDEXED_SHARD), framework="pt") as handle:
+        names = set(handle.keys())
+    assert f"{module}.weight" not in names
+
+    scale = load_file(str(output / synthetic.NON_INDEXED_SHARD))[f"{module}.weight_scale"]
+    assert scale.dtype == torch.float8_e4m3fn
+    assert tuple(scale.shape) == (128, 16)
+
+    index = _read_json(output / synthetic.INDEX_NAME)
+    weight_map = index["weight_map"]
+    assert isinstance(weight_map, dict)
+    assert f"{module}.weight" not in weight_map
+    assert f"{module}.weight_packed" not in weight_map
+    assert synthetic.NON_INDEXED_SHARD not in set(weight_map.values())
+
+    # down_proj は他と組にならない (FUSED_GROUPS に無い) ので、これだけを選んでも
+    # validate_fused_groups には断られず、「FP8 入力を --format fp8 で選ぶ」ことだけを確かめられる
+    fp8_only_output = tmp_path / "fp8-output"
+    fp8_pattern = rf"{re.escape(f'{MTP_EXPERT_0}.down_proj')}$"
+    assert _run(source, fp8_only_output, pattern=fp8_pattern, format_="fp8") == 1
+    assert not fp8_only_output.exists()
+
+
+@pytest.mark.parametrize("preset", ["k2s1", "k2s2a", "k2s2b", "k2s3"])
+def test_older_presets_leave_the_new_layer_45_additions_and_group_1_untouched(
+    tmp_path: Path, preset: str
+) -> None:
+    """`k2s1`/`k2s2a`/`k2s2b`/`k2s3` は、層 45 (MTP) の新しい MLA の射影・FP8 の専門家
+    (`weight`・`weight_scale`)・`group_1` を、`--preset k2s4` (Issue #99) を足す前と同じに保つ
+    (C5)。
+    """
+    source = tmp_path / "source"
+    output = tmp_path / "output"
+    synthetic.build_stage2_checkpoint(source)
+    before = _load_tensors(source)
+    before_group_1 = _read_config(source / synthetic.CONFIG_NAME)["quantization_config"][
+        "config_groups"
+    ]["group_1"]
+
+    assert _run(source, output, preset=preset) == 0
+
+    after = _load_tensors(output)
+    for module in (*MTP_NEW_MLA_TENSORS, *synthetic.STAGE4_FP8_EXPERT_MODULES):
+        weight = f"{module}.weight"
+        assert _identity(after[weight]) == _identity(before[weight]), module
+        scale = f"{module}.weight_scale"
+        if scale in before:
+            assert _identity(after[scale]) == _identity(before[scale]), module
+    after_group_1 = _read_config(output / synthetic.CONFIG_NAME)["quantization_config"][
+        "config_groups"
+    ]["group_1"]
+    assert after_group_1 == before_group_1
+
+
+def test_stage4_preset_replaces_group_1_with_a_new_group_covering_layer_45_targets(
+    tmp_path: Path,
+) -> None:
+    """`--preset k2s4` の出力の `config_groups` は `group_0` (不変) と新しい group だけになり、
+    その target は層 45 の専門家と MLA の射影に当たり、`eh_proj` や層 3 の専門家には当たらない
+    (C4。SCN-C4-P1)。
+    """
+    source = tmp_path / "source"
+    output = tmp_path / "output"
+    synthetic.build_stage2_checkpoint(source)
+    original_group_0 = _read_config(source / synthetic.CONFIG_NAME)["quantization_config"][
+        "config_groups"
+    ]["group_0"]
+
+    assert _run(source, output, preset="k2s4") == 0
+
+    groups = _read_config(output / synthetic.CONFIG_NAME)["quantization_config"]["config_groups"]
+    assert set(groups) == {"group_0", "group_2"}
+    assert groups["group_0"] == original_group_0
+    target = _group_target(output)
+    for module in (f"{MTP_EXPERT_0}.gate_proj", f"{MTP_LAYER}.self_attn.q_a_proj"):
+        assert _hits(target, _runtime_name(module)), module
+    for module in (
+        f"{MTP_LAYER}.eh_proj",
+        "model.language_model.layers.3.mlp.experts.0.gate_proj",
+    ):
+        assert not _hits(target, _runtime_name(module)), module
+
+
+def test_stage4_preset_keeps_an_unrelated_existing_group_and_names_the_new_group_after_it(
+    tmp_path: Path,
+) -> None:
+    """既存の `group_2` (層 45 の専門家と無関係) があっても、`--preset k2s4` はそれを変えず、
+    新しい group は `group_3` になる (C4。SCN-C4-N1)。
+    """
+    source = tmp_path / "source"
+    output = tmp_path / "output"
+    synthetic.build_stage2_checkpoint(source)
+    config_path = source / synthetic.CONFIG_NAME
+    config = _read_config(config_path)
+    unrelated_group: dict[str, Any] = {
+        "format": "float-quantized",
+        "targets": ["re:.*\\.layers\\.7\\.mlp\\.shared_experts\\.gate_proj$"],
+        "weights": {},
+        "input_activations": None,
+        "output_activations": None,
+    }
+    config["quantization_config"]["config_groups"]["group_2"] = unrelated_group
+    config_path.write_text(
+        json.dumps(config, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+    )
+
+    assert _run(source, output, preset="k2s4") == 0
+
+    groups = _read_config(output / synthetic.CONFIG_NAME)["quantization_config"]["config_groups"]
+    assert set(groups) == {"group_0", "group_2", "group_3"}
+    assert groups["group_2"] == unrelated_group
+
+
+def test_stage4_pattern_selecting_only_one_mtp_expert_is_refused_before_writing(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """層 45 の専門家 0 だけに当たる `--pattern` (`--format nvfp4a16`) は、専門家 1 の
+    `gate_proj`・`up_proj`・`down_proj` が未変換のまま残るので、書く前に終了 1 で断り、標準エラーに
+    専門家 1 の名前がある (C4。SCN-C4-N2)。
+    """
+    source = tmp_path / "source"
+    output = tmp_path / "output"
+    synthetic.build_stage2_checkpoint(source)
+    pattern = rf"{re.escape(MTP_EXPERT_0)}\.(?:gate_proj|up_proj|down_proj)$"
+
+    assert _run(source, output, pattern=pattern, format_=NVFP4A16_FORMAT) == 1
+
+    assert not output.exists()
+    error = capsys.readouterr().err
+    for projection in ("gate_proj", "up_proj", "down_proj"):
+        assert f"{MTP_EXPERT_1}.{projection}" in error, error
+
+
+# --- 単位 A (Issue #99 の修正): FP8 入力でない対象には Issue #95 の base 契約のまま ------------
+
+
+def test_stage3_pattern_hitting_an_injected_group_is_refused_even_if_its_candidates_are_covered(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`--preset k2s3` は FP8 入力 (Issue #99) を 1 つも含まないので、変換対象が既存 group の
+    target に当たれば、その group の候補がたまたま全部変換対象に含まれていても、書く前に終了 1 で
+    断る (C1。SCN-A-N1。`add_nvfp4a16_group` が `candidates` を受け取るようになっても、FP8 入力
+    でない対象には Issue #95 の base の契約 (即座に `ConfigError`) のまま働くことを CLI レベルで
+    確かめる)。
+    """
+    source = tmp_path / "source"
+    output = tmp_path / "output"
+    synthetic.build_stage2_checkpoint(source)
+    hit_module = synthetic.STAGE2A_TARGET_MODULES[0]
+    config_path = source / synthetic.CONFIG_NAME
+    config = _read_config(config_path)
+    injected_group: dict[str, Any] = {
+        "format": "float-quantized",
+        "targets": [f"re:{re.escape(hit_module)}$"],
+        "weights": {},
+        "input_activations": None,
+        "output_activations": None,
+    }
+    config["quantization_config"]["config_groups"]["group_2"] = injected_group
+    config_path.write_text(
+        json.dumps(config, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+    )
+
+    assert _run(source, output, preset="k2s3") == 1
+
+    assert not output.exists()
+    error = capsys.readouterr().err
+    assert hit_module in error, error
+
+
+# --- 単位 E (Issue #99 の回帰試験): weight と weight_scale が別の shard --------------------------
+
+
+def test_stage4_rejects_fp8_expert_whose_weight_and_weight_scale_are_in_different_shards(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """FP8 の専門家の `weight` と `weight_scale` が別の shard にあれば、書く前に終了 1 で断り、
+    出力先を作らず、標準エラーにそのモジュール名がある (C3。SCN-C3-N2。Issue #99)。
+    """
+    source = tmp_path / "source"
+    output = tmp_path / "output"
+    synthetic.build_stage2_checkpoint_with_split_fp8_scale(source)
+
+    assert _run(source, output, preset="k2s4") == 1
+
+    assert not output.exists()
+    error = capsys.readouterr().err
+    assert synthetic.SPLIT_FP8_SCALE_MODULE in error, error
+
+
+# --- 単位 F (Issue #99): config から読んだ block の設定と実際のテンソルの形の境界 -----------------
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("strategy", "channel"),
+        ("block_structure", [64, 128]),
+    ],
+)
+def test_stage4_rejects_a_group_1_whose_weights_do_not_match_the_expected_block_contract(
+    tmp_path: Path, field: str, value: object
+) -> None:
+    """`group_1.weights` の `strategy` を `block` 以外にする、または `block_structure` を実際の
+    テンソルの形と合わない大きさにすると、書く前に終了 1 で断り、出力先を作らない (C3。SCN-C3-N3。
+    Issue #99。`strategy` の書き換えは `fp8_block_structure` 自体の契約検証で断り、
+    `block_structure` の書き換えは、専門家の gate/up の重み (128, 256) に対して期待する scale の形
+    (2, 2) と実際の形 (1, 2) が食い違うことで、`validate_block_shapes` が断る)。
+    """
+    source = tmp_path / "source"
+    output = tmp_path / "output"
+    synthetic.build_stage2_checkpoint(source)
+    config_path = source / synthetic.CONFIG_NAME
+    config = _read_config(config_path)
+    config["quantization_config"]["config_groups"]["group_1"]["weights"][field] = value
+    config_path.write_text(
+        json.dumps(config, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+    )
+
+    assert _run(source, output, preset="k2s4") == 1
+
+    assert not output.exists()

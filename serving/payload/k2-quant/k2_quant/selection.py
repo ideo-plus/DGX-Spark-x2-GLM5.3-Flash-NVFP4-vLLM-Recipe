@@ -29,6 +29,10 @@
 
 vLLM で 1 つの線形層にまとまる組 (`FUSED_GROUPS`) は、`validate_fused_groups` が、選ばれたモジュール
 のうち一部だけが選ばれた組を、変換の前に断る。FP8 の重みと BF16 の重みが、1 つの線形層に混ざるため。
+
+第 4 段 (Issue #99) は、MTP の層の FP8 の専門家 (`weight` が F8_E4M3、`weight_scale` あり) を入力
+として受け付ける。`validate_targets` は、`.weight` が F8_E4M3 のときだけ `weight_scale` を許し、
+`fp8_input_modules` が、選ばれたモジュールのうち FP8 入力のものを返す。
 """
 
 from __future__ import annotations
@@ -45,7 +49,10 @@ DEFAULT_PATTERN: Final[str] = (
 )
 
 WEIGHT_SUFFIX: Final = ".weight"
+SCALE_SUFFIX: Final = ".weight_scale"
 SUPPORTED_DTYPES: Final = frozenset({"BF16", "F16", "F32"})
+FP8_WEIGHT_DTYPE: Final = "F8_E4M3"
+"""第 4 段 (Issue #99) が入力として受け付ける FP8 の専門家の `weight` の dtype。"""
 
 KDA_FUSED_GROUP: Final[tuple[str, ...]] = (
     "q_proj",
@@ -96,22 +103,50 @@ def select_modules(tensor_names: Iterable[str], pattern: str) -> tuple[str, ...]
 
 
 def validate_targets(modules: Sequence[str], tensors: Mapping[str, TensorInfo]) -> None:
-    """対象が変換できる形かを確かめる。1 つでも崩れていれば `SelectionError`。"""
+    """対象が変換できる形かを確かめる。1 つでも崩れていれば `SelectionError`。
+
+    `.weight` が F8_E4M3 (第 4 段の FP8 の専門家。Issue #99) なら、`weight_scale` (2 次元、
+    `SUPPORTED_DTYPES`) だけを追加のパラメータとして許す。それ以外の dtype は、従来どおり
+    `.weight` 以外のパラメータを許さない。
+    """
     if not modules:
         raise SelectionError("no target modules selected")
     for module in modules:
         prefix = f"{module}."
         weight_name = f"{module}{WEIGHT_SUFFIX}"
-        for name in tensors:
-            if name.startswith(prefix) and name != weight_name:
-                raise SelectionError(f"{module}: unexpected parameter {name}")
         weight = tensors.get(weight_name)
         if weight is None:
             raise SelectionError(f"{module}: weight not found")
-        if weight.dtype not in SUPPORTED_DTYPES:
-            raise SelectionError(f"{module}: unsupported dtype {weight.dtype}")
         if len(weight.shape) != 2:
             raise SelectionError(f"{module}: weight is not 2-dimensional: {weight.shape}")
+        is_fp8_weight = weight.dtype == FP8_WEIGHT_DTYPE
+        if not is_fp8_weight and weight.dtype not in SUPPORTED_DTYPES:
+            raise SelectionError(f"{module}: unsupported dtype {weight.dtype}")
+        scale_name = f"{module}{SCALE_SUFFIX}"
+        allowed = {weight_name, scale_name} if is_fp8_weight else {weight_name}
+        for name in tensors:
+            if name.startswith(prefix) and name not in allowed:
+                raise SelectionError(f"{module}: unexpected parameter {name}")
+        if is_fp8_weight:
+            scale = tensors.get(scale_name)
+            if scale is None:
+                raise SelectionError(f"{module}: weight_scale not found for FP8 input")
+            if scale.dtype not in SUPPORTED_DTYPES:
+                raise SelectionError(f"{module}: unsupported weight_scale dtype {scale.dtype}")
+            if len(scale.shape) != 2:
+                raise SelectionError(f"{module}: weight_scale is not 2-dimensional: {scale.shape}")
+
+
+def is_fp8_input(module: str, tensors: Mapping[str, TensorInfo]) -> bool:
+    """モジュールの `.weight` が FP8 (F8_E4M3) なら真 (Issue #99)。"""
+    weight = tensors.get(f"{module}{WEIGHT_SUFFIX}")
+    return weight is not None and weight.dtype == FP8_WEIGHT_DTYPE
+
+
+def fp8_input_modules(modules: Sequence[str], tensors: Mapping[str, TensorInfo]) -> tuple[str, ...]:
+    """選ばれたモジュールのうち、FP8 入力 (`.weight` が F8_E4M3) のものだけを名前順で返す
+    (Issue #99)。"""
+    return tuple(sorted(module for module in modules if is_fp8_input(module, tensors)))
 
 
 def _fused_group_key(module: str) -> tuple[str, tuple[str, ...]] | None:

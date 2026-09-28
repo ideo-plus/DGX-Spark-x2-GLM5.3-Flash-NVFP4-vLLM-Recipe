@@ -62,6 +62,8 @@ def _build_parser() -> argparse.ArgumentParser:
             "k2s2b の重みを vLLM で読むには、#79 の重ね合わせ (k2s2b) が前提。\n"
             "k2s3 は k2s2b と同じ対象を NVFP4A16 (重みだけ NVFP4) にする (Issue #95。読むには\n"
             "#79 の重ね合わせ k2s2b が前提で未確認)。\n"
+            "k2s4 は k2s3 の対象 + MTP の層 (層 45) の MLA の射影 4 つ + 層 45 の FP8 の専門家を\n"
+            "NVFP4A16 にする (Issue #99)。eh_proj・kv_b_proj・indexer は本体の層と同じく対象外。\n"
             "--pattern と同時には使えない。manifest には、解決後の正規表現を --pattern として書く\n"
             f"(既定: {DEFAULT_PRESET})"
         ),
