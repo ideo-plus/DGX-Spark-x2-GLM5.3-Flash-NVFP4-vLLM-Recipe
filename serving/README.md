@@ -55,6 +55,19 @@ uv run serve logs p1-nvfp4-tp2
 uv run serve stop --yes
 ```
 
+上は、公開の重みでの基盤の手順である。推奨の構成 `glm53-tp2-mtp3-marlin` (手元で変換した重み
+`k2s4`、MTP の下書き 3 トークン、`--moe-backend marlin`) で起動するときは、重みの変換・取り込み・
+照合と、vLLM の直しの重ね合わせの配布を済ませてから、次を打つ。詳細は
+[`docs/vllm-baseline/k2-derived-weights-procedure.md`](../docs/vllm-baseline/k2-derived-weights-procedure.md) の §10。
+
+```bash
+uv run serve check glm53-tp2-mtp3-marlin
+uv run serve start glm53-tp2-mtp3-marlin --yes
+uv run serve smoke glm53-tp2-mtp3-marlin
+uv run serve logs glm53-tp2-mtp3-marlin
+uv run serve stop --yes
+```
+
 構成の定義は `serving/config/configs.toml`、ノードの定義は `serving/config/nodes.toml` にある
 (設定の 1 つ 1 つに、値と理由と出典が付いている)。ノードの直結の値 (`fabric_*`) は
 `serve netcheck links` の実測で埋めるまで空で、埋めるまで 2 台の構成は選べない (終了コード 1)。
