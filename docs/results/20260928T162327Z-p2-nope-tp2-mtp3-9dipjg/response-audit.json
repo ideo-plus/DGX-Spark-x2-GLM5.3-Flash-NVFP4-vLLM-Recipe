@@ -1,0 +1,136 @@
+{
+  "20260928T021952Z-p2-nope-tp2-mtp3-isi3vr": {
+    "decode/code/en": {
+      "measured_trials": 10,
+      "output_tokens": [
+        256
+      ],
+      "stop_reasons": {
+        "max_tokens": 10
+      },
+      "thinking_only_trials": 10,
+      "text_blocks": 0,
+      "errors": 0,
+      "flags": {}
+    },
+    "decode/code/ja": {
+      "measured_trials": 10,
+      "output_tokens": [
+        256
+      ],
+      "stop_reasons": {
+        "max_tokens": 10
+      },
+      "thinking_only_trials": 10,
+      "text_blocks": 0,
+      "errors": 0,
+      "flags": {}
+    },
+    "decode/prose/en": {
+      "measured_trials": 10,
+      "output_tokens": [
+        256
+      ],
+      "stop_reasons": {
+        "max_tokens": 10
+      },
+      "thinking_only_trials": 10,
+      "text_blocks": 0,
+      "errors": 0,
+      "flags": {}
+    },
+    "decode/prose/ja": {
+      "measured_trials": 10,
+      "output_tokens": [
+        256
+      ],
+      "stop_reasons": {
+        "max_tokens": 10
+      },
+      "thinking_only_trials": 10,
+      "text_blocks": 0,
+      "errors": 0,
+      "flags": {}
+    }
+  },
+  "20260928T162327Z-p2-nope-tp2-mtp3-9dipjg": {
+    "decode/code/en": {
+      "measured_trials": 10,
+      "output_tokens": [
+        256
+      ],
+      "stop_reasons": {
+        "max_tokens": 10
+      },
+      "thinking_only_trials": 10,
+      "text_blocks": 0,
+      "errors": 0,
+      "flags": {}
+    },
+    "decode/code/ja": {
+      "measured_trials": 10,
+      "output_tokens": [
+        256
+      ],
+      "stop_reasons": {
+        "max_tokens": 10
+      },
+      "thinking_only_trials": 10,
+      "text_blocks": 0,
+      "errors": 0,
+      "flags": {}
+    },
+    "decode/json/en": {
+      "measured_trials": 10,
+      "output_tokens": [
+        256
+      ],
+      "stop_reasons": {
+        "max_tokens": 10
+      },
+      "thinking_only_trials": 10,
+      "text_blocks": 0,
+      "errors": 0,
+      "flags": {}
+    },
+    "decode/json/ja": {
+      "measured_trials": 10,
+      "output_tokens": [
+        256
+      ],
+      "stop_reasons": {
+        "max_tokens": 10
+      },
+      "thinking_only_trials": 10,
+      "text_blocks": 0,
+      "errors": 0,
+      "flags": {}
+    },
+    "decode/prose/en": {
+      "measured_trials": 10,
+      "output_tokens": [
+        256
+      ],
+      "stop_reasons": {
+        "max_tokens": 10
+      },
+      "thinking_only_trials": 10,
+      "text_blocks": 0,
+      "errors": 0,
+      "flags": {}
+    },
+    "decode/prose/ja": {
+      "measured_trials": 10,
+      "output_tokens": [
+        256
+      ],
+      "stop_reasons": {
+        "max_tokens": 10
+      },
+      "thinking_only_trials": 10,
+      "text_blocks": 0,
+      "errors": 0,
+      "flags": {}
+    }
+  }
+}
