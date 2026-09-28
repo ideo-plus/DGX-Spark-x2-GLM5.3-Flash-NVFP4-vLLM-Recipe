@@ -38,6 +38,7 @@ TORCH_DTYPES: Final[Mapping[str, torch.dtype]] = {
     "BF16": torch.bfloat16,
     "F16": torch.float16,
     "F32": torch.float32,
+    "F8_E4M3": torch.float8_e4m3fn,
 }
 
 READ_CHUNK_SIZE: Final = 64 << 20
@@ -160,7 +161,8 @@ def iter_tensor_bytes(
 
 
 def read_tensor(path: Path, info: TensorInfo, *, data_start: int | None = None) -> torch.Tensor:
-    """BF16/F16/F32 のテンソルを値まで読む。`data_start` を渡せばヘッダを読み直さない。"""
+    """BF16/F16/F32/F8_E4M3 のテンソルを値まで読む (F8_E4M3 は第 4 段の FP8 入力。Issue #99)。
+    `data_start` を渡せばヘッダを読み直さない。"""
     dtype = TORCH_DTYPES.get(info.dtype)
     if dtype is None:
         raise ValueError(f"{path}: unsupported dtype to read: {info.dtype}")

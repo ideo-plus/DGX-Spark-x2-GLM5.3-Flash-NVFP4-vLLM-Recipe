@@ -4,16 +4,18 @@
 KDA のまとめていない射影・`lm_head` を足したもの (Issue #74、ADR 0007 の第 2a 段)。`k2s2b` は、
 `k2s2a` の対象に、KDA のまとめた層 (vLLM の `in_proj_qkvbfg_a`) の 6 射影を足したもの (Issue #79、
 ADR 0007 の第 2b 段)。読むには、vLLM の重ね合わせ `k2s2b` が前提。`k2s3` (Issue #95) は、対象は
-`k2s2b` と同じで、形式だけを FP8 から NVFP4A16 (重みだけ NVFP4) にする。
+`k2s2b` と同じで、形式だけを FP8 から NVFP4A16 (重みだけ NVFP4) にする。`k2s4` (Issue #99) は、
+`k2s3` の対象に、MTP の層 (層 45) の MLA の射影 4 つと FP8 の専門家を NVFP4A16 で足す。
 
 どの層が MLA でどの層が KDA かは、入力 `config.json` の `text_config.layer_types` (層ごとの種類の
 並び) から決める。層番号は手で並べない。この並びは、本体の層 (0 から) だけを持ち、MTP の層 (層 45)
-は載らないので、MTP の attention は選ばれない。並びが無い、または知らない種類を含むときは、層を
-推測して分けず、`SelectionError` で断る。
+は載らないので、MTP の attention は `k2s1`〜`k2s3` では選ばれない。並びが無い、または知らない種類を
+含むときは、層を推測して分けず、`SelectionError` で断る。MTP の層番号は、この並びの要素数
+(`mtp_layer`) から決める。
 
 KDA のまとめた層 (q・k・v・b・f_a・g_a) は、`k2s2a` では選ばず、`k2s2b` で組を丸ごと選ぶ。MLA の
-`kv_b_proj` と indexer は、どの段でも選ばない。vLLM で 1 つにまとまる組が崩れる選び方は、
-`selection.validate_fused_groups` が変換の前に断る。
+`kv_b_proj` と indexer は、どの段でも選ばない (MTP の層も同じ)。vLLM で 1 つにまとまる組が崩れる
+選び方は、`selection.validate_fused_groups` が変換の前に断る。
 """
 
 from __future__ import annotations
@@ -28,11 +30,13 @@ DEFAULT_PRESET: Final = "k2s1"
 STAGE2A_PRESET: Final = "k2s2a"
 STAGE2B_PRESET: Final = "k2s2b"
 STAGE3_PRESET: Final = "k2s3"
+STAGE4_PRESET: Final = "k2s4"
 PRESET_NAMES: Final[tuple[str, ...]] = (
     DEFAULT_PRESET,
     STAGE2A_PRESET,
     STAGE2B_PRESET,
     STAGE3_PRESET,
+    STAGE4_PRESET,
 )
 
 FORMAT_FP8: Final = "fp8"
@@ -48,6 +52,9 @@ KDA_LAYER_TYPE: Final = "linear_attention"
 MLA_PROJECTIONS: Final[tuple[str, ...]] = ("q_a_proj", "kv_a_proj_with_mqa", "q_b_proj", "o_proj")
 KDA_UNMERGED_PROJECTIONS: Final[tuple[str, ...]] = ("o_proj", "f_b_proj", "g_b_proj")
 LM_HEAD_PATTERN: Final = r"(?:.*\.)?lm_head$"
+EXPERT_PROJECTIONS: Final[tuple[str, ...]] = ("gate_proj", "up_proj", "down_proj")
+"""専門家の 3 射影 (`mlp.experts.N.{gate,up,down}_proj`)。第 4 段 (Issue #99) が、MTP の層の FP8
+の専門家をこの 3 射影で選ぶ。"""
 
 
 def layer_types(config: Mapping[str, Any]) -> tuple[str, ...]:
@@ -112,6 +119,34 @@ def stage3_pattern(config: Mapping[str, Any]) -> str:
     return stage2b_pattern(config)
 
 
+def mtp_layer(config: Mapping[str, Any]) -> int:
+    """MTP の層番号。`layer_types` (層 0 からの並び) には載らないので、その次の番号
+    (要素数) にする (Issue #99)。"""
+    return len(layer_types(config))
+
+
+def _expert_pattern(layers: Sequence[int]) -> str:
+    """指定した層の専門家 (`mlp.experts.N.{gate,up,down}_proj`) だけに当たる正規表現の分岐。"""
+    layer_alternatives = "|".join(str(layer) for layer in layers)
+    projection_alternatives = "|".join(re.escape(projection) for projection in EXPERT_PROJECTIONS)
+    return (
+        rf".*\.layers\.(?:{layer_alternatives})\.mlp\.experts\.\d+\.(?:{projection_alternatives})$"
+    )
+
+
+def stage4_pattern(config: Mapping[str, Any]) -> str:
+    """第 4 段の選び方。第 3 段の対象に、MTP の層の MLA の射影 4 つと FP8 の専門家を足す
+    (Issue #99)。`kv_b_proj` と indexer は、本体の層と同じく対象外のまま。"""
+    mtp = mtp_layer(config)
+    return "|".join(
+        [
+            stage3_pattern(config),
+            _attention_pattern((mtp,), MLA_PROJECTIONS),
+            _expert_pattern((mtp,)),
+        ]
+    )
+
+
 def resolve_preset_pattern(name: str, config: Mapping[str, Any]) -> str:
     """preset の名前から、モジュール名に当てる正規表現を決める。`k2s1` は config を読まない。"""
     if name == DEFAULT_PRESET:
@@ -122,12 +157,14 @@ def resolve_preset_pattern(name: str, config: Mapping[str, Any]) -> str:
         return stage2b_pattern(config)
     if name == STAGE3_PRESET:
         return stage3_pattern(config)
+    if name == STAGE4_PRESET:
+        return stage4_pattern(config)
     raise SelectionError(f"unknown preset: {name}")
 
 
 def resolve_preset_format(name: str) -> str:
-    """preset の名前から、数値形式を決める。`k2s3` だけ NVFP4A16、それ以外は FP8。"""
-    if name == STAGE3_PRESET:
+    """preset の名前から、数値形式を決める。`k2s3`・`k2s4` は NVFP4A16、それ以外は FP8。"""
+    if name in (STAGE3_PRESET, STAGE4_PRESET):
         return FORMAT_NVFP4A16
     if name in (DEFAULT_PRESET, STAGE2A_PRESET, STAGE2B_PRESET):
         return FORMAT_FP8

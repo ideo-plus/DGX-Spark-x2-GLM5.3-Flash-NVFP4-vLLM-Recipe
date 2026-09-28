@@ -109,6 +109,18 @@ def test_read_tensor_round_trips_supported_dtypes(tmp_path: Path, name: str) -> 
     assert torch.equal(result, tensors[name])
 
 
+def test_read_tensor_round_trips_f8_e4m3(tmp_path: Path) -> None:
+    """F8_E4M3 のテンソルも値まで読める (`.to(float32)` が入力と一致する) (C2a。Issue #99)。"""
+    path = tmp_path / "model.safetensors"
+    tensors = _write_fixture(path)
+    header = sf.read_header(path)
+
+    result = sf.read_tensor(path, header.tensors["layer.fp8"])
+
+    assert result.dtype == torch.float8_e4m3fn
+    assert torch.equal(result.to(torch.float32), tensors["layer.fp8"].to(torch.float32))
+
+
 def test_iter_tensor_bytes_reconstructs_raw_bytes(tmp_path: Path) -> None:
     """chunk で読んだバイト列をつなぐと元のバイト列になる (C7)。"""
     path = tmp_path / "model.safetensors"

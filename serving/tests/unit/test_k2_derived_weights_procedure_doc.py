@@ -115,6 +115,7 @@ REQUIRED_MARKERS: Final[tuple[str, ...]] = (
     "--preset k2s2a",
     "--preset k2s2b",
     "--preset k2s3",
+    "--preset k2s4",
     "payload/k2-quant",
     "serve push",
     "--network none",
@@ -1106,3 +1107,46 @@ def test_section_9_describes_the_stage_3_target_as_the_same_as_stage_2b_in_nvfp4
     assert describing, (
         "`--preset k2s3` と、対象が k2s2b と同じであること、NVFP4A16 を同じ段落に書いた説明がない"
     )
+
+
+# --- 16. §9 第 4 段 (`--preset k2s4`)。層 45 (MTP) の MLA の射影と FP8 の専門家 (#99) -------------
+
+STAGE_4_MARKERS: Final[tuple[str, ...]] = (
+    "--preset k2s4",
+    "models/k2s4",
+    "--name k2s4",
+    "serving/weights/k2s4.manifest.json",
+    "tp2-full-k2s4.toml",
+    "p2-nope-tp2-full-k2s4",
+    "--vllm-overlay k2s2b",
+    "#99",
+)
+"""第 4 段の読み替えに必要な印 (変換の選び方、変換の置き場所、取り込みの名前、構成の名前と
+ファイル名、起動に要る重ね (k2s2b))。"""
+
+
+@pytest.mark.parametrize("marker", STAGE_4_MARKERS)
+def test_section_9_describes_the_stage_4_reading_of_the_procedure(marker: str) -> None:
+    """§9 に、第 4 段 (`k2s4`) の読み替えの印 (選び方、置き場所、取り込み、構成、重ね) がある。"""
+    assert marker in _section_9(read_text(DOC_PATH))
+
+
+def test_section_9_describes_the_stage_4_target_as_layer_45_fp8_experts_in_nvfp4a16() -> None:
+    """§9 は、`--preset k2s4` の対象が層 45 (MTP) の FP8 の専門家を含み、形式が NVFP4A16 で
+    あることを、`--preset k2s4` を述べる段落のどれかに書く。
+
+    書き方は問わず、層 45 (`45`)・FP8 (`FP8`)・形式 (`NVFP4A16`) のすべてが、その段落にあることを
+    見る。
+    """
+    paragraphs = re.split(r"\n\s*\n", _section_9(read_text(DOC_PATH)))
+
+    describing = [
+        paragraph
+        for paragraph in paragraphs
+        if "--preset k2s4" in paragraph
+        and "45" in paragraph
+        and "FP8" in paragraph
+        and "NVFP4A16" in paragraph
+    ]
+
+    assert describing, "`--preset k2s4` と、層 45・FP8・NVFP4A16 を同じ段落に書いた説明がない"
