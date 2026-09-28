@@ -1,0 +1,30 @@
+#!/bin/sh
+# vllm-autostart-install: ユーザー単位の systemd に vllm-autostart.service を設置し、
+# 有効化して起こす (issue #88)。計測者が Spark の各台で、$HOME/vllm-baseline から
+# 実行する (`payload/vllm-autostart/vllm-autostart-install`)。root は要らない。
+#
+# linger (再起動後・ログアウト後もユーザー単位の systemd を動かし続ける設定) は、
+# この script の外 (ops/vllm-autostart/vllm-autostart.sudoers の固定形) で有効化する。
+# linger を有効にしていないと、この unit は再起動をまたいで自動では戻らない。
+
+set -eu
+
+# 補助コマンド (install/systemctl) は、継承した PATH からではなく、この固定した PATH から
+# 探す (ops/spark-power-caps/spark-power-caps-apply と同じ流儀)。
+PATH=/usr/sbin:/usr/bin:/sbin:/bin
+export PATH
+
+fail() {
+    printf '%s\n' "vllm-autostart-install: $1" >&2
+    exit 1
+}
+
+DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+UNIT_SRC="$DIR/vllm-autostart.service"
+UNIT_DEST="$HOME/.config/systemd/user/vllm-autostart.service"
+
+[ -f "$UNIT_SRC" ] || fail "unit のファイルがない: $UNIT_SRC"
+
+install -D -m 0644 "$UNIT_SRC" "$UNIT_DEST"
+systemctl --user daemon-reload
+systemctl --user enable --now vllm-autostart.service

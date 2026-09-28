@@ -303,6 +303,40 @@ LAUNCH_RECORD = t.LaunchRecord(
     repo_dirty=False,
     gates=(),
 )
+AUTOSTART_WEIGHTS_EXPECTATION = t.AutostartWeightsExpectation(
+    path="/home/j5ik2o/vllm-baseline/state/RedHatAI__GLM-5.3-Flash-NVFP4.verified.json",
+    scope="all",
+    file_count=3,
+    total_bytes=98036096,
+    fields={"repo": "RedHatAI/GLM-5.3-Flash-NVFP4", "revision": REVISION},
+)
+AUTOSTART_DESIGNATION = t.AutostartDesignation(
+    role="head",
+    config="p1-nvfp4-tp2",
+    config_sha256=CONFIG_SHA,
+    ready_timeout_s=1800,
+    ports=(8000, 29501),
+    weights_record=AUTOSTART_WEIGHTS_EXPECTATION,
+    designated_at=AT,
+    repo_commit="0966d11",
+    repo_dirty=False,
+)
+AUTOSTART_STATUS = t.AutostartStatus(
+    schema_version=1,
+    role="head",
+    config="p1-nvfp4-tp2",
+    container_name="vb-p1-nvfp4-tp2-head",
+    state="running",
+    reason="",
+    updated_at="2026-09-27T08:00:30Z",
+    started_at="2026-09-27T08:00:00Z",
+    ready_at="2026-09-27T08:00:20Z",
+    container_state="running",
+    container_exit_code=None,
+    last_health_status=200,
+    last_probe_status=200,
+    consecutive_start_failures=0,
+)
 START_OUTCOME = t.StartOutcome(
     status="ready",
     detail="受け付けを始めた",
@@ -431,6 +465,9 @@ EXAMPLES: dict[str, BaseModel] = {
     "NodeStatus": NODE_STATUS,
     "ServiceStatus": SERVICE_STATUS,
     "LaunchRecord": LAUNCH_RECORD,
+    "AutostartWeightsExpectation": AUTOSTART_WEIGHTS_EXPECTATION,
+    "AutostartDesignation": AUTOSTART_DESIGNATION,
+    "AutostartStatus": AUTOSTART_STATUS,
     "StartOutcome": START_OUTCOME,
     "StopOutcome": STOP_OUTCOME,
     "SmokeReply": SMOKE_REPLY,
@@ -1272,7 +1309,14 @@ BODY_CARRYING_TOKENS = frozenset(
     {"text", "body", "content", "contents", "prompt", "response", "messages", "system"}
 )
 BODY_CARRYING_NAMES = frozenset({"input", "output", "blocks", "thinking"})
-RESULT_MODELS = ("SmokeOutcome", "ProbeOutcome", "ThinkingOutcome", "WatchOutcome", "LaunchRecord")
+RESULT_MODELS = (
+    "SmokeOutcome",
+    "ProbeOutcome",
+    "ThinkingOutcome",
+    "WatchOutcome",
+    "LaunchRecord",
+    "AutostartStatus",
+)
 
 
 class _BodyCarrier(BaseModel):

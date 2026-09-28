@@ -97,9 +97,11 @@ ssh で Spark に入って手で打つのは、この手順の外である (道�
 
 ### 状態を変える操作の了承 (要件 2.1)
 
-⚠ 計測者に尋ねる: **Spark の状態を変える 11 のコマンド
+⚠ 計測者に尋ねる: **Spark の状態を変える 13 のコマンド
 (`push`、`pull-image`、`image-licenses`、`fetch`、`verify`、`start`、`stop`、`probe`、
-`netcheck bandwidth`、`netcheck sanity`、`netcheck ab`) は、打つ前に毎回尋ねる。**
+`netcheck bandwidth`、`netcheck sanity`、`netcheck ab`、`autostart set`、`autostart clear`) は、
+打つ前に毎回尋ねる。** `autostart set`/`clear` (issue #88 P6。自動起動の指定・解除) の詳しい
+手順は [`autostart-procedure.md`](autostart-procedure.md) にある。
 
 道具は、関門を流したあと、これから流すコマンドと、その巻き戻しと、対象の機械を標準エラーに
 全部見せて、`yes` の入力を待つ。端末でなく `--yes` もなければ、状態を変える呼び出しを 1 つも
@@ -775,7 +777,9 @@ uv run serve smoke <段 4 の構成>
 2. ⚠ 計測者に尋ねる: **2 台での層の分割 (PP=2) を、P1 のうちに測るか、P5 に持ち越すか**
    (要件 8.9)。TP=2 との速さの比較の候補として扱い、代替の構成とはしない
 3. ⚠ 計測者に尋ねる: **推論サーバーを止めるか、動かしたままにするか** (要件 7.9)。止めるなら、
-   **記録を先に回収する**
+   **記録を先に回収する**。自動起動の指定 (issue #88 P6) が有効な場合は、`serve stop` の前に
+   必ず指定を解除する ([`autostart-procedure.md`](autostart-procedure.md) の
+   「指定がある間の停止」を見る)
 
 ```bash
 uv run serve logs p1-nvfp4-tp2   # stop は記録を回収しない
@@ -788,6 +792,22 @@ uv run serve status              # 止まったこと、GPU が空いたこと�
 5. 終わりの条件 (1 つ以上の構成で起動し、`bench` の計測を一通り流せた。または、計測者が改めた
    条件) に照らして、満たしたこと、満たせなかったこと、P2 以降に持ち越すことをまとめる
    (要件 10.6)
+
+## 自動起動 (issue #88 P6。詳しい手順は別紙)
+
+Spark の再起動・電源断・コンテナの異常終了からの自動の立ち上げ直しは、この P1 の手順の範囲外
+である。設置・自動起動の構成の指定・確認・短い実機試験 (起動の確認、コンテナを止めて自動で
+戻ることの確認)・外し方の手順は、[`autostart-procedure.md`](autostart-procedure.md) に
+まとめてある。Mac からの指定・解除は次の 2 つのコマンドだけである。指定が有効な間に
+`serve stop` を打つときの順序は、`autostart-procedure.md` の「指定がある間の停止」を見る
+(先に `clear` してから `stop` する)。
+
+⚠ 計測者に尋ねる (状態を変える)。
+
+```bash
+uv run serve autostart set glm53-tp2-mtp3-marlin --yes
+uv run serve autostart clear --yes
+```
 
 ## 計測者に尋ねる場所 (一覧)
 

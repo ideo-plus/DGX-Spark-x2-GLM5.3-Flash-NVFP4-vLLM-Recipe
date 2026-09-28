@@ -29,6 +29,9 @@
 | `serve netcheck ab <構成> --env K=V` | 足す設定の A/B | 変える |
 | `serve watch <構成>` | 連続の負荷の間の見張り | 変えない |
 | `serve thinking <構成>` | thinking の深さの確かめ | 変えない |
+| `serve autostart set <構成>` | Spark 上の見張りが自動で起こす構成を指定する | 変える |
+| `serve autostart clear` | 自動で起こす構成の指定を解除する | 変える |
+| `serve autostart status` | 両台の指定と見張りの状態を、読むだけで示す | 変えない |
 
 ## 終了コード (design.md 「Error Handling」)
 
@@ -131,6 +134,9 @@ from serving_kit import (
     probe,
     thinking,
     watch,
+)
+from serving_kit import (
+    autostart as autostart_mod,
 )
 from serving_kit import config as config_mod
 from serving_kit import weights as weights_mod
@@ -661,6 +667,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_netcheck(subparsers)
     _add_watch(subparsers)
     _add_thinking(subparsers)
+    _add_autostart(subparsers)
     return parser
 
 
@@ -693,6 +700,21 @@ def _add_netcheck(subparsers: argparse._SubParsersAction[argparse.ArgumentParser
         metavar="<回>",
         help=f"腕ごとの回数 (2 以上。既定: {netcheck.AB_REPEATS})",
     )
+
+
+def _add_autostart(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+    """`serve autostart set / clear / status` (issue #88 P6)。`_add_netcheck` と同じ形。"""
+    parser = subparsers.add_parser(
+        "autostart",
+        help="Spark 上の見張りが自動で起こす構成を指定・解除・確認する",
+        description="Spark 上の見張り (ops/vllm-autostart) が自動で起こす構成を指定・解除・確認",
+        epilog=_EXIT_CODE_EPILOG,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    inner = parser.add_subparsers(dest="autostart_command", title="commands", metavar="<command>")
+    _with_config(inner, "set", "指定した構成を、Spark 上の見張りが自動で起こす対象にする")
+    _leaf(inner, "clear", "自動で起こす対象の指定を解除する (以後、見張りは何も起こさない)")
+    _leaf(inner, "status", "両台の指定と見張りの状態を、読むだけで示す")
 
 
 def _add_watch(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
@@ -1528,6 +1550,80 @@ def _cmd_thinking(ctx: _Context) -> int:
     return EXIT_PRECONDITION if outcome.effective is None else EXIT_OK
 
 
+# --- serve autostart --------------------------------------------------------
+
+
+def _cmd_autostart_set(ctx: _Context) -> int:
+    """指定した構成を、Spark 上の見張りが自動で起こす対象にする (issue #88 P6、要件 2、3)。
+
+    両台の `launch.json` の `config_sha256` が Mac の計画と一致するときだけ配る
+    (`autostart.set_autostart` が確かめる。一致しなければ、1 度も配らず終了コード 1)。
+    """
+    config, nodes = ctx.selected()
+    started_at = ctx.now()
+    commit, dirty = ctx.facts()
+    outcome = autostart_mod.set_autostart(
+        ctx.runner(),
+        config,
+        nodes,
+        ctx.manifest(config),
+        ctx.record_dir("autostart", config.name, started_at),
+        started_at,
+        repo_commit=commit,
+        repo_dirty=dirty,
+        confirmer=ctx.confirmer(),
+    )
+    ctx.show.say("config", config.name)
+    ctx.show.say("status", outcome.status)
+    ctx.show.say("nodes", ",".join(outcome.roles))
+    ctx.show.detail(outcome.detail)
+    return EXIT_OK if outcome.status == "designated" else EXIT_PRECONDITION
+
+
+def _cmd_autostart_clear(ctx: _Context) -> int:
+    """自動で起こす対象の指定を解除する (`config: null` を両台に配るだけ)。"""
+    nodes = ctx.nodes()
+    started_at = ctx.now()
+    commit, dirty = ctx.facts()
+    outcome = autostart_mod.clear_autostart(
+        ctx.runner(),
+        nodes,
+        ctx.record_dir("autostart", "none", started_at),
+        started_at,
+        repo_commit=commit,
+        repo_dirty=dirty,
+        confirmer=ctx.confirmer(),
+    )
+    ctx.show.say("status", outcome.status)
+    ctx.show.say("nodes", ",".join(outcome.roles))
+    ctx.show.detail(outcome.detail)
+    return EXIT_OK
+
+
+def _cmd_autostart_status(ctx: _Context) -> int:
+    """両台の指定と見張りの状態を、読むだけで示す (構成ファイルを読まなくても動く)。"""
+    nodes = ctx.nodes()
+    shown = autostart_mod.read_autostart(ctx.runner(), nodes)
+    for node in shown.nodes:
+        prefix = f"autostart.{node.role}"
+        if node.designation is not None:
+            for key, value in node.designation.model_dump(mode="json").items():
+                ctx.show.say(f"{prefix}.designation.{key}", value)
+        if node.status is not None:
+            for key, value in node.status.model_dump(mode="json").items():
+                ctx.show.say(f"{prefix}.status.{key}", value)
+        ctx.show.say(f"{prefix}.readable", node.readable)
+    unreadable = [node.role for node in shown.nodes if not node.readable]
+    ctx.show.say("unreadable", ",".join(unreadable))
+    ctx.show.say("status", "partial" if unreadable else "read")
+    ctx.show.detail(
+        f"読めなかった台がある ({', '.join(unreadable)})"
+        if unreadable
+        else f"{len(shown.nodes)} 台の指定と状態を読んだ"
+    )
+    return EXIT_PRECONDITION if unreadable else EXIT_OK
+
+
 # --- 読み取った事実の表示 --------------------------------------------------
 
 
@@ -1577,6 +1673,7 @@ _EXIT_BY_ERROR: Final[tuple[tuple[type[Exception], int], ...]] = (
     (probe.ProbeError, EXIT_FAILED),
     (netcheck.NetcheckError, EXIT_FAILED),
     (PushError, EXIT_FAILED),
+    (autostart_mod.AutostartError, EXIT_FAILED),
 )
 """例外から終了コードへの、ただ 1 つの表 (上から順に見る。決めごとの 1)。
 
@@ -1608,6 +1705,23 @@ _NETCHECK_HANDLERS: Final[Mapping[str, Callable[[_Context], int]]] = {
     "sanity": _cmd_netcheck_sanity,
     "ab": _cmd_netcheck_ab,
 }
+
+_AUTOSTART_HANDLERS: Final[Mapping[str, Callable[[_Context], int]]] = {
+    "set": _cmd_autostart_set,
+    "clear": _cmd_autostart_clear,
+    "status": _cmd_autostart_status,
+}
+
+_NESTED_HANDLERS: Final[Mapping[str, tuple[str, Mapping[str, Callable[[_Context], int]]]]] = {
+    "netcheck": ("netcheck_command", _NETCHECK_HANDLERS),
+    "autostart": ("autostart_command", _AUTOSTART_HANDLERS),
+}
+"""入れ子のサブコマンドを持つコマンドの、属性名 (argparse の dest) と対応表の組。
+
+案内文 (`err.write` の文言) は、この対応表の鍵からその都度組み立てる (鍵の並びは、
+`_NETCHECK_HANDLERS`/`_AUTOSTART_HANDLERS` の定義順のまま。`dict` は挿入順を保つので、
+既存の文言と完全に同じ出力になる)。
+"""
 
 
 def main(
@@ -1649,10 +1763,16 @@ def main(
         return EXIT_PRECONDITION
     handler = _HANDLERS.get(command)
     if handler is None:
-        inner: str | None = getattr(args, "netcheck_command", None)
-        handler = _NETCHECK_HANDLERS.get(inner) if inner is not None else None
+        nested = _NESTED_HANDLERS.get(command)
+        if nested is None:
+            err.write(f"知らないコマンド: {command}\n")
+            return EXIT_PRECONDITION
+        dest, inner_handlers = nested
+        inner: str | None = getattr(args, dest, None)
+        handler = inner_handlers.get(inner) if inner is not None else None
         if handler is None:
-            err.write("serve netcheck は、links / bandwidth / sanity / ab の 1 つを選ぶこと。\n")
+            choices = " / ".join(inner_handlers)
+            err.write(f"serve {command} は、{choices} の 1 つを選ぶこと。\n")
             return EXIT_PRECONDITION
 
     root = (serving_dir().parent if repo_root is None else repo_root).resolve()

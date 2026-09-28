@@ -1,0 +1,6 @@
+# /etc/sudoers.d/vllm-autostart: linger (再起動をまたいでユーザー単位の systemd を動かし
+# 続ける設定) の有効化・無効化だけを、パスワードなしで許す (visudo -cf で検査してから置く)。
+# 設置は vllm-autostart-install、撤去は vllm-autostart-uninstall が行うが、どちらも
+# systemctl --user だけを呼び、linger には触れない。linger は計測者がこの 2 行の
+# どちらかを直接実行して切り替える (issue #88 やること 3)。
+j5ik2o ALL=(root) NOPASSWD: /usr/bin/loginctl enable-linger j5ik2o, /usr/bin/loginctl disable-linger j5ik2o

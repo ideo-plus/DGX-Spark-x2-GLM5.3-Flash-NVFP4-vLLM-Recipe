@@ -1,0 +1,17 @@
+#!/bin/sh
+# vllm-autostart-uninstall: vllm-autostart.service を無効化して止め、ユーザー単位の
+# systemd から取り除く (issue #88)。計測者が Spark の各台で実行する。root は要らない。
+#
+# linger の無効化は、この script の外 (ops/vllm-autostart/vllm-autostart.sudoers の
+# 固定形) で行う。
+
+set -eu
+
+PATH=/usr/sbin:/usr/bin:/sbin:/bin
+export PATH
+
+UNIT_DEST="$HOME/.config/systemd/user/vllm-autostart.service"
+
+systemctl --user disable --now vllm-autostart.service
+rm -f "$UNIT_DEST"
+systemctl --user daemon-reload
