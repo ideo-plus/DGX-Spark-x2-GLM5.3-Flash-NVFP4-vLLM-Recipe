@@ -25,9 +25,9 @@ CLI を通す試験では、課題の置き場所を空のディレクトリに�
 送られない。ネットワークには触れない (`humaneval.default_cache_dir` を、
 呼ばれたら落ちるものに差し替えて、既定の置き場所に触れていないことも確かめる)。
 
-コードの条件が端から端まで動くことは、最後の 1 本だけが、対応表を差し込んだ
-`execute_run` と**実物のコンテナ**で確かめる (実行環境がない機械では、理由を
-添えて飛ばす)。
+このファイルでは利用可能な偽sandboxを使い、課題の読込まで必ず進める。
+コード採点が呼ばれたら失敗させる。実コンテナによる採点とdataset保存の確認は
+`test_quality_with_sandbox.py` に置く。
 
 生データの置き場所は、必ず `tmp_path` の下にする (リポジトリの `results/` と
 `bench/data-cache/` を汚さない。8.5、6.5)。要求を送る先は 127.0.0.1 の偽の
@@ -47,29 +47,23 @@ from typing import Any, Final
 import pytest
 
 from bench_harness import cli
-from bench_harness.analysis.summarize import METRIC_ACCURACY, NOT_SCORED_COUNT, write_summary
+from bench_harness.analysis.summarize import METRIC_ACCURACY, NOT_SCORED_COUNT
 from bench_harness.corpus import humaneval
 from bench_harness.corpus.needle import make_needle_case
 from bench_harness.corpus.tools import make_tool_task
-from bench_harness.runner import EXIT_OK, StderrProgressSink, execute_run
-from bench_harness.scoring.sandbox import ContainerSandbox
+from bench_harness.runner import EXIT_OK
 from bench_harness.store import RunStore, list_run_dirs
+from bench_harness.suites import quality as quality_module
 from bench_harness.suites.quality import (
     CODE_CONDITION_KEY,
     TOOLCALL_TASK_INDEX_BASE,
-    QualitySuite,
     needle_condition_key,
 )
 from bench_harness.types import (
-    CodeProblem,
-    DatasetRef,
     MetricResult,
-    QualityOutcome,
-    QualityVerdict,
-    RunRequest,
     RunStatus,
+    SandboxResult,
     SandboxSettings,
-    SandboxUnavailable,
     SuiteName,
     Summary,
     ToolCallOutcome,
@@ -293,9 +287,30 @@ def quick_sandbox_settings() -> SandboxSettings:
     return SandboxSettings.model_validate(data["profiles"]["quick"]["sandbox"])
 
 
-def sandbox_is_available() -> bool:
-    """この機械で、コードの隔離が使えるか (使えなければ、コードの条件は先に飛ぶ)。"""
-    return ContainerSandbox(quick_sandbox_settings()).available() is True
+class UnusedCodeSandbox:
+    """課題読込まで通すが、空キャッシュからの採点は許さない。"""
+
+    def available(self) -> bool:
+        return True
+
+    def image_ref(self) -> str | None:
+        return None
+
+    def run_python(self, source: str, timeout_s: float) -> SandboxResult:
+        raise AssertionError("取得禁止の空キャッシュからコード採点が呼ばれた")
+
+
+@pytest.fixture(autouse=True)
+def use_unused_code_sandbox(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(quality_module, "ContainerSandbox", lambda _settings: UnusedCodeSandbox())
+
+
+def test_unused_code_sandbox_rejects_execution() -> None:
+    box = UnusedCodeSandbox()
+    assert box.available() is True
+    assert box.image_ref() is None
+    with pytest.raises(AssertionError, match="コード採点"):
+        box.run_python("pass", 1.0)
 
 
 @dataclass(frozen=True)
@@ -329,10 +344,8 @@ def write_bed(tmp_path: Path, base_url: str, *, api_key_env: str | None = None) 
     4.0」で数える一方、合成の文章は本文の文字数だけで長さを決めるので、狙いから
     ずれるためである (この試験は長さの印を見ない)。
 
-    隔離の設定は、計測で実際に使うもの (`quick`) をそのまま書く。既定のまま
-    (`python:3.12-slim`、識別子なし) にすると、隔離が使えないという理由だけで
-    コードの条件が飛び、課題の置き場所 (`--data-cache`) を見に行く道が、一度も
-    通らなくなる。
+    隔離の設定は `quick` を使うが、実行役はこのファイルのfixtureで差し替える。
+    課題の置き場所 (`--data-cache`) と取得禁止を、実環境に依存せず検査する。
     """
     tmp_path.mkdir(parents=True, exist_ok=True)
     targets = tmp_path / "targets.toml"
@@ -667,11 +680,8 @@ def test_not_scored_is_separated_from_incorrect_in_the_quality_summary(
     assert [item.key for item in skipped] == [CODE_CONDITION_KEY]
     assert CODE_CONDITION_KEY in markdown
     assert skipped[0].reason in markdown.replace("\\|", "|")
-    if sandbox_is_available():
-        # 隔離が使える機械では、飛ばす理由は「指定した置き場所に課題がなく、
-        # 取得も許されていない」になる (--data-cache と --no-download が効いている)
-        assert bed.data_cache.name in skipped[0].reason
-        assert "取得も許されていない" in skipped[0].reason
+    assert str(bed.data_cache) in skipped[0].reason
+    assert "取得も許されていない" in skipped[0].reason
     assert summary.datasets == []
     assert "## 使った公開の課題" not in markdown
 
@@ -780,93 +790,3 @@ def test_no_secret_and_no_response_text_leaves_the_quality_and_agent_summaries(
     assert API_KEY_VALUE not in captured.out
     assert API_KEY_VALUE not in captured.err
     assert RESPONSE_SENTINEL not in captured.out
-
-
-# --- コードの条件を、実物のコンテナで端から端まで ---------------------------
-
-HANDWRITTEN: Final[tuple[CodeProblem, ...]] = (
-    CodeProblem(
-        task_id="Handwritten/correct",
-        prompt='def add_one(x: int) -> int:\n    """Return x + 1."""\n',
-        entry_point="add_one",
-        test=(
-            "def check(candidate):\n    assert candidate(1) == 2\n    assert candidate(-3) == -2\n"
-        ),
-    ),
-    CodeProblem(
-        task_id="Handwritten/wrong",
-        prompt='def double(x: int) -> int:\n    """Return x * 2."""\n',
-        entry_point="double",
-        test="def check(candidate):\n    assert candidate(3) == 6\n",
-    ),
-)
-
-HANDWRITTEN_DATASET: Final[DatasetRef] = humaneval.dataset_ref()
-
-
-def code_responder(body: dict[str, Any]) -> Script:
-    """コードの課題には解答を、ほかの課題には当たり障りのない応答を返す。"""
-    text = last_user_text(body)
-    if f"def {HANDWRITTEN[0].entry_point}(" in text:
-        return text_response("```python\ndef add_one(x: int) -> int:\n    return x + 1\n```")
-    if f"def {HANDWRITTEN[1].entry_point}(" in text:
-        return text_response("```python\ndef double(x: int) -> int:\n    return x + 2\n```")
-    return text_response("ok")
-
-
-def handwritten_loader() -> tuple[DatasetRef, list[CodeProblem]]:
-    return HANDWRITTEN_DATASET, list(HANDWRITTEN)
-
-
-async def test_the_code_condition_runs_end_to_end_and_records_the_dataset(
-    fake_server: FakeServer, tmp_path: Path
-) -> None:
-    """公開の課題の出どころが、計測ランと要約に残る (5.5、注 6.7 → 8.1)。
-
-    コマンドの入口からは Python の値を差し込めないので、ここだけは対応表を
-    `execute_run` に注入する。隔離は**実物のコンテナ**で、実行環境がない機械
-    では理由を添えて飛ばす。
-    """
-    status = ContainerSandbox(quick_sandbox_settings()).available()
-    if isinstance(status, SandboxUnavailable):
-        pytest.skip(f"隔離の実行環境が使えない: {status.reason}")
-
-    fake_server.set_response_factory(code_responder)
-    bed = write_bed(tmp_path, fake_server.base_url)
-    registry = {SuiteName.QUALITY: QualitySuite(problems_loader=handwritten_loader)}
-
-    outcome = await execute_run(
-        RunRequest(target_name=TARGET_NAME, suites=[SuiteName.QUALITY], profile_name=PROFILE_NAME),
-        StderrProgressSink(),
-        targets_path=bed.targets,
-        profiles_path=bed.profiles,
-        results_root=bed.results_root,
-        registry=registry,
-        env={},
-    )
-    write_summary(outcome.run_dir)
-
-    assert outcome.status is RunStatus.COMPLETED
-    store = RunStore.open(outcome.run_dir)
-    assert store.manifest().skipped == []  # コードの条件は飛んでいない
-    assert store.manifest().datasets == [HANDWRITTEN_DATASET]
-
-    code_records = [
-        record for record in records_of(outcome.run_dir) if record.condition == CODE_CONDITION_KEY
-    ]
-    assert [
-        record.verdict.outcome
-        for record in code_records
-        if isinstance(record.verdict, QualityVerdict)
-    ] == [QualityOutcome.CORRECT, QualityOutcome.INCORRECT]
-    first = code_records[0].verdict
-    assert isinstance(first, QualityVerdict)
-    assert first.sandbox is not None and first.sandbox.passed
-
-    summary = read_summary(outcome.run_dir)
-    assert [dataset.name for dataset in summary.datasets] == [HANDWRITTEN_DATASET.name]
-    assert summary.datasets[0].version == HANDWRITTEN_DATASET.version
-    assert summary.datasets[0].license == HANDWRITTEN_DATASET.license
-    markdown = read_markdown(outcome.run_dir)
-    assert "## 使った公開の課題" in markdown
-    assert HANDWRITTEN_DATASET.license in markdown
