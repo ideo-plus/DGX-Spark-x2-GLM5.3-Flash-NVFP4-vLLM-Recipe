@@ -1,0 +1,2 @@
+# ripgrep (Claude Code の Grep・Glob) の探索から外す。.takt/ は TAKT の設定と実行の記録で、ソースコードではない
+.takt/
