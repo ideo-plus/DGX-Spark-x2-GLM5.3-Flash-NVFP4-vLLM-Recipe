@@ -12,11 +12,10 @@ become the backend for `takt`, a coding-agent workflow tool, called through the 
 
 ## Current results
 
-Configuration `glm53-tp2-mtp3-marlin`, measured at the confirmation stage (`fast`). Decode used
-a 256-token output limit and 10 measured trials per condition. JSON values were added on September 29;
-the other values below retain the September 28 measurements.
+Configuration `glm53-tp2-mtp3-marlin`, measured at the confirmation stage (`fast`). The JSON values below
+are answer-phase measurements using an 8,192-token output limit and same-server output retokenization.
 
-**The code, prose, and JSON decode values measure thinking-only output, not answer generation.**
+**The earlier code and prose values measure thinking-only output, not answer generation.**
 All 40 earlier code/prose trials and all 60 trials in the latest six-condition run exhausted the
 256-token limit without producing a text block. These values do not establish answer-generation
 performance or a performance advantage over other recipes.
@@ -27,14 +26,25 @@ performance or a performance advantage over other recipes.
 | Single stream, code/ja (thinking only) | 43.9 tok/s | [September 28](docs/results/2026-09-28-k2-stage3.md) |
 | Single stream, prose/en (thinking only) | 46.3 tok/s | [September 28](docs/results/2026-09-28-k2-stage3.md) |
 | Single stream, prose/ja (thinking only) | 42.2 tok/s | [September 28](docs/results/2026-09-28-k2-stage3.md) |
-| JSON instruction, English (thinking only) | 43.8 tok/s | [September 29](docs/results/2026-09-29-json-decode.md) |
-| JSON instruction, Japanese (thinking only) | 40.9 tok/s | [September 29](docs/results/2026-09-29-json-decode.md) |
+| JSON instruction, English (answer phase, retokenized) | 58.6 tok/s | [September 29](docs/results/2026-09-29-json-text-decode.md) |
+| JSON instruction, Japanese (answer phase, retokenized) | 58.9 tok/s | [September 29](docs/results/2026-09-29-json-text-decode.md) |
 | Decode, 2 streams, per stream (aggregate) | 27.2 tok/s (45.8 aggregate) | [September 28](docs/results/2026-09-28-k2-stage3.md) |
 | Prefill, 32k tokens (cold) | 1,326 tok/s | [September 28](docs/results/2026-09-28-k2-stage3.md) |
 
-JSON answer throughput remains unmeasured. See the [measurement and correction](docs/results/2026-09-29-json-decode.md)
-and the [recipe comparison](docs/research/2026-09-28-recipe-comparison.md) for evidence and limitations.
-Concurrency and prefill were not remeasured in the September 29 decode run.
+The JSON answer-phase values are retokenized measurements. See the [measurement record](docs/results/2026-09-29-json-text-decode.md)
+and the [recipe comparison](docs/research/2026-09-28-recipe-comparison.md). Concurrency and prefill were not remeasured.
+
+Published comparison values from other two-Spark implementations are summarized below. They use the
+authors' own prompts and timing definitions, so they are reference values rather than controlled reruns.
+
+| Implementation | Code | Prose | Structured/JSON |
+|---|---:|---:|---:|
+| This recipe, JSON answer phase (retokenized) | — | — | **58.6 en / 58.9 ja** |
+| [tonyd2wild NVFP4 + DFlash2](https://github.com/tonyd2wild/GLM-5.3-Flash-NVFP4-DFlash2-2x-DGX-Spark) | 46.9 | — | 54–61 |
+| [MiaAI-Lab EXL3 + DFlash2](https://github.com/MiaAI-Lab/GLM-5.3-Flash-EXL3-2x-DGX-Sparks) | — | 36.1 | 62.9 |
+| [Entrpi EXL3](https://github.com/Entrpi/glm-5.3-flash-exl3-2x-spark) | 42 | 30 | 51–71 |
+
+The published rows are not measured with this repository's phase-aware retokenization method.
 
 Quality checks at this stage (tool calls, HumanEval+, needle 8k/32k) found no breakage. These are
 small-sample numbers; the pass/fail judgment against every success criterion is made in phase
