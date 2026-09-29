@@ -44,6 +44,23 @@ GitHub に公開されている GLM-5.3-Flash の DGX Spark（GB10）向けレ�
 | [Entrpi/glm-5.3-flash-exl3-2x-spark](https://github.com/Entrpi/glm-5.3-flash-exl3-2x-spark) | vLLM フォーク・EXL3 | DFlash2（CC BY-NC-ND と推定【推測】） | 42 | 30 | 51〜71 | 長文 1,490（133K） |
 | [beastllama/GLM-5.3-Flash-DFlash2-SGLang-2x-DGX-Spark](https://github.com/beastllama/GLM-5.3-Flash-DFlash2-SGLang-2x-DGX-Spark) | SGLang・NVFP4 | DFlash2（CC BY-NC-ND） | 28.6 | 23.6 | — | 同時 8 本の合計 77.4 |
 
+### MiaAI レシピの同一条件での再測定
+
+同じベンチマーク基盤・同じ 2 台・同じ約 1.8 GHz の GPU 制限で、MiaAI の実機も測定した。結果の詳細は [実機測定条件と結果](../results/2026-09-29-miaai-exl3-dflash2.md) にある。
+
+| 項目 | 結果 |
+|---|---:|
+| decode code/en | 34.212 tok/s |
+| decode code/ja | 31.765 tok/s |
+| decode prose/en | 33.423 tok/s |
+| decode prose/ja | 26.858 tok/s |
+| concurrency 1 本 | 30.538 tok/s |
+| concurrency 2 本（1 本あたり） | 22.675 tok/s |
+| concurrency 4 本（1 本あたり） | 19.753 tok/s |
+| cold prefill 32k | 1340.999 tok/s |
+
+この再測定では、decode と prefill は各条件で失敗 0 回だった。公開値との差をクロックだけで説明することはできず、DFlash2 の受理率と実装経路も併記して比較する。
+
 ## 台数が違う参考値
 
 | レシピ | 台数 | ドラフター | コード | 散文 | 入力の処理 |
