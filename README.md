@@ -34,17 +34,17 @@ performance or a performance advantage over other recipes.
 The JSON answer-phase values are retokenized measurements. See the [measurement record](docs/results/2026-09-29-json-text-decode.md)
 and the [recipe comparison](docs/research/2026-09-28-recipe-comparison.md). Concurrency and prefill were not remeasured.
 
-Published comparison values from other two-Spark implementations are summarized below. They use the
-authors' own prompts and timing definitions, so they are reference values rather than controlled reruns.
+The comparison below contains only measurements made under the same conditions: this repository's `fast` profile,
+two DGX Spark nodes at TP=2, and the same GPU clock cap. Values are median tok/s; concurrency is per stream
+at two simultaneous requests, and prefill is cold 32k input.
 
-| Implementation | Code | Prose | Structured/JSON |
-|---|---:|---:|---:|
-| This recipe (code, thinking only; prose, thinking only) | **45.0** | **42.2–46.3** | **58.6 en / 58.9 ja** (JSON answer phase, retokenized) |
-| [tonyd2wild NVFP4 + DFlash2](https://github.com/tonyd2wild/GLM-5.3-Flash-NVFP4-DFlash2-2x-DGX-Spark) | 46.9 | — | 54–61 |
-| [MiaAI-Lab EXL3 + DFlash2](https://github.com/MiaAI-Lab/GLM-5.3-Flash-EXL3-2x-DGX-Sparks) | — | 36.1 | 62.9 |
-| [Entrpi EXL3](https://github.com/Entrpi/glm-5.3-flash-exl3-2x-spark) | 42 | 30 | 51–71 |
+| Implementation | Code/en | Prose/en | Concurrency 2 (per stream) | Cold prefill 32k |
+|---|---:|---:|---:|---:|
+| [This recipe: MTP N=3 + Marlin](docs/results/2026-09-28-k2-stage3.md) | **45.0** | **46.3** | **27.2** | **1,326** |
+| [MiaAI-Lab EXL3 + DFlash2](docs/results/2026-09-29-miaai-exl3-dflash2.md) | 34.212 | 33.423 | 22.675 | 1,340.999 |
 
-The published rows are not measured with this repository's phase-aware retokenization method.
+The mmastrac TP=2 result will be added after the same-condition measurement completes. Published values from
+other recipes are omitted because their prompts, sampling, thinking mode, and timing definitions differ.
 
 Quality checks at this stage (tool calls, HumanEval+, needle 8k/32k) found no breakage. These are
 small-sample numbers; the pass/fail judgment against every success criterion is made in phase

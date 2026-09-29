@@ -41,61 +41,23 @@ GitHub に公開されている GLM-5.3-Flash の DGX Spark（GB10）向けレ�
 
 今回の MiaAI EXL3 + DFlash2 の実機比較では、両ノードの実効 GPU クロック、温度、使用率、thermal slowdown の状態も記録する。共通条件とスナップショットは [実機測定条件](../results/2026-09-29-miaai-exl3-dflash2.md) にまとめた。
 
-## 同じ 2 台構成との比較（1 本の生成速度、tok/s）
+## 同じ条件での実測比較（2 台 TP=2、tok/s）
 
+公開レシピに掲載された条件の異なる値は比較表から外した。以下は同じベンチマーク基盤・同じ `fast` プロファイル・同じ 2 台 TP=2・同じクロック条件で測った値だけを載せる。mmastrac の測定が完了したら、MiaAI と同じ列に追加する。
 
-| レシピ                                                                                                                             | エンジン・重み                   | ドラフター（ライセンス）                 | コード            | 散文            | 構造化・JSON | その他                                        |
-| ------------------------------------------------------------------------------------------------------------------------------- | ------------------------- | ---------------------------- | --------------: | -------------: | --------: | ------------------------------------------ |
-| **今の構成** | vLLM・NVFP4（アテンションも 4 bit） | モデル付属 MTP N=3（MIT）           | **45.0（思考のみ）**       | **42.2〜46.3（思考のみ）** | **58.6（英）／58.9（日、本文再計数）** | 同時 2 本の 1 本あたり 27.2                        |
-| [MiaAI-Lab/GLM-5.3-Flash-NVFP4-Dual-DGX-Spark](https://github.com/MiaAI-Lab/GLM-5.3-Flash-NVFP4-Dual-DGX-Spark)                 | vLLM・NVFP4                | MTP（MIT）                     | 23〜30（種類の区別なし） | —             | —        | 同時 2 本の 1 本あたり 16〜19。計測の方法は書かれていない         |
-| [tonyd2wild/GLM-5.3-Flash-NVFP4-DFlash2-2x-DGX-Spark](https://github.com/tonyd2wild/GLM-5.3-Flash-NVFP4-DFlash2-2x-DGX-Spark)   | vLLM・NVFP4                | DFlash2（CC BY-NC-ND）         | 46.9           | —             | 54〜61    | 受理率はコードで 74%                               |
-| [tonyd2wild/GLM-5.3-Flash-EXL3-on-2x-NVIDIA-DGX-Spark](https://github.com/tonyd2wild/GLM-5.3-Flash-EXL3-on-2x-NVIDIA-DGX-Spark) | vLLM・EXL3 4bpw            | DFlash2（CC BY-NC-ND）         | 48.6           | 19.1          | —        | cold prefill 1,752（211K）                   |
-| [MiaAI-Lab/GLM-5.3-Flash-EXL3-2x-DGX-Sparks](https://github.com/MiaAI-Lab/GLM-5.3-Flash-EXL3-2x-DGX-Sparks)                     | vLLM・EXL3 4bit            | DFlash2（CC BY-NC-ND）         | —              | 36.1          | 62.9     | prefill 1,428〜1,587。受理率は散文で約 34%、構造化で約 96% |
-| [Entrpi/glm-5.3-flash-exl3-2x-spark](https://github.com/Entrpi/glm-5.3-flash-exl3-2x-spark)                                     | vLLM フォーク・EXL3            | DFlash2（CC BY-NC-ND と推定【推測】） | 42             | 30            | 51〜71    | 長文 1,490（133K）                             |
-| [beastllama/GLM-5.3-Flash-DFlash2-SGLang-2x-DGX-Spark](https://github.com/beastllama/GLM-5.3-Flash-DFlash2-SGLang-2x-DGX-Spark) | SGLang・NVFP4              | DFlash2（CC BY-NC-ND）         | 28.6           | 23.6          | —        | 同時 8 本の合計 77.4                             |
+| レシピ | 重み・推測 | code/en | prose/en | concurrency 2 本（1 本あたり） | cold prefill 32k |
+|---|---|---:|---:|---:|---:|
+| [現行構成（MTP N=3 + Marlin）](../results/2026-09-28-k2-stage3.md) | NVFP4、モデル付属 MTP `N=3` | 45.0 | 46.3 | 27.2 | 1326 |
+| [MiaAI-Lab EXL3 + DFlash2](../results/2026-09-29-miaai-exl3-dflash2.md) | EXL3/TR3 4bpw、DFlash2 `k=7` | 34.212 | 33.423 | 22.675 | 1340.999 |
 
-
-※ コード・散文の数字は思考のみ。JSON は本文の再計数値だが、英語は10件とも、日本語は9件が出力上限で終了した。他レシピは計測対象のブロックや思考の設定がそろっていないため、この表だけで本文生成の優劣は判定できない。
-
-### MiaAI レシピの同一条件での再測定
-
-同じベンチマーク基盤・同じ 2 台・同じ約 1.8 GHz の GPU 制限で、MiaAI の実機も測定した。結果の詳細は [実機測定条件と結果](../results/2026-09-29-miaai-exl3-dflash2.md) にある。
-
-| 項目 | 結果 |
-|---|---:|
-| decode code/en | 34.212 tok/s |
-| decode code/ja | 31.765 tok/s |
-| decode prose/en | 33.423 tok/s |
-| decode prose/ja | 26.858 tok/s |
-| concurrency 1 本 | 30.538 tok/s |
-| concurrency 2 本（1 本あたり） | 22.675 tok/s |
-| concurrency 4 本（1 本あたり） | 19.753 tok/s |
-| cold prefill 32k | 1340.999 tok/s |
-
-この再測定では、decode と prefill は各条件で失敗 0 回だった。公開値との差をクロックだけで説明することはできず、DFlash2 の受理率と実装経路も併記して比較する。
-
-## 台数が違う参考値
-
-
-| レシピ                                                                                                                       | 台数                | ドラフター   | コード           | 散文     | 入力の処理            |
-| ------------------------------------------------------------------------------------------------------------------------- | ----------------- | ------- | -------------: | ------: | ----------------: |
-| [mmastrac/glm-5.3-flash-4x-gx10](https://github.com/mmastrac/glm-5.3-flash-4x-gx10)                                       | 4                 | DFlash2 | 84.4          | 38.4   | 2,730（32k）       |
-| [alexellis/glm-5.3-flash-4x-dgx-spark-switchless](https://github.com/alexellis/glm-5.3-flash-4x-dgx-spark-switchless)     | 4                 | DFlash2 | 71〜75         | 30〜31  | 1,965〜2,276（64K） |
-| [tonyd2wild/GLM-5.3-Flash-NVFP4-1M-KV-4x-DGX-Spark](https://github.com/tonyd2wild/GLM-5.3-Flash-NVFP4-1M-KV-4x-DGX-Spark) | 4                 | DFlash2 | 54.5（今の既定の構成） | —      | 約 1,997          |
-| [outstandly/glm53-flash-3x-dgx-spark](https://github.com/outstandly/glm53-flash-3x-dgx-spark)                             | 3                 | DFlash2 | 51〜56         | 41     | 約 1,230          |
-| [gitcommit90/glm-5.3-one-spark](https://github.com/gitcommit90/glm-5.3-one-spark)                                         | 1（EXL3 2.05bpw）   | DFlash2 | 40.1（K5）      | 25〜30  | 786〜846          |
-| [Weschera/glm53-flash-one-spark](https://github.com/Weschera/glm53-flash-one-spark)                                       | 1（GGUF 約 2.7 bpw） | MTP     | 25.0          | 17.9   | 約 291            |
-| [sxuff/glm53-flash-single-gb10](https://github.com/sxuff/glm53-flash-single-gb10)                                         | 1（EXL3 2.05bpw）   | なし      | 29（平均）        | 29（平均） | 356              |
-
-
-tonyd2wild の 4 台の README には、使われなくなった構成の数値（同時 48 本の合計 530 tok/s など）も混ざっている。上の表には今の既定の構成の値だけを載せた。
+MiaAI の全条件（英日、同時 1/2/4 本、8k/32k/128k prefill）は [実機測定条件と結果](../results/2026-09-29-miaai-exl3-dflash2.md) に記録している。mmastrac も同じ記録形式で追加する。
 
 ## 比較から言えることと、訂正した点
 
 - **本文生成速度の比較は JSON に限って始められる。** コード・散文の既存値は思考のみなので本文比較には使えない。JSON 本文は再計数で測ったが、他レシピと条件がそろわないため、優位性は断定しない。
 - **JSON本文の再計数速度は、英語58.6、日本語58.9 tok/sだった。** 思考のみの旧計測値は本文の比較表から除いた。公開レシピの値とは本文区間・思考設定・計数方法がそろっていないため、速度の優劣は断定しない。
-- **同時2本と入力処理の既存値は保持する。** 同時2本の1本あたり27.2 tok/s、cold 32kの入力処理1,326 tok/sは別の計測の値であり、今回のdecodeの確認で測り直したものではない。他レシピとの比較には、それぞれの出力対象・入力長・計測方法の照合が必要である。
-- **公開レシピの数値は引き続き参考値である。** 要約経由で集めた値であり、条件も一致していない。本文生成速度として比較するには、自分たちの計測で本文到達を確かめ、思考と本文の時間・トークン数を区別する方法を用意する必要がある。
+- **現行構成の同時実行と入力処理の値は、同じ測定記録から引用した。** 同時 2 本の 1 本あたり 27.2 tok/s、cold 32k の入力処理 1,326 tok/s を表に載せている。
+- **外部レシピは、同一条件で再測定した値だけを比較する。** README などに掲載された条件の異なる数値は、比較表の根拠にしない。
 
 ## 集めたが数値が無いか、比べられないもの
 
