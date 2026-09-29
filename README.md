@@ -17,6 +17,8 @@ are answer-phase measurements using an 8,192-token output limit and same-server 
 Both nodes used the same clock caps for these measurements: GPU graphics clocks `300–1800 MHz`
 (`nvidia-smi -lgc 300,1800`) and X925 CPU cores capped at `3.0 GHz`. The detailed measurement record
 also records the observed ~1.8 GHz graphics clock and no thermal slowdown.
+Raising the GPU cap to 2200 MHz and removing the X925 cap did not speed up decode, concurrency, or prefill,
+so both caps stay in place ([September 29 record](docs/results/2026-09-29-gpu-clock-2200.md)).
 
 **The earlier code and prose values measure thinking-only output, not answer generation.**
 All 40 earlier code/prose trials and all 60 trials in the latest six-condition run exhausted the
