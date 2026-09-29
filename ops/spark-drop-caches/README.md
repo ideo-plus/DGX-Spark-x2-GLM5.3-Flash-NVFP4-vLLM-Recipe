@@ -111,11 +111,33 @@ sudo rm /etc/sudoers.d/spark-drop-caches /usr/local/sbin/spark-drop-caches
 ```
 この手順はこのリポジトリのコマンドでは自動化しない (この作業の範囲外)。
 
+## 実機確認記録 (2026-09-29)
+
+head (`spark-153d`) と worker (`spark-5083`) の両台で、次を確認した。
+
+- `/usr/local/sbin/spark-drop-caches` を root 所有・`0755` で設置した。
+- `/etc/sudoers.d/spark-drop-caches` を root 所有・`0440` で設置し、`visudo -cf /etc/sudoers` が通った。
+- sudoers の引数なし指定 (`""`) が実機の `sudo -n -l` に表示され、`sudo -n /usr/local/sbin/spark-drop-caches` がパスワードなしで完了した。
+- drop-caches 後に `serve check glm53-tp2-mtp3-marlin` を実行し、18 件の関門がすべて通った。`MemFree` は head 117.5 GiB、worker 111.1 GiB だった。
+- `serve start glm53-tp2-mtp3-marlin --yes` は、はじめの 3 回が worker の vLLM 初期化 (`init_device`) で終了した。
+  `gpu_memory_utilization=0.90` の必要量は `109.52 GiB` である。いずれの回も、worker では別の重みの取得
+  (`hf download`、約 200 GB) と、その NAS への同期が動いていた、または止めたまま残っていた。
+
+  | 回 | worker の状態 | 初期化時の CUDA 空き |
+  |---|---|---:|
+  | 1 | 取得が動いたまま。drop-caches → `serve check` → 起動 (GPU 上限 2000 MHz) | 106.16 GiB |
+  | 2 | 同上 (GPU 上限 2200 MHz) | 106.57 GiB |
+  | 3 | 取得を `SIGSTOP` で止め、drop-caches の直後に起動 | 108.75 GiB |
+  | 4 | 取得のプロセスを終了させ、drop-caches の直後に起動 | 通過 (`status=ready`) |
+
+  3 回目は、止めたプロセスが匿名メモリ約 2.3 GiB (RSS) を持ったままだった。止めただけではメモリは空かない。
+  4 回目の直前の worker は `MemFree` 117.8 GiB、`AnonPages` 0.16 GB だった。
+- 起動の余裕は小さい (3 回目の不足は 0.77 GiB)。drop-caches は起動の直前に流す。そのとき、両台で大きな読み書きや
+  取得をするプロセスが動いていない (止めたまま残してもいない) ことを確かめる。
+
 ## 実機で未確認のこと
 
-- sudoers の `""` (引数なし) の形が、Spark の `visudo -cf` を実際に通ること。
-- `/usr/local/sbin` が両台に実在すること。
-- `drop_caches` へ `3` を書いたあと、実際に `MemFree` が増える量と、`serve start` の
-  `memory_free` (下限 8 GiB) を安定して通せるかどうか。
+- drop-caches 後に `MemFree` が増える量を、実行前後の同一条件で定量比較すること。
+- drop-caches 後に `serve start` の CUDA 初期化条件を安定して通せるかどうか。
 - イメージ内の instanttensor の版と、上流の環境変数 (`INSTANTTENSOR_MAX_FREE_MEM_USAGE` など)
   の対応。

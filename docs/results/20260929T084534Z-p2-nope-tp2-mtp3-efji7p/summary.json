@@ -1,0 +1,401 @@
+{
+  "schema_version": 1,
+  "conditions": {
+    "schema_version": 1,
+    "run_id": "20260929T084534Z-p2-nope-tp2-mtp3-efji7p",
+    "status": "completed",
+    "target": {
+      "name": "p2-nope-tp2-mtp3",
+      "base_url": "http://10.0.1.60:8000/",
+      "model": "glm-5-3-flash",
+      "notes": "MTP を下書き 3 トークンで有効にした full と同じ構成の計測 (起動側の構成名も p2-nope-tp2-mtp3)。実機では未確認",
+      "api_key_env": null,
+      "metrics_url": null,
+      "max_context_tokens": 163840,
+      "metric_map": {},
+      "tool_markup_markers": [
+        "<tool_call>",
+        "</tool_call>",
+        "<arg_key>",
+        "<arg_value>"
+      ]
+    },
+    "server_model": "glm-5-3-flash",
+    "server_version": "0.1.dev1+g0961bbae2.d20260922",
+    "started_at": "2026-09-29T08:45:34.148817Z",
+    "finished_at": "2026-09-29T08:47:00.887538Z",
+    "suites": [
+      "concurrency"
+    ],
+    "profile_name": "c2r10",
+    "profile": {
+      "name": "c2r10",
+      "seed": 0,
+      "sampling": {
+        "temperature": 0.0,
+        "top_p": null,
+        "top_k": null,
+        "thinking": "server_default"
+      },
+      "chars_per_token": {
+        "prose_en": 4.831,
+        "prose_ja": 1.794,
+        "code": 3.505,
+        "log": 2.316
+      },
+      "timeout": {
+        "connect_s": 10.0,
+        "first_event_s": 120.0,
+        "idle_s": 60.0,
+        "total_s": 900.0
+      },
+      "min_successes": 5,
+      "max_consecutive_failures": 5,
+      "length_tolerance": 0.05,
+      "compare_tolerance": 0.02,
+      "metrics_interval_s": 1.0,
+      "output_sanity": {
+        "repeat_min_chars": 12,
+        "repeat_min_count": 8
+      },
+      "sandbox": {
+        "runtime": "auto",
+        "image": "bench-sandbox:py3.13-numpy2.5.3",
+        "image_digest": "sha256:f75a1d43009306248ecbe68c0cc992b700a472037ba6ea336e519404ec1d1de6",
+        "timeout_s": 20.0,
+        "memory_mb": 512,
+        "cpus": 1.0,
+        "pids_limit": 64
+      },
+      "decode": {
+        "trials": 10,
+        "warmup_trials": 1,
+        "max_tokens": 256
+      },
+      "prefill": {
+        "trials": 5,
+        "warmup_trials": 1,
+        "max_tokens": 16,
+        "target_input_tokens": [
+          8000,
+          32000
+        ]
+      },
+      "concurrency": {
+        "levels": [
+          2
+        ],
+        "rounds": 10,
+        "max_tokens": 128,
+        "input_tokens": 2000
+      },
+      "quality": {
+        "toolcall_tasks": 10,
+        "needle_lengths": [
+          8000,
+          32000
+        ],
+        "needle_depths": [
+          50
+        ],
+        "trials_per_cell": 1,
+        "code_max_tokens": 2048,
+        "code_problem_limit": 10
+      },
+      "agent": {
+        "start_tokens": 20000,
+        "end_tokens": 120000,
+        "step_tokens": 20000,
+        "trials_per_stage": 50,
+        "conversations_per_stage": 5,
+        "threshold": 0.01,
+        "max_tokens": 256
+      }
+    },
+    "harness_version": "0.1.0+gcd8a7337",
+    "generator_version": 1,
+    "context_limit": 163840,
+    "warnings": [],
+    "skipped": [],
+    "datasets": [],
+    "output_retokenization": {
+      "enabled": false,
+      "method": "/tokenize",
+      "block_join": "concat",
+      "add_special_tokens": false
+    }
+  },
+  "incomplete": false,
+  "results": [
+    {
+      "condition": "concurrency/c2",
+      "metric": "decode_tps",
+      "tier": "primary",
+      "continuous": {
+        "n": 20,
+        "mean": 25.335063990073195,
+        "median": 25.067114340844803,
+        "min": 18.295573341054716,
+        "max": 33.60769991802873,
+        "stdev": 5.031427772811519,
+        "iqr": 8.13121486677802,
+        "cv": 0.19859542390668272
+      },
+      "proportion": null,
+      "failures": 0,
+      "flags": [],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0
+      },
+      "count_source": null
+    },
+    {
+      "condition": "concurrency/c2",
+      "metric": "round_total_tps",
+      "tier": "primary",
+      "continuous": {
+        "n": 10,
+        "mean": 41.27021312194961,
+        "median": 43.25682811925838,
+        "min": 33.21917090753167,
+        "max": 48.35680027302703,
+        "stdev": 5.493690617051831,
+        "iqr": 9.103876907452893,
+        "cv": 0.13311515016456277
+      },
+      "proportion": null,
+      "failures": 0,
+      "flags": [],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0
+      },
+      "count_source": null
+    },
+    {
+      "condition": "concurrency/c2",
+      "metric": "ttft_s",
+      "tier": "primary",
+      "continuous": {
+        "n": 20,
+        "mean": 2.2645066438,
+        "median": 2.3429698125,
+        "min": 1.370292417,
+        "max": 4.321817709,
+        "stdev": 0.9019258575729451,
+        "iqr": 1.5061305102499998,
+        "cv": 0.398288015644525
+      },
+      "proportion": null,
+      "failures": 0,
+      "flags": [],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0
+      },
+      "count_source": null
+    },
+    {
+      "condition": "concurrency/c2",
+      "metric": "text_wait_s",
+      "tier": "primary",
+      "continuous": null,
+      "proportion": null,
+      "failures": 0,
+      "flags": [
+        "insufficient_trials"
+      ],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0
+      },
+      "count_source": null
+    },
+    {
+      "condition": "concurrency/c2",
+      "metric": "thinking_duration_s",
+      "tier": "primary",
+      "continuous": {
+        "n": 20,
+        "mean": 5.2051860604,
+        "median": 5.0827543545000005,
+        "min": 3.778834084,
+        "max": 6.94152,
+        "stdev": 1.0333422117567497,
+        "iqr": 1.65356413625,
+        "cv": 0.1985216666159559
+      },
+      "proportion": null,
+      "failures": 0,
+      "flags": [],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0
+      },
+      "count_source": null
+    },
+    {
+      "condition": "concurrency/c2",
+      "metric": "text_duration_s",
+      "tier": "primary",
+      "continuous": null,
+      "proportion": null,
+      "failures": 0,
+      "flags": [
+        "insufficient_trials"
+      ],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0
+      },
+      "count_source": null
+    },
+    {
+      "condition": "concurrency/c2",
+      "metric": "thinking_chars",
+      "tier": "primary",
+      "continuous": {
+        "n": 20,
+        "mean": 583.55,
+        "median": 599.0,
+        "min": 489.0,
+        "max": 711.0,
+        "stdev": 57.04889408033668,
+        "iqr": 86.0,
+        "cv": 0.09776179261474884
+      },
+      "proportion": null,
+      "failures": 0,
+      "flags": [],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0
+      },
+      "count_source": null
+    },
+    {
+      "condition": "concurrency/c2",
+      "metric": "text_chars",
+      "tier": "primary",
+      "continuous": {
+        "n": 20,
+        "mean": 0.0,
+        "median": 0.0,
+        "min": 0.0,
+        "max": 0.0,
+        "stdev": 0.0,
+        "iqr": 0.0,
+        "cv": null
+      },
+      "proportion": null,
+      "failures": 0,
+      "flags": [],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0
+      },
+      "count_source": null
+    },
+    {
+      "condition": "concurrency/c2",
+      "metric": "thinking_chars_per_s",
+      "tier": "primary",
+      "continuous": {
+        "n": 20,
+        "mean": 115.54360483008945,
+        "median": 116.7982510918616,
+        "min": 74.94592724133562,
+        "max": 147.67060638620273,
+        "stdev": 20.272105453191315,
+        "iqr": 23.976079595784682,
+        "cv": 0.1754498267818638
+      },
+      "proportion": null,
+      "failures": 0,
+      "flags": [],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0
+      },
+      "count_source": null
+    },
+    {
+      "condition": "concurrency/c2",
+      "metric": "text_chars_per_s",
+      "tier": "primary",
+      "continuous": null,
+      "proportion": null,
+      "failures": 0,
+      "flags": [
+        "insufficient_trials"
+      ],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0
+      },
+      "count_source": null
+    }
+  ],
+  "agent": null,
+  "server_metrics": {
+    "concurrency/c2": {
+      "spec_acceptance_rate": 0.6220419202163624,
+      "mean_acceptance_length": 2.866125760649087,
+      "decode_steps": 553.0,
+      "tokens_per_step": 5.092224231464738,
+      "prefix_cache_hit_rate": 0.0,
+      "kv_usage_peak": 0.07734806629834257,
+      "preemptions": 0.0,
+      "missing": []
+    }
+  },
+  "datasets": [],
+  "output_phases": {
+    "concurrency/c2": {
+      "requests": 20,
+      "request_successes": 20,
+      "request_failures": 0,
+      "text_arrived": 0,
+      "text_not_reached": 20,
+      "thinking_only": 20,
+      "no_text": 0,
+      "unknown": 0,
+      "text_speed_n": 0
+    }
+  },
+  "phase_warnings": [
+    "concurrency/c2: 本文未到達 20 件 (うち思考のみ 20 件)"
+  ],
+  "output_retokenization_counts": {}
+}
