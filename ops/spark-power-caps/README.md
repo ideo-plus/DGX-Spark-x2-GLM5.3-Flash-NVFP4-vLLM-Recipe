@@ -58,6 +58,22 @@ sudo systemctl disable --now spark-power-caps.service
 ```
 `disable --now` は `ExecStop`（`spark-power-caps-apply reset`）を実行してから止まるので、GPU とX925 の上限は既定に戻る。
 
+## 実機確認記録 (2026-09-29)
+
+GPU クロックの上限を上げると速くなるかを確かめるため、両台の上限を一時的に手で変えた
+（`sudo -n /usr/bin/nvidia-smi -lgc 300,2000`、続けて `300,2200`。下限は 300 MHz のまま）。
+`/etc/default/spark-power-caps` は変えていないので、サービスの既定は `300,1800` のままである。
+
+- 2000 MHz と 2200 MHz での起動は、worker のメモリ不足で落ちた。原因はクロックではなく、worker で動いていた
+  別の重みの取得だった（`ops/spark-drop-caches/README.md` の実機確認記録）。
+- 取得を止めたあと、2200 MHz で起動し、decode・同時処理・入力の処理を測った。続けて、X925 の上限も
+  `sudo -n /usr/bin/cpupower -c 5-9,15-19 frequency-set -u 3900MHz` で外して同じ計測をした。
+  実クロックは上限まで上がったが（GPU 2171〜2190 MHz、X925 3.9 GHz）、どの値も標準の上限のときと変わらなかった
+  （[記録](../../docs/results/2026-09-29-gpu-clock-2200.md)）。
+- このため、上限の既定は GPU 1800 MHz・X925 3.0 GHz のままにする。2000 MHz は測っていない。
+- 計測のあと、両台で `nvidia-smi -lgc 300,1800` と `cpupower ... -u 3000MHz` を流して、上限を標準に戻した
+  （17:40 JST）。
+
 ## 撤去（状態を変える。⚠ 了承）
 
 上の無効化のあと、4 つのファイル（unit、適用スクリプト、sudoers の断片、`/etc/default/spark-power-caps`）を手で削除し、`systemctl daemon-reload` する。この手順はこのリポジトリのコマンドでは自動化しない（この作業の範囲外）。
