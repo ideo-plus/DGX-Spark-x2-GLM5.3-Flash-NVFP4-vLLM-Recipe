@@ -23,9 +23,9 @@ MTP+Marlin の比較値も同じ Spark のクロック制限（GPU 約 1800 MHz�
 
 ## 記録
 
-- decode: `results/20260929T041916Z-miaai-exl3-dflash2-25kfbz/summary.md`
-- prefill: `results/20260929T042620Z-miaai-exl3-dflash2-58w8l9/summary.md`
-- concurrency: `results/20260929T044222Z-miaai-exl3-dflash2-npv4qy/summary.md`
+- decode: [`20260929T041916Z-miaai-exl3-dflash2-25kfbz`](20260929T041916Z-miaai-exl3-dflash2-25kfbz/summary.md)
+- prefill: [`20260929T042620Z-miaai-exl3-dflash2-58w8l9`](20260929T042620Z-miaai-exl3-dflash2-58w8l9/summary.md)
+- concurrency: [`20260929T044222Z-miaai-exl3-dflash2-npv4qy`](20260929T044222Z-miaai-exl3-dflash2-npv4qy/summary.md)
 
 ## 測定結果（中央値）
 
