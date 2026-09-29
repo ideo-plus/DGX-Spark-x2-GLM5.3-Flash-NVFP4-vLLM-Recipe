@@ -24,5 +24,28 @@ MTP+Marlin の比較値も同じ Spark のクロック制限（GPU 約 1800 MHz�
 ## 記録
 
 - decode: `results/20260929T041916Z-miaai-exl3-dflash2-25kfbz/summary.md`
-- prefill: 実行完了後に結果へのリンクを追記する
+- prefill: `results/20260929T042620Z-miaai-exl3-dflash2-58w8l9/summary.md`
 - concurrency: 実行完了後に結果へのリンクを追記する
+
+## 測定結果（中央値）
+
+### Decode
+
+| 条件 | 生成速度 | 投機の当たり率 | 平均の受理長 |
+|---|---:|---:|---:|
+| code / en | 34.212 tok/s | 0.430 | 4.009 |
+| code / ja | 31.765 tok/s | 0.389 | 3.720 |
+| prose / en | 33.423 tok/s | 0.405 | 3.835 |
+| prose / ja | 26.858 tok/s | 0.299 | 3.092 |
+
+各条件 10 回、失敗 0 回。
+
+### Prefill（cold）
+
+| 入力長 | 入力処理速度 | TTFT |
+|---:|---:|---:|
+| 8k | 1272.282 tok/s | 6.408 s |
+| 32k | 1340.999 tok/s | 24.142 s |
+| 128k | 1329.309 tok/s | 97.099 s |
+
+各条件 5 回、失敗 0 回。warm 条件はプレフィックスキャッシュが効くため、実効値として別扱いにする。
