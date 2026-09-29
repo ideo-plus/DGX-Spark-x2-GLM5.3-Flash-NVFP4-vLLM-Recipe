@@ -39,7 +39,7 @@ authors' own prompts and timing definitions, so they are reference values rather
 
 | Implementation | Code | Prose | Structured/JSON |
 |---|---:|---:|---:|
-| This recipe, JSON answer phase (retokenized) | — | — | **58.6 en / 58.9 ja** |
+| This recipe (code, thinking only; prose, thinking only) | **45.0** | **42.2–46.3** | **58.6 en / 58.9 ja** (JSON answer phase, retokenized) |
 | [tonyd2wild NVFP4 + DFlash2](https://github.com/tonyd2wild/GLM-5.3-Flash-NVFP4-DFlash2-2x-DGX-Spark) | 46.9 | — | 54–61 |
 | [MiaAI-Lab EXL3 + DFlash2](https://github.com/MiaAI-Lab/GLM-5.3-Flash-EXL3-2x-DGX-Sparks) | — | 36.1 | 62.9 |
 | [Entrpi EXL3](https://github.com/Entrpi/glm-5.3-flash-exl3-2x-spark) | 42 | 30 | 51–71 |
