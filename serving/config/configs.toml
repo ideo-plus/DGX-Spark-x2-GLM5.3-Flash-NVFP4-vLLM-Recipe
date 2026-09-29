@@ -1668,8 +1668,8 @@ quote = "Maximum number of sequences to be processed in a single iteration. …"
 
 [configs.glm53-tp2-mtp3-marlin.args.max-num-batched-tokens]
 flag = "--max-num-batched-tokens"
-value = "2048"
-why = "チャンク化した prefill の 1 回ぶん。小さいほど活性化のピークが下がる。128k の prefill ではチャンクの回数が増えるが、この構成ではメモリが先に効く"
+value = "8192"
+why = "prefill の 1 回ぶん。2048 では 32k の入力を 2,048 トークンずつ 15 回に分けて流し、そのたびに MoE の専門家の重みを読み直していた (cold prefill の GPU の時間の 6 割が Marlin の GEMM)。8192 にすると cold 32k が 1,326 → 1,565 tok/s (+18%)、cold 8k が +24% になり、decode は 2048 のときの範囲に収まった (コード・英語 45.0 → 43.1、散文・日本語 42.2 → 42.7)。KV キャッシュの容量は 1,143,729 → 983,040 トークン (最大の文脈長 163,840 の 6 本ぶん)。16384 は速くならず、cold 32k が不安定になった (5 試行で 19.6〜43.0 秒) ので選ばない (issue #126、docs/results/2026-09-30-prefill-profile-batched-tokens.md)"
 source = "https://github.com/vllm-project/vllm/blob/385dce36bcee42309924a5ece951a96db3dce7f2/vllm/config/scheduler.py"
 quote = "Maximum number of tokens that can be processed in a single iteration. …"
 

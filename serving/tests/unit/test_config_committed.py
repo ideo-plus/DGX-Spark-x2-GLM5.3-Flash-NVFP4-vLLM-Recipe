@@ -15,6 +15,8 @@
 - コミットした `glm53-tp2-mtp3-marlin` (重み `k2s4` + MTP N=3 + `--moe-backend marlin`) から、
   2 台ぶんの固定した引数の列ができ、`description` と `--moe-backend` の `why` が実測に基づく
   (issue #103)
+- `glm53-tp2-mtp3-marlin` の `--max-num-batched-tokens` は 8192 (issue #126。実測は
+  docs/results/2026-09-30-prefill-profile-batched-tokens.md)
 
 この試験は、Spark に 1 度も触らない (読み込みと、純粋な組み立てだけを流す)。
 """
@@ -88,9 +90,10 @@ MARLIN_WEIGHTS_LABEL = (
     "derived:k2s4:RedHatAI/GLM-5.3-Flash-NVFP4@18d55bfd5a2194887738da73753975c9d3842f46"
 )
 MARLIN_RESULTS_DOC = "docs/results/2026-09-28-k2-stage3.md"
+MARLIN_BATCHED_TOKENS_DOC = "docs/results/2026-09-30-prefill-profile-batched-tokens.md"
 
-MARLIN_CONFIG_SHA256 = "80a7fd6b1cb19309fef25fbbad7811a5569460016dec8e574430d91ef667ba72"
-"""`glm53-tp2-mtp3-marlin` の `config-sha256` (issue #103)。
+MARLIN_CONFIG_SHA256 = "9ada95a4dfc3c76e3308d6aa92b990717857bb0b9bbf8c9a7b1e88bacd3d3e4d"
+"""`glm53-tp2-mtp3-marlin` の `config-sha256` (issue #103、issue #126)。
 
 構成の値 (フラグ、値、イメージ、重み、ノードの値) を 1 つでも変えると変わるので、この
 1 行が、意図しない変更の見張りになる。`description` / `why` / 根拠 / `ready_timeout_s` を
@@ -100,6 +103,9 @@ Issue #103 が指す、実機で起動・計測した構成 (リポジトリの�
 `glm53-tp2-mtp3-marlin` に置き換え、この試験と同じ直結の値と `STARTED_AT` で
 `load_configs` → `select_config` → `build_plans` に通して求めた。構成名は `--name` を
 通じて値に効くので、置き換えてから求めている。
+
+issue #126 で `--max-num-batched-tokens` を 2048 → 8192 にしたので、この試験と同じ直結の
+値と `STARTED_AT` で `load_configs` → `select_config` → `build_plans` に通して求め直した。
 """
 
 FABRIC_HEAD_ADDR = "192.168.100.1"
@@ -408,8 +414,34 @@ _MARLIN_DOCKER_ARGV: tuple[str, ...] = (
     "/dev/infiniband",
 )
 
+# issue #126: --max-num-batched-tokens は 2048 → 8192 (cold 32k 1,326 → 1,565 tok/s。
+# 実測は docs/results/2026-09-30-prefill-profile-batched-tokens.md)。p1 用の _TAIL_ARGV と
+# 値が異なるので、展開ではなく同じ並びを明示のリテラルで持つ (p1 の固定 argv を壊さない)。
 _MARLIN_TAIL_ARGV: tuple[str, ...] = (
-    *_TAIL_ARGV,
+    "--master-addr",
+    FABRIC_HEAD_ADDR,
+    "--master-port",
+    "29501",
+    "--max-model-len",
+    "163840",
+    "--max-num-seqs",
+    "16",
+    "--max-num-batched-tokens",
+    # issue #126: 2048 → 8192。cold 32k 1,326 → 1,565 tok/s
+    # (docs/results/2026-09-30-prefill-profile-batched-tokens.md)
+    "8192",
+    "--gpu-memory-utilization",
+    "0.90",
+    "--language-model-only",
+    "--no-enable-flashinfer-autotune",
+    "--tool-call-parser",
+    "glm47",
+    "--reasoning-parser",
+    "glm47",
+    "--enable-auto-tool-choice",
+    "--enable-prompt-tokens-details",
+    "--shutdown-timeout",
+    "60",
     "--speculative-config",
     '{"method":"mtp","num_speculative_tokens":3}',
     "--load-format",
@@ -663,6 +695,45 @@ def test_the_marlin_config_records_the_measured_reason() -> None:
     assert "43.8" in moe_backend.why
     assert "45.0" in moe_backend.why
     assert MARLIN_RESULTS_DOC in moe_backend.why
+
+
+def test_the_marlin_config_records_the_batched_tokens_measurement() -> None:
+    """`glm53-tp2-mtp3-marlin` の `--max-num-batched-tokens` の理由が、実測に基づく (issue #126)。
+
+    採用理由 (cold 32k・cold 8k・KV キャッシュの容量の実測値、decode が 2048 のときの範囲に
+    収まったこと、16384 を選ばない理由) と記録の場所が `why` に入り、`source`/`quote` は
+    2048 のときの原文のまま、`measured` は付かない (`source`+`quote` と `measured` の併存は
+    `types.Provenance` が断るので、両方あると `load_configs` 自体が失敗する)。
+    """
+    config = _load_configs()[MARLIN_CONFIG]
+    setting = next(
+        setting for setting in config.args.values() if setting.flag == "--max-num-batched-tokens"
+    )
+    # cold 32k: 1,326 → 1,565 tok/s (+18%)
+    assert "1,565" in setting.why
+    assert "+18%" in setting.why
+    # cold 8k: +24%
+    assert "+24%" in setting.why
+    # decode はコード・英語 45.0 → 43.1、散文・日本語 42.2 → 42.7 (2048 の範囲内)
+    assert "43.1" in setting.why
+    assert "42.7" in setting.why
+    # KV キャッシュの容量: 1,143,729 → 983,040 トークン
+    assert "983,040" in setting.why
+    # 16384 は速くならず、cold 32k が不安定になった (5 試行で 19.6〜43.0 秒)
+    assert "16384" in setting.why
+    assert "19.6" in setting.why
+    assert "43.0" in setting.why
+    assert MARLIN_BATCHED_TOKENS_DOC in setting.why
+
+    assert setting.measured is None
+    assert setting.source is not None
+    assert str(setting.source) == (
+        "https://github.com/vllm-project/vllm/blob/"
+        "385dce36bcee42309924a5ece951a96db3dce7f2/vllm/config/scheduler.py"
+    )
+    assert setting.quote == (
+        "Maximum number of tokens that can be processed in a single iteration. …"
+    )
 
 
 def test_every_setting_carries_provenance() -> None:
