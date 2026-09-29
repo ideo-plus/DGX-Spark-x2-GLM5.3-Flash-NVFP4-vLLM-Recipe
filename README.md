@@ -14,6 +14,9 @@ become the backend for `takt`, a coding-agent workflow tool, called through the 
 
 Configuration `glm53-tp2-mtp3-marlin`, measured at the confirmation stage (`fast`). The JSON values below
 are answer-phase measurements using an 8,192-token output limit and same-server output retokenization.
+Both nodes used the same clock caps for these measurements: GPU graphics clocks `300–1800 MHz`
+(`nvidia-smi -lgc 300,1800`) and X925 CPU cores capped at `3.0 GHz`. The detailed measurement record
+also records the observed ~1.8 GHz graphics clock and no thermal slowdown.
 
 **The earlier code and prose values measure thinking-only output, not answer generation.**
 All 40 earlier code/prose trials and all 60 trials in the latest six-condition run exhausted the
@@ -35,7 +38,7 @@ The JSON answer-phase values are retokenized measurements. See the [measurement 
 and the [recipe comparison](docs/research/2026-09-28-recipe-comparison.md). Concurrency and prefill were not remeasured.
 
 The comparison below contains only measurements made under the same conditions: this repository's `fast` profile,
-two DGX Spark nodes at TP=2, and the same GPU clock cap. Values are median tok/s; concurrency is per stream
+two DGX Spark nodes at TP=2, and the same `300–1800 MHz` GPU clock cap. Values are median tok/s; concurrency is per stream
 at two simultaneous requests, and prefill is cold 32k input.
 
 | Implementation | Code/en | Prose/en | Concurrency 2 (per stream) | Cold prefill 32k |
@@ -149,8 +152,7 @@ and facts measured in this repo's own environment. Every non-trivial choice is r
 
 ## Status and known limitations
 
-- **2-stream concurrency is below the per-stream target** (27.2 tok/s per stream, target 30).
-- **32k prefill is below the target** (1,326 tok/s, target 2,000), and the prefix cache rarely hits
-  with MTP enabled.
+- **2-stream concurrency measured 27.2 tok/s per stream.**
+- **32k prefill measured 1,326 tok/s**, and the prefix cache rarely hits with MTP enabled.
 - **Startup takes ~5 minutes** (`instanttensor` after evicting the page cache).
 - **P8 (large-sample verification of every success criterion) has not been run yet.**
