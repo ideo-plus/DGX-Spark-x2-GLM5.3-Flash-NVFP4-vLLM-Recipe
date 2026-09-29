@@ -37,7 +37,7 @@ JSON 本文の値は再計数による速度で、配列の完成率とは別で
 
 | 実装 | コード | 散文 | 構造化・JSON |
 |---|---:|---:|---:|
-| 今の構成（JSON本文、再計数） | — | — | **58.6（英）／58.9（日）** |
+| 今の構成（コード・散文は思考のみ） | **45.0** | **42.2〜46.3** | **58.6（英）／58.9（日）**（JSON本文、再計数） |
 | [tonyd2wild NVFP4 + DFlash2](https://github.com/tonyd2wild/GLM-5.3-Flash-NVFP4-DFlash2-2x-DGX-Spark) | 46.9 | — | 54〜61 |
 | [MiaAI-Lab EXL3 + DFlash2](https://github.com/MiaAI-Lab/GLM-5.3-Flash-EXL3-2x-DGX-Sparks) | — | 36.1 | 62.9 |
 | [Entrpi EXL3](https://github.com/Entrpi/glm-5.3-flash-exl3-2x-spark) | 42 | 30 | 51〜71 |
