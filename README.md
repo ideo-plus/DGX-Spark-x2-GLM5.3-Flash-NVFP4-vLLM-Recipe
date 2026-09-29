@@ -40,7 +40,7 @@ at two simultaneous requests, and prefill is cold 32k input.
 
 | Implementation | Code/en | Prose/en | Concurrency 2 (per stream) | Cold prefill 32k |
 |---|---:|---:|---:|---:|
-| [This recipe: MTP N=3 + Marlin](docs/results/2026-09-28-k2-stage3.md) | **45.0** | **46.3** | **27.2** | **1,326** |
+| [This recipe: MTP N=3 + Marlin](docs/results/2026-09-28-k2-stage3.md) | **45.000** | **46.300** | **27.200** | **1,326.000** |
 | [MiaAI-Lab EXL3 + DFlash2](docs/results/2026-09-29-miaai-exl3-dflash2.md) | 34.212 | 33.423 | 22.675 | 1,340.999 |
 
 The mmastrac TP=2 result will be added after the same-condition measurement completes. Published values from

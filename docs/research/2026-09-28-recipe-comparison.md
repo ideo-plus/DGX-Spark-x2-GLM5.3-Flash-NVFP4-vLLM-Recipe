@@ -47,7 +47,7 @@ GitHub に公開されている GLM-5.3-Flash の DGX Spark（GB10）向けレ�
 
 | レシピ | 重み・推測 | code/en | prose/en | concurrency 2 本（1 本あたり） | cold prefill 32k |
 |---|---|---:|---:|---:|---:|
-| [現行構成（MTP N=3 + Marlin）](../results/2026-09-28-k2-stage3.md) | NVFP4、モデル付属 MTP `N=3` | 45.0 | 46.3 | 27.2 | 1326 |
+| [現行構成（MTP N=3 + Marlin）](../results/2026-09-28-k2-stage3.md) | NVFP4、モデル付属 MTP `N=3` | 45.000 | 46.300 | 27.200 | 1326.000 |
 | [MiaAI-Lab EXL3 + DFlash2](../results/2026-09-29-miaai-exl3-dflash2.md) | EXL3/TR3 4bpw、DFlash2 `k=7` | 34.212 | 33.423 | 22.675 | 1340.999 |
 
 MiaAI の全条件（英日、同時 1/2/4 本、8k/32k/128k prefill）は [実機測定条件と結果](../results/2026-09-29-miaai-exl3-dflash2.md) に記録している。mmastrac も同じ記録形式で追加する。
