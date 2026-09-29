@@ -43,14 +43,15 @@ GitHub に公開されている GLM-5.3-Flash の DGX Spark（GB10）向けレ�
 
 ## 同じ条件での実測比較（2 台 TP=2、tok/s）
 
-公開レシピに掲載された条件の異なる値は比較表から外した。以下は同じベンチマーク基盤・同じ `fast` プロファイル・同じ 2 台 TP=2・同じクロック条件で測った値だけを載せる。mmastrac の測定が完了したら、MiaAI と同じ列に追加する。
+公開レシピに掲載された条件の異なる値は比較表から外した。以下は同じベンチマーク基盤・同じ `fast` プロファイル・同じ 2 台 TP=2・同じクロック条件で測った値だけを載せる。
 
 | レシピ | 重み・推測 | code/en | prose/en | concurrency 2 本（1 本あたり） | cold prefill 32k |
 |---|---|---:|---:|---:|---:|
 | [現行構成（MTP N=3 + Marlin）](../results/2026-09-28-k2-stage3.md) | NVFP4、モデル付属 MTP `N=3` | 45.021 | 46.267 | 27.235 | 1326.033 |
 | [MiaAI-Lab EXL3 + DFlash2](../results/2026-09-29-miaai-exl3-dflash2.md) | EXL3/TR3 4bpw、DFlash2 `k=7` | 34.212 | 33.423 | 22.675 | 1340.999 |
+| [mmastrac NVFP4 + DFlash2](../results/2026-09-29-mmastrac-dflash2.md) | NVIDIA NVFP4、DFlash2 `k=7`（adaptive-k） | 48.638 | 47.050 | 32.105 | 測れず |
 
-MiaAI の全条件（英日、同時 1/2/4 本、8k/32k/128k prefill）は [実機測定条件と結果](../results/2026-09-29-miaai-exl3-dflash2.md) に記録している。mmastrac も同じ記録形式で追加する。
+MiaAI の全条件（英日、同時 1/2/4 本、8k/32k/128k prefill）は [実機測定条件と結果](../results/2026-09-29-miaai-exl3-dflash2.md) に記録している。mmastrac の全条件（英日、同時 1/2/4 本、8k prefill）は [実機測定の記録](../results/2026-09-29-mmastrac-dflash2.md) にある。mmastrac の cold 32k は、要求がサーバーの待ち行列から出ず、測れなかった。
 
 ## 比較から言えることと、訂正した点
 

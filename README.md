@@ -47,9 +47,11 @@ at two simultaneous requests, and prefill is cold 32k input.
 |---|---:|---:|---:|---:|
 | [This recipe: MTP N=3 + Marlin](docs/results/2026-09-28-k2-stage3.md) | **45.021** | **46.267** | **27.235** | **1,326.033** |
 | [MiaAI-Lab EXL3 + DFlash2](docs/results/2026-09-29-miaai-exl3-dflash2.md) | 34.212 | 33.423 | 22.675 | 1,340.999 |
+| [mmastrac NVFP4 + DFlash2](docs/results/2026-09-29-mmastrac-dflash2.md) | 48.638 | 47.050 | 32.105 | not measured |
 
-The mmastrac TP=2 result will be added after the same-condition measurement completes. Published values from
-other recipes are omitted because their prompts, sampling, thinking mode, and timing definitions differ.
+mmastrac's cold 32k prefill could not be measured: the requests never left the server's waiting queue (cold 8k was 2,772.774).
+MiaAI-Lab and mmastrac use the non-commercial DFlash2 drafter. Published values from other recipes are omitted
+because their prompts, sampling, thinking mode, and timing definitions differ.
 
 Quality checks at this stage (tool calls, HumanEval+, needle 8k/32k) found no breakage. These are
 small-sample numbers; the pass/fail judgment against every success criterion is made in phase
