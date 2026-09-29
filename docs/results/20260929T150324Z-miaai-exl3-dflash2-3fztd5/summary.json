@@ -1,0 +1,1553 @@
+{
+  "schema_version": 1,
+  "conditions": {
+    "schema_version": 1,
+    "run_id": "20260929T150324Z-miaai-exl3-dflash2-3fztd5",
+    "status": "completed",
+    "target": {
+      "name": "miaai-exl3-dflash2",
+      "base_url": "http://10.0.1.60:8888/",
+      "model": "GLM-5.3-Flash-EXL3",
+      "notes": "MiaAI-Lab EXL3/TR3 4bpw、DFlash2 k=7、FP8 KV、2 台 TP=2。2026-09-29 実機起動",
+      "api_key_env": null,
+      "metrics_url": null,
+      "max_context_tokens": 850000,
+      "metric_map": {},
+      "tool_markup_markers": [
+        "<tool_call>",
+        "</tool_call>",
+        "<arg_key>",
+        "<arg_value>"
+      ]
+    },
+    "server_model": "GLM-5.3-Flash-EXL3",
+    "server_version": "0.1.dev20051+g487ecf187",
+    "started_at": "2026-09-29T15:03:24.659660Z",
+    "finished_at": "2026-09-29T15:12:40.753981Z",
+    "suites": [
+      "decode"
+    ],
+    "profile_name": "fast",
+    "profile": {
+      "name": "fast",
+      "seed": 0,
+      "sampling": {
+        "temperature": 0.0,
+        "top_p": null,
+        "top_k": null,
+        "thinking": "server_default"
+      },
+      "chars_per_token": {
+        "prose_en": 4.831,
+        "prose_ja": 1.794,
+        "code": 3.505,
+        "log": 2.316
+      },
+      "timeout": {
+        "connect_s": 10.0,
+        "first_event_s": 120.0,
+        "idle_s": 60.0,
+        "total_s": 900.0
+      },
+      "min_successes": 5,
+      "max_consecutive_failures": 5,
+      "length_tolerance": 0.05,
+      "compare_tolerance": 0.02,
+      "metrics_interval_s": 1.0,
+      "output_sanity": {
+        "repeat_min_chars": 12,
+        "repeat_min_count": 8
+      },
+      "sandbox": {
+        "runtime": "auto",
+        "image": "bench-sandbox:py3.13-numpy2.5.3",
+        "image_digest": "sha256:f75a1d43009306248ecbe68c0cc992b700a472037ba6ea336e519404ec1d1de6",
+        "timeout_s": 20.0,
+        "memory_mb": 512,
+        "cpus": 1.0,
+        "pids_limit": 64
+      },
+      "decode": {
+        "trials": 10,
+        "warmup_trials": 1,
+        "max_tokens": 256
+      },
+      "prefill": {
+        "trials": 5,
+        "warmup_trials": 1,
+        "max_tokens": 16,
+        "target_input_tokens": [
+          8000,
+          32000,
+          128000
+        ]
+      },
+      "concurrency": {
+        "levels": [
+          1,
+          2,
+          4
+        ],
+        "rounds": 2,
+        "max_tokens": 128,
+        "input_tokens": 2000
+      },
+      "quality": {
+        "toolcall_tasks": 10,
+        "needle_lengths": [
+          8000,
+          32000
+        ],
+        "needle_depths": [
+          50
+        ],
+        "trials_per_cell": 1,
+        "code_max_tokens": 2048,
+        "code_problem_limit": 10
+      },
+      "agent": {
+        "start_tokens": 20000,
+        "end_tokens": 120000,
+        "step_tokens": 20000,
+        "trials_per_stage": 50,
+        "conversations_per_stage": 5,
+        "threshold": 0.01,
+        "max_tokens": 256
+      }
+    },
+    "harness_version": "0.1.0+g899c8f14",
+    "generator_version": 1,
+    "context_limit": 850000,
+    "warnings": [],
+    "skipped": [],
+    "datasets": [],
+    "output_retokenization": {
+      "enabled": false,
+      "method": "/tokenize",
+      "block_join": "concat",
+      "add_special_tokens": false
+    }
+  },
+  "incomplete": false,
+  "results": [
+    {
+      "condition": "decode/code/en",
+      "metric": "decode_tps",
+      "tier": "primary",
+      "continuous": {
+        "n": 10,
+        "mean": 34.724301996504266,
+        "median": 34.10869927971236,
+        "min": 31.886579312340594,
+        "max": 39.19328663462043,
+        "stdev": 2.188564968704952,
+        "iqr": 2.419387369792993,
+        "cv": 0.06302689594524542
+      },
+      "proportion": null,
+      "failures": 0,
+      "flags": [],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0
+      },
+      "count_source": null
+    },
+    {
+      "condition": "decode/code/en",
+      "metric": "ttft_s",
+      "tier": "primary",
+      "continuous": {
+        "n": 10,
+        "mean": 0.5484238580999999,
+        "median": 0.5473552495,
+        "min": 0.494265083,
+        "max": 0.603585125,
+        "stdev": 0.05397966978231193,
+        "iqr": 0.10175557325000001,
+        "cv": 0.09842691740166644
+      },
+      "proportion": null,
+      "failures": 0,
+      "flags": [],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0
+      },
+      "count_source": null
+    },
+    {
+      "condition": "decode/code/en",
+      "metric": "text_wait_s",
+      "tier": "primary",
+      "continuous": null,
+      "proportion": null,
+      "failures": 0,
+      "flags": [
+        "insufficient_trials"
+      ],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0
+      },
+      "count_source": null
+    },
+    {
+      "condition": "decode/code/en",
+      "metric": "thinking_duration_s",
+      "tier": "primary",
+      "continuous": {
+        "n": 10,
+        "mean": 7.3686543751,
+        "median": 7.476237312,
+        "min": 6.506177333,
+        "max": 7.99655775,
+        "stdev": 0.445565073195525,
+        "iqr": 0.5134317290000006,
+        "cv": 0.06046763092881233
+      },
+      "proportion": null,
+      "failures": 0,
+      "flags": [],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0
+      },
+      "count_source": null
+    },
+    {
+      "condition": "decode/code/en",
+      "metric": "text_duration_s",
+      "tier": "primary",
+      "continuous": null,
+      "proportion": null,
+      "failures": 0,
+      "flags": [
+        "insufficient_trials"
+      ],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0
+      },
+      "count_source": null
+    },
+    {
+      "condition": "decode/code/en",
+      "metric": "thinking_chars",
+      "tier": "primary",
+      "continuous": {
+        "n": 10,
+        "mean": 1125.8,
+        "median": 1120.5,
+        "min": 1060.0,
+        "max": 1190.0,
+        "stdev": 35.823021772163344,
+        "iqr": 27.5,
+        "cv": 0.03182005842260024
+      },
+      "proportion": null,
+      "failures": 0,
+      "flags": [],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0
+      },
+      "count_source": null
+    },
+    {
+      "condition": "decode/code/en",
+      "metric": "text_chars",
+      "tier": "primary",
+      "continuous": {
+        "n": 10,
+        "mean": 0.0,
+        "median": 0.0,
+        "min": 0.0,
+        "max": 0.0,
+        "stdev": 0.0,
+        "iqr": 0.0,
+        "cv": null
+      },
+      "proportion": null,
+      "failures": 0,
+      "flags": [],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0
+      },
+      "count_source": null
+    },
+    {
+      "condition": "decode/code/en",
+      "metric": "thinking_chars_per_s",
+      "tier": "primary",
+      "continuous": {
+        "n": 10,
+        "mean": 153.2814895493368,
+        "median": 151.60532186669272,
+        "min": 139.93521149772226,
+        "max": 169.99229246185072,
+        "stdev": 10.373655764898958,
+        "iqr": 12.646604570827122,
+        "cv": 0.06767715916252225
+      },
+      "proportion": null,
+      "failures": 0,
+      "flags": [],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0
+      },
+      "count_source": null
+    },
+    {
+      "condition": "decode/code/en",
+      "metric": "text_chars_per_s",
+      "tier": "primary",
+      "continuous": null,
+      "proportion": null,
+      "failures": 0,
+      "flags": [
+        "insufficient_trials"
+      ],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0
+      },
+      "count_source": null
+    },
+    {
+      "condition": "decode/code/ja",
+      "metric": "decode_tps",
+      "tier": "primary",
+      "continuous": {
+        "n": 10,
+        "mean": 33.609049582276725,
+        "median": 33.14239813847502,
+        "min": 29.843895650883457,
+        "max": 37.09781828031841,
+        "stdev": 2.2553292896746266,
+        "iqr": 2.829126209794474,
+        "cv": 0.06710482199603597
+      },
+      "proportion": null,
+      "failures": 0,
+      "flags": [],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0
+      },
+      "count_source": null
+    },
+    {
+      "condition": "decode/code/ja",
+      "metric": "ttft_s",
+      "tier": "primary",
+      "continuous": {
+        "n": 10,
+        "mean": 0.5729383835,
+        "median": 0.569239104,
+        "min": 0.512858,
+        "max": 0.63676525,
+        "stdev": 0.05438755329103915,
+        "iqr": 0.10207278125000008,
+        "cv": 0.09492740381398997
+      },
+      "proportion": null,
+      "failures": 0,
+      "flags": [],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0
+      },
+      "count_source": null
+    },
+    {
+      "condition": "decode/code/ja",
+      "metric": "text_wait_s",
+      "tier": "primary",
+      "continuous": null,
+      "proportion": null,
+      "failures": 0,
+      "flags": [
+        "insufficient_trials"
+      ],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0
+      },
+      "count_source": null
+    },
+    {
+      "condition": "decode/code/ja",
+      "metric": "thinking_duration_s",
+      "tier": "primary",
+      "continuous": {
+        "n": 10,
+        "mean": 7.617904416500001,
+        "median": 7.694562229000001,
+        "min": 6.873668,
+        "max": 8.544422792,
+        "stdev": 0.5112146935127605,
+        "iqr": 0.6272103232499999,
+        "cv": 0.06710699761544592
+      },
+      "proportion": null,
+      "failures": 0,
+      "flags": [],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0
+      },
+      "count_source": null
+    },
+    {
+      "condition": "decode/code/ja",
+      "metric": "text_duration_s",
+      "tier": "primary",
+      "continuous": null,
+      "proportion": null,
+      "failures": 0,
+      "flags": [
+        "insufficient_trials"
+      ],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0
+      },
+      "count_source": null
+    },
+    {
+      "condition": "decode/code/ja",
+      "metric": "thinking_chars",
+      "tier": "primary",
+      "continuous": {
+        "n": 10,
+        "mean": 1040.4,
+        "median": 1033.0,
+        "min": 918.0,
+        "max": 1166.0,
+        "stdev": 100.16564059374629,
+        "iqr": 183.25,
+        "cv": 0.09627608669141319
+      },
+      "proportion": null,
+      "failures": 0,
+      "flags": [],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0
+      },
+      "count_source": null
+    },
+    {
+      "condition": "decode/code/ja",
+      "metric": "text_chars",
+      "tier": "primary",
+      "continuous": {
+        "n": 10,
+        "mean": 0.0,
+        "median": 0.0,
+        "min": 0.0,
+        "max": 0.0,
+        "stdev": 0.0,
+        "iqr": 0.0,
+        "cv": null
+      },
+      "proportion": null,
+      "failures": 0,
+      "flags": [],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0
+      },
+      "count_source": null
+    },
+    {
+      "condition": "decode/code/ja",
+      "metric": "thinking_chars_per_s",
+      "tier": "primary",
+      "continuous": {
+        "n": 10,
+        "mean": 136.89588255936874,
+        "median": 134.72310458397953,
+        "min": 114.25194542173367,
+        "max": 162.2022153407552,
+        "stdev": 13.718220556300802,
+        "iqr": 13.487964824142097,
+        "cv": 0.10020915384618313
+      },
+      "proportion": null,
+      "failures": 0,
+      "flags": [],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0
+      },
+      "count_source": null
+    },
+    {
+      "condition": "decode/code/ja",
+      "metric": "text_chars_per_s",
+      "tier": "primary",
+      "continuous": null,
+      "proportion": null,
+      "failures": 0,
+      "flags": [
+        "insufficient_trials"
+      ],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0
+      },
+      "count_source": null
+    },
+    {
+      "condition": "decode/prose/en",
+      "metric": "decode_tps",
+      "tier": "primary",
+      "continuous": {
+        "n": 10,
+        "mean": 33.97286596375737,
+        "median": 34.03625438580379,
+        "min": 29.789326960382137,
+        "max": 39.52356920766635,
+        "stdev": 2.859184374120179,
+        "iqr": 3.1148350304664376,
+        "cv": 0.08416082343981189
+      },
+      "proportion": null,
+      "failures": 0,
+      "flags": [],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0
+      },
+      "count_source": null
+    },
+    {
+      "condition": "decode/prose/en",
+      "metric": "ttft_s",
+      "tier": "primary",
+      "continuous": {
+        "n": 10,
+        "mean": 0.5537307292,
+        "median": 0.561549979,
+        "min": 0.471639,
+        "max": 0.578166333,
+        "stdev": 0.030181108638590377,
+        "iqr": 0.013360261000000095,
+        "cv": 0.054505027528803394
+      },
+      "proportion": null,
+      "failures": 0,
+      "flags": [],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0
+      },
+      "count_source": null
+    },
+    {
+      "condition": "decode/prose/en",
+      "metric": "text_wait_s",
+      "tier": "primary",
+      "continuous": null,
+      "proportion": null,
+      "failures": 0,
+      "flags": [
+        "insufficient_trials"
+      ],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0
+      },
+      "count_source": null
+    },
+    {
+      "condition": "decode/prose/en",
+      "metric": "thinking_duration_s",
+      "tier": "primary",
+      "continuous": {
+        "n": 10,
+        "mean": 7.552928983399999,
+        "median": 7.497327708,
+        "min": 6.451716375,
+        "max": 8.560075208,
+        "stdev": 0.6230859078709197,
+        "iqr": 0.7044905517500002,
+        "cv": 0.0824959309481596
+      },
+      "proportion": null,
+      "failures": 0,
+      "flags": [],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0
+      },
+      "count_source": null
+    },
+    {
+      "condition": "decode/prose/en",
+      "metric": "text_duration_s",
+      "tier": "primary",
+      "continuous": null,
+      "proportion": null,
+      "failures": 0,
+      "flags": [
+        "insufficient_trials"
+      ],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0
+      },
+      "count_source": null
+    },
+    {
+      "condition": "decode/prose/en",
+      "metric": "thinking_chars",
+      "tier": "primary",
+      "continuous": {
+        "n": 10,
+        "mean": 1112.9,
+        "median": 1107.0,
+        "min": 1034.0,
+        "max": 1191.0,
+        "stdev": 42.43020412656793,
+        "iqr": 42.0,
+        "cv": 0.03812580117402096
+      },
+      "proportion": null,
+      "failures": 0,
+      "flags": [],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0
+      },
+      "count_source": null
+    },
+    {
+      "condition": "decode/prose/en",
+      "metric": "text_chars",
+      "tier": "primary",
+      "continuous": {
+        "n": 10,
+        "mean": 0.0,
+        "median": 0.0,
+        "min": 0.0,
+        "max": 0.0,
+        "stdev": 0.0,
+        "iqr": 0.0,
+        "cv": null
+      },
+      "proportion": null,
+      "failures": 0,
+      "flags": [],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0
+      },
+      "count_source": null
+    },
+    {
+      "condition": "decode/prose/en",
+      "metric": "thinking_chars_per_s",
+      "tier": "primary",
+      "continuous": {
+        "n": 10,
+        "mean": 148.26612356147473,
+        "median": 147.00998014249018,
+        "min": 120.79333123541406,
+        "max": 171.11725560006502,
+        "stdev": 13.349991789987694,
+        "iqr": 12.963608851385914,
+        "cv": 0.09004074207452024
+      },
+      "proportion": null,
+      "failures": 0,
+      "flags": [],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0
+      },
+      "count_source": null
+    },
+    {
+      "condition": "decode/prose/en",
+      "metric": "text_chars_per_s",
+      "tier": "primary",
+      "continuous": null,
+      "proportion": null,
+      "failures": 0,
+      "flags": [
+        "insufficient_trials"
+      ],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0
+      },
+      "count_source": null
+    },
+    {
+      "condition": "decode/prose/ja",
+      "metric": "decode_tps",
+      "tier": "primary",
+      "continuous": {
+        "n": 10,
+        "mean": 30.171017501110434,
+        "median": 30.36543921430015,
+        "min": 27.9046467771824,
+        "max": 32.68162977424984,
+        "stdev": 1.7861007946119813,
+        "iqr": 3.0220786008011125,
+        "cv": 0.05919922304729181
+      },
+      "proportion": null,
+      "failures": 0,
+      "flags": [],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0
+      },
+      "count_source": null
+    },
+    {
+      "condition": "decode/prose/ja",
+      "metric": "ttft_s",
+      "tier": "primary",
+      "continuous": {
+        "n": 10,
+        "mean": 0.567341471,
+        "median": 0.580103729,
+        "min": 0.494099084,
+        "max": 0.595194042,
+        "stdev": 0.03664256270350145,
+        "iqr": 0.018728604499999912,
+        "cv": 0.06458643440768576
+      },
+      "proportion": null,
+      "failures": 0,
+      "flags": [],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0
+      },
+      "count_source": null
+    },
+    {
+      "condition": "decode/prose/ja",
+      "metric": "text_wait_s",
+      "tier": "primary",
+      "continuous": null,
+      "proportion": null,
+      "failures": 0,
+      "flags": [
+        "insufficient_trials"
+      ],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0
+      },
+      "count_source": null
+    },
+    {
+      "condition": "decode/prose/ja",
+      "metric": "thinking_duration_s",
+      "tier": "primary",
+      "continuous": {
+        "n": 10,
+        "mean": 8.4785818332,
+        "median": 8.402474125,
+        "min": 7.802485833,
+        "max": 9.138225833,
+        "stdev": 0.5043982241255619,
+        "iqr": 0.851251094000002,
+        "cv": 0.05949087171046282
+      },
+      "proportion": null,
+      "failures": 0,
+      "flags": [],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0
+      },
+      "count_source": null
+    },
+    {
+      "condition": "decode/prose/ja",
+      "metric": "text_duration_s",
+      "tier": "primary",
+      "continuous": null,
+      "proportion": null,
+      "failures": 0,
+      "flags": [
+        "insufficient_trials"
+      ],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0
+      },
+      "count_source": null
+    },
+    {
+      "condition": "decode/prose/ja",
+      "metric": "thinking_chars",
+      "tier": "primary",
+      "continuous": {
+        "n": 10,
+        "mean": 889.5,
+        "median": 881.5,
+        "min": 699.0,
+        "max": 1187.0,
+        "stdev": 152.74906800952266,
+        "iqr": 193.25,
+        "cv": 0.17172464082014913
+      },
+      "proportion": null,
+      "failures": 0,
+      "flags": [],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0
+      },
+      "count_source": null
+    },
+    {
+      "condition": "decode/prose/ja",
+      "metric": "text_chars",
+      "tier": "primary",
+      "continuous": {
+        "n": 10,
+        "mean": 0.0,
+        "median": 0.0,
+        "min": 0.0,
+        "max": 0.0,
+        "stdev": 0.0,
+        "iqr": 0.0,
+        "cv": null
+      },
+      "proportion": null,
+      "failures": 0,
+      "flags": [],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0
+      },
+      "count_source": null
+    },
+    {
+      "condition": "decode/prose/ja",
+      "metric": "thinking_chars_per_s",
+      "tier": "primary",
+      "continuous": {
+        "n": 10,
+        "mean": 105.7809369900511,
+        "median": 102.1091420622196,
+        "min": 81.23972951344331,
+        "max": 148.09636747711457,
+        "stdev": 22.63099477068704,
+        "iqr": 29.186340518749603,
+        "cv": 0.21394209027299055
+      },
+      "proportion": null,
+      "failures": 0,
+      "flags": [],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0
+      },
+      "count_source": null
+    },
+    {
+      "condition": "decode/prose/ja",
+      "metric": "text_chars_per_s",
+      "tier": "primary",
+      "continuous": null,
+      "proportion": null,
+      "failures": 0,
+      "flags": [
+        "insufficient_trials"
+      ],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0
+      },
+      "count_source": null
+    },
+    {
+      "condition": "decode/json/en",
+      "metric": "decode_tps",
+      "tier": "primary",
+      "continuous": {
+        "n": 10,
+        "mean": 35.33122041807976,
+        "median": 34.556198156653224,
+        "min": 31.847655141504504,
+        "max": 39.70373204689762,
+        "stdev": 2.468420930637717,
+        "iqr": 2.4926559995291697,
+        "cv": 0.06986514763510893
+      },
+      "proportion": null,
+      "failures": 0,
+      "flags": [],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0
+      },
+      "count_source": null
+    },
+    {
+      "condition": "decode/json/en",
+      "metric": "ttft_s",
+      "tier": "primary",
+      "continuous": {
+        "n": 10,
+        "mean": 0.5566505418000001,
+        "median": 0.5577859585,
+        "min": 0.499475459,
+        "max": 0.622830041,
+        "stdev": 0.054456392668129794,
+        "iqr": 0.10369893824999998,
+        "cv": 0.09782868887909127
+      },
+      "proportion": null,
+      "failures": 0,
+      "flags": [],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0
+      },
+      "count_source": null
+    },
+    {
+      "condition": "decode/json/en",
+      "metric": "text_wait_s",
+      "tier": "primary",
+      "continuous": null,
+      "proportion": null,
+      "failures": 0,
+      "flags": [
+        "insufficient_trials"
+      ],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0
+      },
+      "count_source": null
+    },
+    {
+      "condition": "decode/json/en",
+      "metric": "thinking_duration_s",
+      "tier": "primary",
+      "continuous": {
+        "n": 10,
+        "mean": 7.2479802749,
+        "median": 7.3792646665,
+        "min": 6.422523375,
+        "max": 8.006757958,
+        "stdev": 0.48879774963839806,
+        "iqr": 0.5103517812499998,
+        "cv": 0.06743916665048347
+      },
+      "proportion": null,
+      "failures": 0,
+      "flags": [],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0
+      },
+      "count_source": null
+    },
+    {
+      "condition": "decode/json/en",
+      "metric": "text_duration_s",
+      "tier": "primary",
+      "continuous": null,
+      "proportion": null,
+      "failures": 0,
+      "flags": [
+        "insufficient_trials"
+      ],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0
+      },
+      "count_source": null
+    },
+    {
+      "condition": "decode/json/en",
+      "metric": "thinking_chars",
+      "tier": "primary",
+      "continuous": {
+        "n": 10,
+        "mean": 1033.5,
+        "median": 1046.0,
+        "min": 968.0,
+        "max": 1085.0,
+        "stdev": 36.12401478856474,
+        "iqr": 51.5,
+        "cv": 0.03495308639435389
+      },
+      "proportion": null,
+      "failures": 0,
+      "flags": [],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0
+      },
+      "count_source": null
+    },
+    {
+      "condition": "decode/json/en",
+      "metric": "text_chars",
+      "tier": "primary",
+      "continuous": {
+        "n": 10,
+        "mean": 0.0,
+        "median": 0.0,
+        "min": 0.0,
+        "max": 0.0,
+        "stdev": 0.0,
+        "iqr": 0.0,
+        "cv": null
+      },
+      "proportion": null,
+      "failures": 0,
+      "flags": [],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0
+      },
+      "count_source": null
+    },
+    {
+      "condition": "decode/json/en",
+      "metric": "thinking_chars_per_s",
+      "tier": "primary",
+      "continuous": {
+        "n": 10,
+        "mean": 143.23542800841525,
+        "median": 143.58741511856635,
+        "min": 120.89787215720904,
+        "max": 163.48714340023713,
+        "stdev": 11.522844291787312,
+        "iqr": 12.973361925527001,
+        "cv": 0.08044688700277651
+      },
+      "proportion": null,
+      "failures": 0,
+      "flags": [],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0
+      },
+      "count_source": null
+    },
+    {
+      "condition": "decode/json/en",
+      "metric": "text_chars_per_s",
+      "tier": "primary",
+      "continuous": null,
+      "proportion": null,
+      "failures": 0,
+      "flags": [
+        "insufficient_trials"
+      ],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0
+      },
+      "count_source": null
+    },
+    {
+      "condition": "decode/json/ja",
+      "metric": "decode_tps",
+      "tier": "primary",
+      "continuous": {
+        "n": 10,
+        "mean": 28.34771019764897,
+        "median": 27.550933293492527,
+        "min": 24.32342157503381,
+        "max": 33.27880684355297,
+        "stdev": 2.8562713834991924,
+        "iqr": 3.8969664768548675,
+        "cv": 0.10075845151458049
+      },
+      "proportion": null,
+      "failures": 0,
+      "flags": [],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0
+      },
+      "count_source": null
+    },
+    {
+      "condition": "decode/json/ja",
+      "metric": "ttft_s",
+      "tier": "primary",
+      "continuous": {
+        "n": 10,
+        "mean": 0.5669079501,
+        "median": 0.529087,
+        "min": 0.525245875,
+        "max": 0.642553959,
+        "stdev": 0.05189142308074971,
+        "iqr": 0.09524091724999995,
+        "cv": 0.09153412484618764
+      },
+      "proportion": null,
+      "failures": 0,
+      "flags": [],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0
+      },
+      "count_source": null
+    },
+    {
+      "condition": "decode/json/ja",
+      "metric": "text_wait_s",
+      "tier": "primary",
+      "continuous": null,
+      "proportion": null,
+      "failures": 0,
+      "flags": [
+        "insufficient_trials"
+      ],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0
+      },
+      "count_source": null
+    },
+    {
+      "condition": "decode/json/ja",
+      "metric": "thinking_duration_s",
+      "tier": "primary",
+      "continuous": {
+        "n": 10,
+        "mean": 9.0761845372,
+        "median": 9.258198833000002,
+        "min": 7.662402666,
+        "max": 10.48346575,
+        "stdev": 0.8951761103319875,
+        "iqr": 1.2589893954999987,
+        "cv": 0.0986291218146771
+      },
+      "proportion": null,
+      "failures": 0,
+      "flags": [],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0
+      },
+      "count_source": null
+    },
+    {
+      "condition": "decode/json/ja",
+      "metric": "text_duration_s",
+      "tier": "primary",
+      "continuous": null,
+      "proportion": null,
+      "failures": 0,
+      "flags": [
+        "insufficient_trials"
+      ],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0
+      },
+      "count_source": null
+    },
+    {
+      "condition": "decode/json/ja",
+      "metric": "thinking_chars",
+      "tier": "primary",
+      "continuous": {
+        "n": 10,
+        "mean": 850.8,
+        "median": 852.5,
+        "min": 760.0,
+        "max": 961.0,
+        "stdev": 65.81928120070727,
+        "iqr": 96.25,
+        "cv": 0.07736163751846177
+      },
+      "proportion": null,
+      "failures": 0,
+      "flags": [],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0
+      },
+      "count_source": null
+    },
+    {
+      "condition": "decode/json/ja",
+      "metric": "text_chars",
+      "tier": "primary",
+      "continuous": {
+        "n": 10,
+        "mean": 0.0,
+        "median": 0.0,
+        "min": 0.0,
+        "max": 0.0,
+        "stdev": 0.0,
+        "iqr": 0.0,
+        "cv": null
+      },
+      "proportion": null,
+      "failures": 0,
+      "flags": [],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0
+      },
+      "count_source": null
+    },
+    {
+      "condition": "decode/json/ja",
+      "metric": "thinking_chars_per_s",
+      "tier": "primary",
+      "continuous": {
+        "n": 10,
+        "mean": 94.91267610189296,
+        "median": 92.1958294890289,
+        "min": 72.49510973983007,
+        "max": 115.33682646829106,
+        "stdev": 14.524632337056829,
+        "iqr": 22.10105939145612,
+        "cv": 0.15303153312697657
+      },
+      "proportion": null,
+      "failures": 0,
+      "flags": [],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0
+      },
+      "count_source": null
+    },
+    {
+      "condition": "decode/json/ja",
+      "metric": "text_chars_per_s",
+      "tier": "primary",
+      "continuous": null,
+      "proportion": null,
+      "failures": 0,
+      "flags": [
+        "insufficient_trials"
+      ],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0
+      },
+      "count_source": null
+    }
+  ],
+  "agent": null,
+  "server_metrics": {
+    "decode/code/en": {
+      "spec_acceptance_rate": 0.4184664156924906,
+      "mean_acceptance_length": 3.929264909847434,
+      "decode_steps": 732.0,
+      "tokens_per_step": 3.8469945355191255,
+      "prefix_cache_hit_rate": 0.0,
+      "kv_usage_peak": 0.0808314087759815,
+      "preemptions": 0.0,
+      "missing": []
+    },
+    "decode/code/ja": {
+      "spec_acceptance_rate": 0.3879164313946923,
+      "mean_acceptance_length": 3.7154150197628457,
+      "decode_steps": 770.0,
+      "tokens_per_step": 3.657142857142857,
+      "prefix_cache_hit_rate": 0.0,
+      "kv_usage_peak": 0.0808314087759815,
+      "preemptions": 0.0,
+      "missing": []
+    },
+    "decode/prose/en": {
+      "spec_acceptance_rate": 0.37720913107511045,
+      "mean_acceptance_length": 3.640463917525773,
+      "decode_steps": 787.0,
+      "tokens_per_step": 3.5781448538754765,
+      "prefix_cache_hit_rate": 0.0,
+      "kv_usage_peak": 0.0808314087759815,
+      "preemptions": 0.0,
+      "missing": []
+    },
+    "decode/prose/ja": {
+      "spec_acceptance_rate": 0.3145775904005189,
+      "mean_acceptance_length": 3.2020431328036323,
+      "decode_steps": 892.0,
+      "tokens_per_step": 3.1569506726457397,
+      "prefix_cache_hit_rate": 0.0,
+      "kv_usage_peak": 0.0808314087759815,
+      "preemptions": 0.0,
+      "missing": []
+    },
+    "decode/json/en": {
+      "spec_acceptance_rate": 0.4279661016949153,
+      "mean_acceptance_length": 3.9957627118644066,
+      "decode_steps": 719.0,
+      "tokens_per_step": 3.9165507649513214,
+      "prefix_cache_hit_rate": 0.0,
+      "kv_usage_peak": 0.0808314087759815,
+      "preemptions": 0.0,
+      "missing": []
+    },
+    "decode/json/ja": {
+      "spec_acceptance_rate": 0.3012901195720579,
+      "mean_acceptance_length": 3.109030837004405,
+      "decode_steps": 919.0,
+      "tokens_per_step": 3.064200217627856,
+      "prefix_cache_hit_rate": 0.0,
+      "kv_usage_peak": 0.0808314087759815,
+      "preemptions": 0.0,
+      "missing": []
+    }
+  },
+  "datasets": [],
+  "output_phases": {
+    "decode/code/en": {
+      "requests": 10,
+      "request_successes": 10,
+      "request_failures": 0,
+      "text_arrived": 0,
+      "text_not_reached": 10,
+      "thinking_only": 10,
+      "no_text": 0,
+      "unknown": 0,
+      "text_speed_n": 0
+    },
+    "decode/code/ja": {
+      "requests": 10,
+      "request_successes": 10,
+      "request_failures": 0,
+      "text_arrived": 0,
+      "text_not_reached": 10,
+      "thinking_only": 10,
+      "no_text": 0,
+      "unknown": 0,
+      "text_speed_n": 0
+    },
+    "decode/prose/en": {
+      "requests": 10,
+      "request_successes": 10,
+      "request_failures": 0,
+      "text_arrived": 0,
+      "text_not_reached": 10,
+      "thinking_only": 10,
+      "no_text": 0,
+      "unknown": 0,
+      "text_speed_n": 0
+    },
+    "decode/prose/ja": {
+      "requests": 10,
+      "request_successes": 10,
+      "request_failures": 0,
+      "text_arrived": 0,
+      "text_not_reached": 10,
+      "thinking_only": 10,
+      "no_text": 0,
+      "unknown": 0,
+      "text_speed_n": 0
+    },
+    "decode/json/en": {
+      "requests": 10,
+      "request_successes": 10,
+      "request_failures": 0,
+      "text_arrived": 0,
+      "text_not_reached": 10,
+      "thinking_only": 10,
+      "no_text": 0,
+      "unknown": 0,
+      "text_speed_n": 0
+    },
+    "decode/json/ja": {
+      "requests": 10,
+      "request_successes": 10,
+      "request_failures": 0,
+      "text_arrived": 0,
+      "text_not_reached": 10,
+      "thinking_only": 10,
+      "no_text": 0,
+      "unknown": 0,
+      "text_speed_n": 0
+    }
+  },
+  "phase_warnings": [
+    "decode/code/en: 本文未到達 10 件 (うち思考のみ 10 件)",
+    "decode/code/ja: 本文未到達 10 件 (うち思考のみ 10 件)",
+    "decode/prose/en: 本文未到達 10 件 (うち思考のみ 10 件)",
+    "decode/prose/ja: 本文未到達 10 件 (うち思考のみ 10 件)",
+    "decode/json/en: 本文未到達 10 件 (うち思考のみ 10 件)",
+    "decode/json/ja: 本文未到達 10 件 (うち思考のみ 10 件)"
+  ],
+  "output_retokenization_counts": {}
+}

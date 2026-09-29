@@ -1,0 +1,388 @@
+{
+  "schema_version": 1,
+  "conditions": {
+    "schema_version": 1,
+    "run_id": "20260929T151425Z-miaai-exl3-dflash2-zqn1zn",
+    "status": "completed",
+    "target": {
+      "name": "miaai-exl3-dflash2",
+      "base_url": "http://10.0.1.60:8888/",
+      "model": "GLM-5.3-Flash-EXL3",
+      "notes": "MiaAI-Lab EXL3/TR3 4bpw、DFlash2 k=7、FP8 KV、2 台 TP=2。2026-09-29 実機起動",
+      "api_key_env": null,
+      "metrics_url": null,
+      "max_context_tokens": 850000,
+      "metric_map": {},
+      "tool_markup_markers": [
+        "<tool_call>",
+        "</tool_call>",
+        "<arg_key>",
+        "<arg_value>"
+      ]
+    },
+    "server_model": "GLM-5.3-Flash-EXL3",
+    "server_version": "0.1.dev20051+g487ecf187",
+    "started_at": "2026-09-29T15:14:25.286674Z",
+    "finished_at": "2026-09-29T15:17:31.486431Z",
+    "suites": [
+      "prefill"
+    ],
+    "profile_name": "p32",
+    "profile": {
+      "name": "p32",
+      "seed": 0,
+      "sampling": {
+        "temperature": 0.0,
+        "top_p": null,
+        "top_k": null,
+        "thinking": "server_default"
+      },
+      "chars_per_token": {
+        "prose_en": 4.831,
+        "prose_ja": 1.794,
+        "code": 3.505,
+        "log": 2.316
+      },
+      "timeout": {
+        "connect_s": 10.0,
+        "first_event_s": 120.0,
+        "idle_s": 60.0,
+        "total_s": 900.0
+      },
+      "min_successes": 5,
+      "max_consecutive_failures": 5,
+      "length_tolerance": 0.05,
+      "compare_tolerance": 0.02,
+      "metrics_interval_s": 1.0,
+      "output_sanity": {
+        "repeat_min_chars": 12,
+        "repeat_min_count": 8
+      },
+      "sandbox": {
+        "runtime": "auto",
+        "image": "bench-sandbox:py3.13-numpy2.5.3",
+        "image_digest": "sha256:f75a1d43009306248ecbe68c0cc992b700a472037ba6ea336e519404ec1d1de6",
+        "timeout_s": 20.0,
+        "memory_mb": 512,
+        "cpus": 1.0,
+        "pids_limit": 64
+      },
+      "decode": {
+        "trials": 10,
+        "warmup_trials": 1,
+        "max_tokens": 256
+      },
+      "prefill": {
+        "trials": 5,
+        "warmup_trials": 1,
+        "max_tokens": 16,
+        "target_input_tokens": [
+          8000,
+          32000
+        ]
+      },
+      "concurrency": {
+        "levels": [
+          1,
+          2,
+          4
+        ],
+        "rounds": 2,
+        "max_tokens": 128,
+        "input_tokens": 2000
+      },
+      "quality": {
+        "toolcall_tasks": 10,
+        "needle_lengths": [
+          8000,
+          32000
+        ],
+        "needle_depths": [
+          50
+        ],
+        "trials_per_cell": 1,
+        "code_max_tokens": 2048,
+        "code_problem_limit": 10
+      },
+      "agent": {
+        "start_tokens": 20000,
+        "end_tokens": 120000,
+        "step_tokens": 20000,
+        "trials_per_stage": 50,
+        "conversations_per_stage": 5,
+        "threshold": 0.01,
+        "max_tokens": 256
+      }
+    },
+    "harness_version": "0.1.0+g899c8f14",
+    "generator_version": 1,
+    "context_limit": 850000,
+    "warnings": [],
+    "skipped": [],
+    "datasets": [],
+    "output_retokenization": {
+      "enabled": false,
+      "method": "/tokenize",
+      "block_join": "concat",
+      "add_special_tokens": false
+    }
+  },
+  "incomplete": false,
+  "results": [
+    {
+      "condition": "prefill/cold/8k",
+      "metric": "ttft_s",
+      "tier": "primary",
+      "continuous": {
+        "n": 5,
+        "mean": 5.9166677334,
+        "median": 5.93803125,
+        "min": 5.85797475,
+        "max": 5.976316625,
+        "stdev": 0.05365638429411433,
+        "iqr": 0.08726620799999996,
+        "cv": 0.009068683034408087
+      },
+      "proportion": null,
+      "failures": 0,
+      "flags": [],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0
+      },
+      "count_source": null
+    },
+    {
+      "condition": "prefill/cold/8k",
+      "metric": "prefill_tps",
+      "tier": "primary",
+      "continuous": {
+        "n": 5,
+        "mean": 1378.1614186587644,
+        "median": 1373.3508054542488,
+        "min": 1364.720196698079,
+        "max": 1391.7779348570937,
+        "stdev": 12.190592501567682,
+        "iqr": 19.72212618434196,
+        "cv": 0.00884554765248881
+      },
+      "proportion": null,
+      "failures": 0,
+      "flags": [],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0
+      },
+      "count_source": null
+    },
+    {
+      "condition": "prefill/warm/8k",
+      "metric": "ttft_s",
+      "tier": "primary",
+      "continuous": {
+        "n": 5,
+        "mean": 1.3337870582,
+        "median": 1.344632083,
+        "min": 1.267543042,
+        "max": 1.365104625,
+        "stdev": 0.038137259915211275,
+        "iqr": 0.009074209,
+        "cv": 0.02859321484696295
+      },
+      "proportion": null,
+      "failures": 0,
+      "flags": [],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0
+      },
+      "count_source": null
+    },
+    {
+      "condition": "prefill/warm/8k",
+      "metric": "prefill_tps",
+      "tier": "primary",
+      "continuous": {
+        "n": 5,
+        "mean": 6116.068544573163,
+        "median": 6063.368636727672,
+        "min": 5970.970906350859,
+        "max": 6432.1287166199445,
+        "stdev": 181.3712930887056,
+        "iqr": 41.5817800508612,
+        "cv": 0.029654882342618254
+      },
+      "proportion": null,
+      "failures": 0,
+      "flags": [],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0
+      },
+      "count_source": null
+    },
+    {
+      "condition": "prefill/cold/32k",
+      "metric": "ttft_s",
+      "tier": "primary",
+      "continuous": {
+        "n": 5,
+        "mean": 21.5490244584,
+        "median": 21.549332208,
+        "min": 21.517570709,
+        "max": 21.58785525,
+        "stdev": 0.025918760047583714,
+        "iqr": 0.01790737500000006,
+        "cv": 0.0012027811327431275
+      },
+      "proportion": null,
+      "failures": 0,
+      "flags": [],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0
+      },
+      "count_source": null
+    },
+    {
+      "condition": "prefill/cold/32k",
+      "metric": "prefill_tps",
+      "tier": "primary",
+      "continuous": {
+        "n": 5,
+        "mean": 1502.4363825190467,
+        "median": 1502.5059564481517,
+        "min": 1499.6858013488857,
+        "max": 1504.6308171980734,
+        "stdev": 1.8535756764210052,
+        "iqr": 1.5738575907928407,
+        "cv": 0.0012337132526791077
+      },
+      "proportion": null,
+      "failures": 0,
+      "flags": [],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0
+      },
+      "count_source": null
+    },
+    {
+      "condition": "prefill/warm/32k",
+      "metric": "ttft_s",
+      "tier": "primary",
+      "continuous": {
+        "n": 5,
+        "mean": 0.5229153166,
+        "median": 0.528391333,
+        "min": 0.469237292,
+        "max": 0.56537525,
+        "stdev": 0.03455735376625375,
+        "iqr": 0.009611874000000076,
+        "cv": 0.06608594674745036
+      },
+      "proportion": null,
+      "failures": 0,
+      "flags": [],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0
+      },
+      "count_source": null
+    },
+    {
+      "condition": "prefill/warm/32k",
+      "metric": "prefill_tps",
+      "tier": "primary",
+      "continuous": {
+        "n": 5,
+        "mean": 62140.626550801564,
+        "median": 61270.87629576998,
+        "min": 57268.159509989164,
+        "max": 68999.20477761175,
+        "stdev": 4266.042261413643,
+        "iqr": 1127.6875253097169,
+        "cv": 0.06865142014501646
+      },
+      "proportion": null,
+      "failures": 0,
+      "flags": [],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0
+      },
+      "count_source": null
+    }
+  ],
+  "agent": null,
+  "server_metrics": {
+    "prefill/cold/8k": {
+      "spec_acceptance_rate": 0.41208791208791207,
+      "mean_acceptance_length": 3.8846153846153846,
+      "decode_steps": 32.0,
+      "tokens_per_step": 3.0,
+      "prefix_cache_hit_rate": 0.0,
+      "kv_usage_peak": 0.12240184757505779,
+      "preemptions": 0.0,
+      "missing": []
+    },
+    "prefill/warm/8k": {
+      "spec_acceptance_rate": 0.5374149659863946,
+      "mean_acceptance_length": 4.761904761904762,
+      "decode_steps": 27.0,
+      "tokens_per_step": 3.5555555555555554,
+      "prefix_cache_hit_rate": 0.7327744837456552,
+      "kv_usage_peak": 0.12240184757505779,
+      "preemptions": 0.0,
+      "missing": []
+    },
+    "prefill/cold/32k": {
+      "spec_acceptance_rate": 0.5857142857142857,
+      "mean_acceptance_length": 5.1,
+      "decode_steps": 26.0,
+      "tokens_per_step": 3.6923076923076925,
+      "prefix_cache_hit_rate": 0.0,
+      "kv_usage_peak": 0.1454965357967667,
+      "preemptions": 0.0,
+      "missing": []
+    },
+    "prefill/warm/32k": {
+      "spec_acceptance_rate": 0.4782608695652174,
+      "mean_acceptance_length": 4.3478260869565215,
+      "decode_steps": 29.0,
+      "tokens_per_step": 3.310344827586207,
+      "prefix_cache_hit_rate": 0.8302318039318641,
+      "kv_usage_peak": 0.1454965357967667,
+      "preemptions": 0.0,
+      "missing": []
+    }
+  },
+  "datasets": [],
+  "output_phases": {},
+  "phase_warnings": [],
+  "output_retokenization_counts": {}
+}
