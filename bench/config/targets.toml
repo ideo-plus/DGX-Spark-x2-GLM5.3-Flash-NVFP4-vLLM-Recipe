@@ -32,6 +32,14 @@ model = "GLM-5.3-Flash-EXL3"
 max_context_tokens = 850000
 notes = "MiaAI-Lab EXL3/TR3 4bpw、DFlash2 k=7、FP8 KV、2 台 TP=2。2026-09-29 実機起動"
 
+# mmastrac/glm-5.3-flash-4x-gx10 の TP=2 構成。公開レシピの
+# experimental override 群を同じ順序で適用し、API は head の 8002 番。
+[targets.mmastrac-tp2-dflash2]
+base_url = "http://10.0.1.60:8002"
+model = "glm53"
+max_context_tokens = 163840
+notes = "mmastrac 3df22b8、NVIDIA NVFP4、DFlash2 k=7、TP=2、all experimental overrides（RecoverSSM を除く）。2026-09-29 実機検証中"
+
 # 自前イメージ (vllm-nope:0961bbae-fi070) を 2 台 TP=2 で起動したときの初回確認用
 # (起動側の構成の名前も p2-nope-tp2-smoke)。実重みでの TP=2 の起動はまだ確認できて
 # いないので、起動できたときに初めて使う。起動側は --max-model-len 4096、
