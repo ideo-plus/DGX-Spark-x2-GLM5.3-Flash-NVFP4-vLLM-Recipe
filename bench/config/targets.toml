@@ -25,6 +25,13 @@ model = "glm-5.3-flash"
 max_context_tokens = 1000000
 notes = "head の 8001 番の glm-5.3-flash (EXL3、TP=2)。candidate-d と同じ構成かは未確認"
 
+# MiaAI-Lab の EXL3 4bpw + DFlash2 k=7。2 台 TP=2、API は MiaAI レシピの 8888 番。
+[targets.miaai-exl3-dflash2]
+base_url = "http://10.0.1.60:8888"
+model = "GLM-5.3-Flash-EXL3"
+max_context_tokens = 850000
+notes = "MiaAI-Lab EXL3/TR3 4bpw、DFlash2 k=7、FP8 KV、2 台 TP=2。2026-09-29 実機起動"
+
 # 自前イメージ (vllm-nope:0961bbae-fi070) を 2 台 TP=2 で起動したときの初回確認用
 # (起動側の構成の名前も p2-nope-tp2-smoke)。実重みでの TP=2 の起動はまだ確認できて
 # いないので、起動できたときに初めて使う。起動側は --max-model-len 4096、

@@ -39,6 +39,8 @@ GitHub に公開されている GLM-5.3-Flash の DGX Spark（GB10）向けレ�
 
 計測の条件: 従来のコード・散文は出力256トークン、JSON本文は出力8,192トークン、温度0、1条件10回の中央値。JSON本文の速度は再計数値。
 
+今回の MiaAI EXL3 + DFlash2 の実機比較では、両ノードの実効 GPU クロック、温度、使用率、thermal slowdown の状態も記録する。共通条件とスナップショットは [実機測定条件](../results/2026-09-29-miaai-exl3-dflash2.md) にまとめた。
+
 ## 同じ 2 台構成との比較（1 本の生成速度、tok/s）
 
 
@@ -54,6 +56,23 @@ GitHub に公開されている GLM-5.3-Flash の DGX Spark（GB10）向けレ�
 
 
 ※ コード・散文の数字は思考のみ。JSON は本文の再計数値だが、英語は10件とも、日本語は9件が出力上限で終了した。他レシピは計測対象のブロックや思考の設定がそろっていないため、この表だけで本文生成の優劣は判定できない。
+
+### MiaAI レシピの同一条件での再測定
+
+同じベンチマーク基盤・同じ 2 台・同じ約 1.8 GHz の GPU 制限で、MiaAI の実機も測定した。結果の詳細は [実機測定条件と結果](../results/2026-09-29-miaai-exl3-dflash2.md) にある。
+
+| 項目 | 結果 |
+|---|---:|
+| decode code/en | 34.212 tok/s |
+| decode code/ja | 31.765 tok/s |
+| decode prose/en | 33.423 tok/s |
+| decode prose/ja | 26.858 tok/s |
+| concurrency 1 本 | 30.538 tok/s |
+| concurrency 2 本（1 本あたり） | 22.675 tok/s |
+| concurrency 4 本（1 本あたり） | 19.753 tok/s |
+| cold prefill 32k | 1340.999 tok/s |
+
+この再測定では、decode と prefill は各条件で失敗 0 回だった。公開値との差をクロックだけで説明することはできず、DFlash2 の受理率と実装経路も併記して比較する。
 
 ## 台数が違う参考値
 
