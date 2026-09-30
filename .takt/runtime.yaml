@@ -18,10 +18,11 @@ provider:
     # 原因は未確認)。計測者の判断で、当面は Sonnet にする。原因が分かったら下のコメントの行に戻す
     # t0-test-code:       { provider: opencode, model: opencode-go/deepseek-v4.1-flash }  # write_tests
     # t0-production-code: { provider: opencode, model: opencode-go/deepseek-v4.1-flash }  # implement
-    t0-test-code:       { provider: claude, model: claude-sonnet-5 }  # write_tests
-    t0-production-code: { provider: claude, model: claude-sonnet-5 }  # implement
+    # 2026-09-30: Sonnet 5.5 が使えるようになったので、Sonnet 5 から上げる (計測者の指示)
+    t0-test-code:       { provider: claude, model: claude-sonnet-5-5 }  # write_tests
+    t0-production-code: { provider: claude, model: claude-sonnet-5-5 }  # implement
     # T1: 構造化出力に対応した provider が要る (selector / companion で使う)
-    t1: { provider: claude, model: claude-sonnet-5 }
+    t1: { provider: claude, model: claude-sonnet-5-5 }
     # T2: defaults。T3 と T0/T1 の指定に当たらない step
     t2: { provider: claude, model: claude-opus-5-5 }
     # T3: 計画は Fable、検収は別ベンダーの Astra。Codex の利用上限 (9/27 まで) の間は Opus

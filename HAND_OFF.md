@@ -123,7 +123,7 @@ worktree は作っていない。今後 worktree を使う場合は `mise trust`
 |---|---|
 | `t0-test-code` | **2026-09-24 から opencode / `opencode-go/deepseek-v4.1-flash`**。以前は `ollama/glm-5.3-flash:cloud` |
 | `t0-production-code` | **2026-09-24 から opencode / `opencode-go/deepseek-v4.1-flash`**。以前は claude / `claude-sonnet-5`、本来は codex / `gpt-6-luna` |
-| `t1` | claude / `claude-sonnet-5` |
+| `t1` | claude / `claude-sonnet-5-5` (2026-09-30 から。以前は `claude-sonnet-5`) |
 | `t2` | claude / `claude-opus-5-5` |
 | `t3-judge` | 本来は codex / `gpt-6-astra`。**9/27 19:38 までは claude / `claude-opus-5-5`** |
 | `rate_limit_fallback` | `claude-opus-5-5`。本来は続けて codex / `gpt-6-sol`（上限中はコメントアウト） |
