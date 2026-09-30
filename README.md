@@ -24,6 +24,9 @@ Details: [record](docs/results/2026-09-30-sparkdash.md).
 |---|---:|---:|---:|---:|---:|---:|
 | This recipe (effort low) | 60.39 | 42.74 | 58.23 | 45.92 / 91.83 | 1,588 | 1,594 |
 | This recipe (default effort) | 60.01 | 42.38 | 55.18 | 40.41 / 77.95 | 1,583 | 1,568 |
+| mmastrac NVFP4 + DFlash2 (default config) | 69.67 | 32.16 | 66.18 | 53.93 / 107.85 | 1,861 | 1,824 |
+
+mmastrac runs in its README's two-node default and its own chat template reads sparkDash's thinking-off as low reasoning effort.
 
 ### Measured with this repository's `bench`
 
