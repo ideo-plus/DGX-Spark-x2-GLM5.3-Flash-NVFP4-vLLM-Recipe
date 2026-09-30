@@ -16,20 +16,22 @@ become the backend for `takt`, a coding-agent workflow tool, called through the 
 
 [sparkDash](https://github.com/MiaAI-Lab/sparkDash) is the tool MiaAI-Lab and knapcio publish their numbers with. Measured with
 sparkDash 1.8.6 on two DGX Spark nodes at TP=2 with the GPU clock capped at `300–1800 MHz` and X925 cores at 3.0 GHz: `/v1/chat/completions`, temperature 0, 400 output tokens forced with
-`min_tokens` / `ignore_eos`, one run per cell. Prefill fills the prompt with a repeated word. sparkDash asks for thinking off,
-which this recipe's stock chat template ignores; the "effort low" row sets the server's default `reasoning_effort` to low.
-Details: [record](docs/results/2026-09-30-sparkdash.md).
+`min_tokens` / `ignore_eos`, one run per cell. Prefill fills the prompt with a repeated word. sparkDash asks for thinking off.
+The "thinking off" row uses `glm53-tp2-mtp3-marlin-thinking-toggle`, whose chat template honors that request (mean of two runs);
+the "default effort" row uses the stock template, which ignores it and thinks at full depth.
+Details: [thinking off](docs/results/2026-10-01-sparkdash-thinking-off.md), [other rows](docs/results/2026-09-30-sparkdash.md).
 
 | Implementation | Structured c1 | Prose c1 | Code c1 | Structured c2 (per stream / total) | Prefill 32k | Prefill 128k |
 |---|---:|---:|---:|---:|---:|---:|
-| This recipe (effort low) | 60.39 | 42.74 | 58.23 | 45.92 / 91.83 | 1,588 | 1,594 |
+| This recipe (thinking off) | 58.00 | 41.43 | 51.51 | 44.55 / 88.65 | 1,573 | 1,043 |
 | This recipe (default effort) | 60.01 | 42.38 | 55.18 | 40.41 / 77.95 | 1,583 | 1,568 |
 | mmastrac NVFP4 + DFlash2 (default config) | 69.67 | 32.16 | 66.18 | 53.93 / 107.85 | 1,861 | 1,824 |
 | MiaAI-Lab EXL3 + DFlash2 (Sep 29 config) | 70.52 | 32.56 | 67.30 | 55.00 / 110.00 | 1,446 | 1,500 |
 
 mmastrac runs in its README's two-node default and its own chat template reads sparkDash's thinking-off as low reasoning effort.
 MiaAI-Lab runs with its default serving settings (only host and network values set for these nodes) and fully stops thinking.
-Thinking is not yet off on the same terms for all three rows; see [#131](https://github.com/ideo-plus/DGX-Spark-x2-GLM5.3-Flash-NVFP4-vLLM-Recipe/issues/131).
+This recipe's thinking-off row and MiaAI-Lab stop thinking completely; mmastrac keeps one short thinking sentence.
+Prefill 128k on the thinking-off configuration takes about 1.5× as long as on the stock template (83 s); the cause is under investigation ([#153](https://github.com/ideo-plus/DGX-Spark-x2-GLM5.3-Flash-NVFP4-vLLM-Recipe/issues/153)).
 
 ### Measured with this repository's `bench`
 

@@ -15,19 +15,22 @@
 
 [sparkDash](https://github.com/MiaAI-Lab/sparkDash) は、MiaAI-Lab と knapcio が公表値に使っている道具である。DGX Spark 2 台の TP=2、GPU クロック上限 `300〜1800 MHz`、X925 3.0 GHz で、
 sparkDash 1.8.6 を使って測った。条件は `/v1/chat/completions`、温度 0、出力 400 トークン (`min_tokens` と `ignore_eos` で必ずその長さまで生成)、
-各 1 回。prefill の入力は、同じ単語の繰り返しで埋めた文である。sparkDash は思考オフを求めるが、この構成の標準のチャットテンプレートはそれを読まない。
-「思考の深さ low」の行は、サーバーの既定の `reasoning_effort` を low にして測った値である。詳細は[記録](docs/results/2026-09-30-sparkdash.md)。
+各 1 回。prefill の入力は、同じ単語の繰り返しで埋めた文である。sparkDash は思考オフを求める。
+「思考オフ」の行は、その求めを読むチャットテンプレートを使う `glm53-tp2-mtp3-marlin-thinking-toggle` で測った (2 回の平均)。
+「思考の深さは既定」の行は標準のテンプレートで、思考オフの求めを読まず、最大の深さで考える。
+詳細は[思考オフの記録](docs/results/2026-10-01-sparkdash-thinking-off.md)と[ほかの行の記録](docs/results/2026-09-30-sparkdash.md)。
 
 | 実装 | 構造化 同時 1 本 | 散文 同時 1 本 | コード 同時 1 本 | 構造化 同時 2 本 (1 本あたり / 合計) | prefill 32k | prefill 128k |
 |---|---:|---:|---:|---:|---:|---:|
-| 現行構成 (思考の深さ low) | 60.39 | 42.74 | 58.23 | 45.92 / 91.83 | 1,588 | 1,594 |
+| 現行構成 (思考オフ) | 58.00 | 41.43 | 51.51 | 44.55 / 88.65 | 1,573 | 1,043 |
 | 現行構成 (思考の深さは既定) | 60.01 | 42.38 | 55.18 | 40.41 / 77.95 | 1,583 | 1,568 |
 | mmastrac NVFP4 + DFlash2 (既定の構成) | 69.67 | 32.16 | 66.18 | 53.93 / 107.85 | 1,861 | 1,824 |
 | MiaAI-Lab EXL3 + DFlash2 (9/29 と同じ構成) | 70.52 | 32.56 | 67.30 | 55.00 / 110.00 | 1,446 | 1,500 |
 
 mmastrac は、レシピの README の 2 台の既定の構成で測った。mmastrac の独自のチャットテンプレートは、sparkDash の思考オフを「思考を浅くする (low)」と読む。
 MiaAI-Lab は、推論の設定をレシピの既定のまま (2 台の IP アドレスとネットワークの値だけ合わせた) で測った。MiaAI-Lab は思考を完全に止める。
-3 つの行で、思考の条件はまだそろっていない ([#131](https://github.com/ideo-plus/DGX-Spark-x2-GLM5.3-Flash-NVFP4-vLLM-Recipe/issues/131))。
+現行構成の思考オフの行と MiaAI-Lab は、思考を完全に止める。mmastrac は、短い思考の 1 文が残る。
+思考オフの構成の prefill 128k は、標準のテンプレートの構成 (83 秒) の約 1.5 倍の時間がかかる。原因は調べている ([#153](https://github.com/ideo-plus/DGX-Spark-x2-GLM5.3-Flash-NVFP4-vLLM-Recipe/issues/153))。
 
 ### このリポジトリの `bench` で測った値
 
