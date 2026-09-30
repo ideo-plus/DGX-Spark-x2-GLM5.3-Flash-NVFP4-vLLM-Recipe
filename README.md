@@ -35,9 +35,10 @@ performance or a performance advantage over other recipes.
 | JSON instruction, Japanese (answer phase, retokenized) | 58.9 tok/s | [September 29](docs/results/2026-09-29-json-text-decode.md) |
 | Decode, 2 streams, per stream (aggregate) | 27.2 tok/s (45.8 aggregate) | [September 28](docs/results/2026-09-28-k2-stage3.md) |
 | Prefill, 32k tokens (cold) | 1,326 tok/s | [September 28](docs/results/2026-09-28-k2-stage3.md) |
+| Prefill, 128k tokens (cold) | 1,332 tok/s | [September 30](docs/results/2026-09-30-fast-prefill-long-input.md) |
 
 The JSON answer-phase values are retokenized measurements. See the [measurement record](docs/results/2026-09-29-json-text-decode.md)
-and the [recipe comparison](docs/research/2026-09-28-recipe-comparison.md). Concurrency and prefill were not remeasured.
+and the [recipe comparison](docs/research/2026-09-28-recipe-comparison.md). Concurrency was not remeasured.
 
 The comparison below contains only measurements made under the same conditions: this repository's `fast` profile,
 two DGX Spark nodes at TP=2, and the same `300–1800 MHz` GPU clock cap. Values are median tok/s; concurrency is per stream
