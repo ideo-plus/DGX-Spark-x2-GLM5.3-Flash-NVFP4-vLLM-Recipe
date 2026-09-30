@@ -130,10 +130,16 @@ ThinkingVariant = Literal[
     "chat_template_low",
     "output_config_medium",
     "clear_thinking",
+    "chat_template_off",
 ]
-"""thinking の深さの渡し方の 5 通り (design.md 「thinking」の (1)〜(5))。
+"""thinking の深さの渡し方の 6 通り (design.md 「thinking」の (1)〜(5)、issue #131 で
+`chat_template_off` を 6 番目として足した)。
 
-`output_config_medium` は、効かないはずの値である。
+`output_config_medium` は、効かないはずの値である。`chat_template_off` は、深さではなく
+思考そのものをオフにする渡し方 (`chat_template_kwargs.enable_thinking = False`) で、
+効いた証拠は `output_tokens` が 1 番目 (`none`) より減ることである。思考の文字数は、どちらの
+構成 (公式のテンプレートでも、変数を読むテンプレートでも) でも 0 になるので、効いたかどうかの
+区別には使えない。
 """
 
 
@@ -1117,10 +1123,11 @@ class ThinkingTrial(_Frozen):
 
 
 class ThinkingOutcome(_Frozen):
-    """thinking の深さの確かめの結果 (design.md 「thinking」)。
+    """thinking の深さの確かめの結果 (design.md 「thinking」、issue #131 で 6 通りに拡張)。
 
-    同じ入力、温度 0 で、5 通りを 3 回ずつ送る。`effective` は、効いたと言える条件
-    (範囲が重ならない) に照らした判定で、判定できなければ空にする。
+    同じ入力、温度 0 で、6 通りを 3 回ずつ送る。`effective` は、効いたと言える条件
+    (範囲が重ならない) に照らした判定で、判定できなければ空にする。`effective` の決め方は
+    最初の 5 通り (2 対 1、3 対 1) だけで決まり、6 番目の `chat_template_off` は含まない。
     """
 
     model: str = Field(min_length=1)

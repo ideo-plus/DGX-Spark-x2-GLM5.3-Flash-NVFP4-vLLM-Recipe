@@ -770,7 +770,7 @@ def _add_thinking(subparsers: argparse._SubParsersAction[argparse.ArgumentParser
         type=count,
         default=thinking.DEFAULT_TRIALS,
         metavar="<回>",
-        help="5 通りのそれぞれを送る回数",
+        help="6 通りのそれぞれを送る回数",
     )
     parser.add_argument(
         "--max-tokens",

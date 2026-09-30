@@ -164,6 +164,7 @@ from bench_harness.types import (
     RunStatus,
     SuiteName,
     Summary,
+    ThinkingMode,
     ThresholdVerdict,
     Tier,
     ToolCallOutcome,
@@ -405,7 +406,7 @@ def summarize_run(run_dir: Path) -> SummaryResult:
     notes: list[str] = []
     stages = _stage_counts_by_condition(trials, notes)
     results = _summarize_trials(trials, manifest.profile.min_successes, stages, notes)
-    output_phases, phase_warnings = _phase_conditions(trials)
+    output_phases, phase_warnings = _phase_conditions(trials, manifest.profile.sampling.thinking)
     recount_counts = _recount_conditions(trials)
     server_metrics = _server_metrics(deltas, notes)
     summary = Summary(
@@ -457,6 +458,7 @@ def _recount_conditions(trials: Sequence[TrialRecord]) -> dict[str, _Retokenizat
 
 def _phase_conditions(
     trials: Sequence[TrialRecord],
+    thinking: ThinkingMode,
 ) -> tuple[dict[str, dict[str, int]], list[str]]:
     groups: dict[str, list[TrialRecord]] = {}
     for record in trials:
@@ -505,6 +507,14 @@ def _phase_conditions(
             )
         if counts["unknown"]:
             warnings.append(f"{condition}: 段階別計測情報が不明 {counts['unknown']} 件")
+        if thinking == "off" and counts["thinking_observed"]:
+            # off を指定したのに思考が出た試行 (issue #131、#130 の thinking_observed を使う)。
+            # glm47 のパーサーは off なら思考のブロックを作らないので、glm47 の構成ではこの
+            # 警告は出ない。効くのは、off でも思考を分けて返す相手 (enable_thinking を読まない
+            # パーサーのサーバーなど) のとき (bench/README.md の制限の 1 番目)
+            warnings.append(
+                f"{condition}: thinking off なのに思考が出た {counts['thinking_observed']} 件"
+            )
         for reason, count in duration_reasons.items():
             warnings.append(f"{condition}: {reason} {count} 件")
         counts_by_condition[condition] = counts

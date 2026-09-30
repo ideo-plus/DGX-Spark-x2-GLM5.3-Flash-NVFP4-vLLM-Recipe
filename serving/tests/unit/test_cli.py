@@ -2457,12 +2457,21 @@ def test_thinking_builds_the_base_url_from_the_config(
     assert recorder.kwargs["var_root"] == repo.var_root
 
 
+def test_thinking_help_mentions_six_ways_not_five(tmp_path: Path) -> None:
+    """`serve thinking --help` の説明が、古い「5 通り」のままでなく 6 通りを指す (issue #131、
+    コメント 3-3。R14b)。"""
+    parser = cli.build_parser()
+    thinking_help = subcommand_parser(parser, "thinking").format_help()
+    assert "5 通り" not in thinking_help
+    assert "6 通り" in thinking_help
+
+
 def test_thinking_talks_to_the_fake_server(tmp_path: Path, fake_vllm: FakeVllm) -> None:
-    """偽の推論サーバーを相手に、5 通り × 回数の要求が出る (Spark には触らない)。"""
+    """偽の推論サーバーを相手に、6 通り × 回数の要求が出る (Spark には触らない。issue #131)。"""
     repo = make_repo(tmp_path, port=_port_of(fake_vllm))
     result = run(["thinking", SERVE_CONFIG, "--trials", "1"], repo)
     assert result.code in (cli.EXIT_OK, cli.EXIT_PRECONDITION)
-    assert fake_vllm.call_count("/v1/messages") == 5
+    assert fake_vllm.call_count("/v1/messages") == 6
     assert result.spy.made == []
 
 

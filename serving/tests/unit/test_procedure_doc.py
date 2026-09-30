@@ -141,11 +141,13 @@ _PLANNED_CONFIGS: Final[dict[str, str]] = {
 _MADE_HERE: Final[str] = "この段で作る"
 
 _DOCUMENTED_ELSEWHERE: Final[dict[str, str]] = {
-    "glm53-tp2-mtp3-marlin": "k2-derived-weights-procedure.md"
+    "glm53-tp2-mtp3-marlin": "k2-derived-weights-procedure.md",
+    "glm53-tp2-mtp3-marlin-thinking-toggle": "k2-derived-weights-procedure.md",
 }
 """`docs/vllm-baseline/procedure.md` (P1 の基盤の手順書) では扱わず、別の手順書に載せる構成
-(issue #103)。`_CONFIG_LIKE` は `probe-`/`p1-`/`netcheck-` の接頭辞しか拾わないので、派生の
-重みの構成 (`glm53-tp2-mtp3-marlin`) は、この対応表で「どこで扱うか」を明示する。"""
+(issue #103、issue #131)。`_CONFIG_LIKE` は `probe-`/`p1-`/`netcheck-` の接頭辞しか拾わないので、
+派生の重みの構成 (`glm53-tp2-mtp3-marlin`、思考オフの比較用の
+`glm53-tp2-mtp3-marlin-thinking-toggle`) は、この対応表で「どこで扱うか」を明示する。"""
 
 
 def test_every_config_name_in_the_procedure_is_real_or_marked() -> None:
@@ -249,6 +251,30 @@ def test_the_hardware_only_items_are_assigned_to_stages() -> None:
     assert assigned == _ITEM_STAGES
     # 1〜22 の番号が、1 つも欠けていない (枝番の 14b〜14e も含めて上で固定している)
     assert {str(number) for number in range(1, 23)} <= set(assigned)
+
+
+# --- K8 (issue #131): 6 通りになった思考の渡し方の言及 ----------------------
+
+_THINKING_SECTION_HEADING: Final[str] = "### 2.8 `/v1/messages` の対応の状況をまとめる (要件 9)"
+
+
+def test_the_thinking_section_and_item_19_state_six_variants_not_five() -> None:
+    """`chat_template_off` を足したので (issue #131)、思考の確かめの案内 (2.8) と、
+    実機でしか決まらない項目 19 の確かめ方が、5 通りでなく 6 通りになっている。"""
+    text = _procedure_text()
+
+    thinking_section = _section(text, _THINKING_SECTION_HEADING)
+    assert "6 通り" in thinking_section, "2.8 の節が 6 通りに直っていない"
+    assert "5 通り" not in thinking_section, "2.8 の節に古い「5 通り」が残っている"
+
+    items_section = _section(text, _ITEMS_HEADING)
+    row = next(
+        cells
+        for cells in _table_rows(items_section)
+        if cells and _ITEM_NUMBER.match(cells[0]) and cells[0] == "19"
+    )
+    assert any("6 通り" in cell for cell in row), row
+    assert not any("5 通り" in cell for cell in row), row
 
 
 # --- 5. 計測者に尋ねる場所 ----------------------------------------------

@@ -543,10 +543,10 @@ async def test_an_unreachable_target_fails_without_creating_a_run_directory(
     assert not bed.results_root.exists()
 
 
-async def test_thinking_other_than_server_default_fails_without_creating_a_run_directory(
+async def test_thinking_outside_the_supported_choices_fails_without_creating_a_run_directory(
     fake_server: FakeServer, tmp_path: Path
 ) -> None:
-    """渡し方が決まるまで (task 8.4)、thinking の切り替えは前提の不足にする (注 3.1)。"""
+    """`server_default` と `off` 以外の thinking (例: `"on"`) は、前提の不足にする (注 3.1)。"""
     fake_server.set_response(text_response("ok"))
     bed = make_bed(tmp_path, fake_server, thinking="on")
 
@@ -580,6 +580,28 @@ async def test_the_server_default_thinking_sends_no_thinking_switch_and_is_recor
         body = store.get_body(record.request_body_ref)
         assert "thinking" not in body
         assert "chat_template_kwargs" not in body
+
+
+async def test_the_off_thinking_sends_the_chat_template_switch_and_is_recorded(
+    fake_server: FakeServer, tmp_path: Path
+) -> None:
+    """`thinking = "off"` のときは、全要求の本文に `chat_template_kwargs ==
+    {"enable_thinking": False}` が載る (issue #131、K9)。`server_default` では載らないことは、
+    上の `test_the_server_default_thinking_sends_no_thinking_switch_and_is_recorded` が
+    既に固定している。"""
+    fake_server.set_response(text_response("ok"))
+    bed = make_bed(tmp_path, fake_server, thinking="off")
+
+    outcome = await execute(bed, suites=[SuiteName.DECODE])
+
+    store = opened(outcome)
+    assert store.manifest().profile.sampling.thinking == "off"
+    records = trials_of(outcome)
+    assert records
+    for record in records:
+        assert record.request_body_ref is not None
+        body = store.get_body(record.request_body_ref)
+        assert body.get("chat_template_kwargs") == {"enable_thinking": False}
 
 
 async def test_a_suite_that_is_not_in_the_registry_fails(
