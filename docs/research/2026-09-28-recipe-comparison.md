@@ -33,7 +33,7 @@ GitHub に公開されている GLM-5.3-Flash の DGX Spark（GB10）向けレ�
 | 1 本、散文・日本語         | 42.2 tok/s       | 同上                                       |
 | JSON 指示・英語（本文、再計数） | 58.6 tok/s | [今回の記録](../results/2026-09-29-json-text-decode.md) |
 | JSON 指示・日本語（本文、再計数） | 58.9 tok/s | 同上 |
-| 同時 2 本の 1 本あたり（合計） | 27.2 tok/s（45.8） | 同上                                       |
+| 同時 2 本の 1 本あたり（合計） | 27.2 tok/s（45.8） | [記録](../results/2026-09-28-k2-stage3.md) |
 | 入力の処理 32k（cold）    | 1,326 tok/s      | 同上                                       |
 
 
@@ -47,17 +47,17 @@ GitHub に公開されている GLM-5.3-Flash の DGX Spark（GB10）向けレ�
 
 | レシピ | 重み・推測 | code/en | prose/en | concurrency 2 本（1 本あたり） | cold prefill 32k |
 |---|---|---:|---:|---:|---:|
-| [現行構成（MTP N=3 + Marlin）](../results/2026-09-28-k2-stage3.md) | NVFP4、モデル付属 MTP `N=3` | 45.021 | 46.267 | 27.235 | 1326.033 |
+| [現行構成（MTP N=3 + Marlin）](../results/2026-09-30-mmastrac-32k-same-conditions.md) | NVFP4、モデル付属 MTP `N=3`、KV 4 GiB | 45.026 | 44.137 | 29.120 | 1331.163 |
 | [MiaAI-Lab EXL3 + DFlash2](../results/2026-09-29-miaai-exl3-dflash2.md) | EXL3/TR3 4bpw、DFlash2 `k=7` | 34.212 | 33.423 | 22.675 | 1340.999 |
-| [mmastrac NVFP4 + DFlash2](../results/2026-09-29-mmastrac-dflash2.md) | NVIDIA NVFP4、DFlash2 `k=7`（adaptive-k） | 48.638 | 47.050 | 32.105 | 測れず |
+| [mmastrac NVFP4 + DFlash2](../results/2026-09-30-mmastrac-32k-same-conditions.md) | NVIDIA NVFP4、DFlash2 `k=7`（adaptive-k）、`VLLM_GLM5NEXT_DRAFT_POOL=0` | 50.590 | 46.346 | 31.204 | 2582.664 |
 
-MiaAI の全条件（英日、同時 1/2/4 本、8k/32k/128k prefill）は [実機測定条件と結果](../results/2026-09-29-miaai-exl3-dflash2.md) に記録している。mmastrac の全条件（英日、同時 1/2/4 本、8k prefill）は [実機測定の記録](../results/2026-09-29-mmastrac-dflash2.md) にある。mmastrac の cold 32k は、要求がサーバーの待ち行列から出ず、測れなかった。
+MiaAI の全条件（英日、同時 1/2/4 本、8k/32k/128k prefill）は [実機測定条件と結果](../results/2026-09-29-miaai-exl3-dflash2.md) に記録している。mmastrac と現行構成の全条件（英日、同時 1/2/4 本、8k・32k prefill）は [9 月 30 日の記録](../results/2026-09-30-mmastrac-32k-same-conditions.md) にある。mmastrac は既定の下書きモデル専用の KV の置き場所のままだと、2 台では約 18,700 トークンより長い入力が実行に入らないため、`VLLM_GLM5NEXT_DRAFT_POOL=0` で測った。
 
 ## 比較から言えることと、訂正した点
 
 - **本文生成速度の比較は JSON に限って始められる。** コード・散文の既存値は思考のみなので本文比較には使えない。JSON 本文は再計数で測ったが、他レシピと条件がそろわないため、優位性は断定しない。
 - **JSON本文の再計数速度は、英語58.6、日本語58.9 tok/sだった。** 思考のみの旧計測値は本文の比較表から除いた。公開レシピの値とは本文区間・思考設定・計数方法がそろっていないため、速度の優劣は断定しない。
-- **現行構成の同時実行と入力処理の値は、同じ測定記録から引用した。** 同時 2 本の 1 本あたり 27.2 tok/s、cold 32k の入力処理 1,326 tok/s を表に載せている。
+- **現行構成の値は、9 月 30 日に KV を 1 台 4 GiB に固定した構成で測った。** 同時 2 本の 1 本あたり 29.1 tok/s、cold 32k の入力処理 1,331 tok/s を表に載せている。
 - **外部レシピは、同一条件で再測定した値だけを比較する。** README などに掲載された条件の異なる数値は、比較表の根拠にしない。
 
 ## 集めたが数値が無いか、比べられないもの

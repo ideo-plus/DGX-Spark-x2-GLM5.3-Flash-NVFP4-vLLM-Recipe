@@ -1,0 +1,314 @@
+{
+  "schema_version": 1,
+  "conditions": {
+    "schema_version": 1,
+    "run_id": "20260930T071718Z-mmastrac-tp2-dflash2-wrbsk9",
+    "status": "aborted",
+    "target": {
+      "name": "mmastrac-tp2-dflash2",
+      "base_url": "http://10.0.1.60:8002/",
+      "model": "glm53",
+      "notes": "mmastrac 3df22b8 ＋ 上流の直し 4b95b57（experimental/fixes/model.py）、NVIDIA NVFP4、DFlash2 k=7、TP=2、all experimental overrides（RecoverSSM を除く）。2026-09-29 に実機で測定",
+      "api_key_env": null,
+      "metrics_url": null,
+      "max_context_tokens": 163840,
+      "metric_map": {},
+      "tool_markup_markers": [
+        "<tool_call>",
+        "</tool_call>",
+        "<arg_key>",
+        "<arg_value>"
+      ]
+    },
+    "server_model": "glm53",
+    "server_version": "0.30.1rc1.dev193+gddd6fbca1",
+    "started_at": "2026-09-30T07:17:18.362565Z",
+    "finished_at": "2026-09-30T07:27:59.393069Z",
+    "suites": [
+      "prefill"
+    ],
+    "profile_name": "p32",
+    "profile": {
+      "name": "p32",
+      "seed": 0,
+      "sampling": {
+        "temperature": 0.0,
+        "top_p": null,
+        "top_k": null,
+        "thinking": "server_default"
+      },
+      "chars_per_token": {
+        "prose_en": 4.831,
+        "prose_ja": 1.794,
+        "code": 3.505,
+        "log": 2.316
+      },
+      "timeout": {
+        "connect_s": 10.0,
+        "first_event_s": 120.0,
+        "idle_s": 60.0,
+        "total_s": 900.0
+      },
+      "min_successes": 5,
+      "max_consecutive_failures": 5,
+      "length_tolerance": 0.05,
+      "compare_tolerance": 0.02,
+      "metrics_interval_s": 1.0,
+      "output_sanity": {
+        "repeat_min_chars": 12,
+        "repeat_min_count": 8
+      },
+      "sandbox": {
+        "runtime": "auto",
+        "image": "bench-sandbox:py3.13-numpy2.5.3",
+        "image_digest": "sha256:f75a1d43009306248ecbe68c0cc992b700a472037ba6ea336e519404ec1d1de6",
+        "timeout_s": 20.0,
+        "memory_mb": 512,
+        "cpus": 1.0,
+        "pids_limit": 64
+      },
+      "decode": {
+        "trials": 10,
+        "warmup_trials": 1,
+        "max_tokens": 256
+      },
+      "prefill": {
+        "trials": 5,
+        "warmup_trials": 1,
+        "max_tokens": 16,
+        "target_input_tokens": [
+          8000,
+          32000
+        ]
+      },
+      "concurrency": {
+        "levels": [
+          1,
+          2,
+          4
+        ],
+        "rounds": 2,
+        "max_tokens": 128,
+        "input_tokens": 2000
+      },
+      "quality": {
+        "toolcall_tasks": 10,
+        "needle_lengths": [
+          8000,
+          32000
+        ],
+        "needle_depths": [
+          50
+        ],
+        "trials_per_cell": 1,
+        "code_max_tokens": 2048,
+        "code_problem_limit": 10
+      },
+      "agent": {
+        "start_tokens": 20000,
+        "end_tokens": 120000,
+        "step_tokens": 20000,
+        "trials_per_stage": 50,
+        "conversations_per_stage": 5,
+        "threshold": 0.01,
+        "max_tokens": 256
+      }
+    },
+    "harness_version": "0.1.0+g5ea84751",
+    "generator_version": 1,
+    "context_limit": 163840,
+    "warnings": [
+      "要求の失敗が 5 回続いたので、計測ランを止めた (条件: prefill/cold/32k)。対象サーバーが応答していない可能性がある"
+    ],
+    "skipped": [],
+    "datasets": [],
+    "output_retokenization": {
+      "enabled": false,
+      "method": "/tokenize",
+      "block_join": "concat",
+      "add_special_tokens": false
+    }
+  },
+  "incomplete": true,
+  "results": [
+    {
+      "condition": "prefill/cold/8k",
+      "metric": "ttft_s",
+      "tier": "primary",
+      "continuous": {
+        "n": 5,
+        "mean": 3.3474281082000004,
+        "median": 2.89066675,
+        "min": 2.8326805,
+        "max": 5.278741583,
+        "stdev": 1.0801163679192385,
+        "iqr": 0.06964695799999987,
+        "cv": 0.32267051987564427
+      },
+      "proportion": null,
+      "failures": 0,
+      "flags": [],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0
+      },
+      "count_source": null
+    },
+    {
+      "condition": "prefill/cold/8k",
+      "metric": "prefill_tps",
+      "tier": "primary",
+      "continuous": {
+        "n": 5,
+        "mean": 2586.3294546651,
+        "median": 2821.4943836054435,
+        "min": 1544.6863370352637,
+        "max": 2878.5456037135145,
+        "stdev": 583.1609375906644,
+        "iqr": 68.71372126124197,
+        "cv": 0.22547821065053641
+      },
+      "proportion": null,
+      "failures": 0,
+      "flags": [],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0
+      },
+      "count_source": null
+    },
+    {
+      "condition": "prefill/warm/8k",
+      "metric": "ttft_s",
+      "tier": "primary",
+      "continuous": {
+        "n": 5,
+        "mean": 2.9175577749999997,
+        "median": 2.9248575,
+        "min": 2.870441125,
+        "max": 2.947996083,
+        "stdev": 0.03347625426805642,
+        "iqr": 0.049777583000000014,
+        "cv": 0.01147406730207988
+      },
+      "proportion": null,
+      "failures": 0,
+      "flags": [],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0
+      },
+      "count_source": null
+    },
+    {
+      "condition": "prefill/warm/8k",
+      "metric": "prefill_tps",
+      "tier": "primary",
+      "continuous": {
+        "n": 5,
+        "mean": 2794.41278429234,
+        "median": 2787.486227961533,
+        "min": 2764.929046888425,
+        "max": 2839.9816073566044,
+        "stdev": 32.1426795044822,
+        "iqr": 46.83764434303475,
+        "cv": 0.011502480837891689
+      },
+      "proportion": null,
+      "failures": 0,
+      "flags": [],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0
+      },
+      "count_source": null
+    },
+    {
+      "condition": "prefill/cold/32k",
+      "metric": "ttft_s",
+      "tier": "primary",
+      "continuous": null,
+      "proportion": null,
+      "failures": 5,
+      "flags": [
+        "insufficient_trials"
+      ],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0
+      },
+      "count_source": null
+    },
+    {
+      "condition": "prefill/cold/32k",
+      "metric": "prefill_tps",
+      "tier": "primary",
+      "continuous": null,
+      "proportion": null,
+      "failures": 5,
+      "flags": [
+        "insufficient_trials"
+      ],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0
+      },
+      "count_source": null
+    }
+  ],
+  "agent": null,
+  "server_metrics": {
+    "prefill/cold/8k": {
+      "spec_acceptance_rate": 0.6513761467889908,
+      "mean_acceptance_length": 3.3666666666666667,
+      "decode_steps": 36.0,
+      "tokens_per_step": 2.6666666666666665,
+      "prefix_cache_hit_rate": 0.0,
+      "kv_usage_peak": 0.1143790849673203,
+      "preemptions": 0.0,
+      "missing": []
+    },
+    "prefill/warm/8k": {
+      "spec_acceptance_rate": 0.8160919540229885,
+      "mean_acceptance_length": 3.5357142857142856,
+      "decode_steps": 34.0,
+      "tokens_per_step": 2.823529411764706,
+      "prefix_cache_hit_rate": 0.0,
+      "kv_usage_peak": 0.1143790849673203,
+      "preemptions": 0.0,
+      "missing": []
+    },
+    "prefill/cold/32k": {
+      "spec_acceptance_rate": 0.8,
+      "mean_acceptance_length": 3.4,
+      "decode_steps": 6.0,
+      "tokens_per_step": 2.6666666666666665,
+      "prefix_cache_hit_rate": 0.0,
+      "kv_usage_peak": 0.11111111111111116,
+      "preemptions": 0.0,
+      "missing": []
+    }
+  },
+  "datasets": [],
+  "output_phases": {},
+  "phase_warnings": [],
+  "output_retokenization_counts": {}
+}
