@@ -263,7 +263,7 @@ max_tokens = 256
 # (issue #39 の目安。実測は未確認。上限どおり生成すると 23〜48 分だが、コードの回答は
 # 上限の前に終わる)。現行の 6 条件の所要時間は未計測。
 # prefill は 32k・64k・128k (issue #130)、agent は quick のまま
-# prefill は 36 要求、約 16 分 (計算。README の算式)
+# prefill は 36 要求、約 19 分 (計算。README の算式)
 [profiles.fast]
 seed = 0
 min_successes = 5
