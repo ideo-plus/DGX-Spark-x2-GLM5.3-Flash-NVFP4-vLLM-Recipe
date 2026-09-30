@@ -1,0 +1,959 @@
+{
+  "schema_version": 1,
+  "conditions": {
+    "schema_version": 1,
+    "run_id": "20260930T074627Z-mmastrac-tp2-dflash2-ud0kx7",
+    "status": "completed",
+    "target": {
+      "name": "mmastrac-tp2-dflash2",
+      "base_url": "http://10.0.1.60:8002/",
+      "model": "glm53",
+      "notes": "mmastrac 3df22b8 ＋ 上流の直し 4b95b57（experimental/fixes/model.py）、NVIDIA NVFP4、DFlash2 k=7、TP=2、all experimental overrides（RecoverSSM を除く）。2026-09-29 に実機で測定",
+      "api_key_env": null,
+      "metrics_url": null,
+      "max_context_tokens": 163840,
+      "metric_map": {},
+      "tool_markup_markers": [
+        "<tool_call>",
+        "</tool_call>",
+        "<arg_key>",
+        "<arg_value>"
+      ]
+    },
+    "server_model": "glm53",
+    "server_version": "0.30.1rc1.dev193+gddd6fbca1",
+    "started_at": "2026-09-30T07:46:27.723393Z",
+    "finished_at": "2026-09-30T07:47:25.523387Z",
+    "suites": [
+      "concurrency"
+    ],
+    "profile_name": "fast",
+    "profile": {
+      "name": "fast",
+      "seed": 0,
+      "sampling": {
+        "temperature": 0.0,
+        "top_p": null,
+        "top_k": null,
+        "thinking": "server_default"
+      },
+      "chars_per_token": {
+        "prose_en": 4.831,
+        "prose_ja": 1.794,
+        "code": 3.505,
+        "log": 2.316
+      },
+      "timeout": {
+        "connect_s": 10.0,
+        "first_event_s": 120.0,
+        "idle_s": 60.0,
+        "total_s": 900.0
+      },
+      "min_successes": 5,
+      "max_consecutive_failures": 5,
+      "length_tolerance": 0.05,
+      "compare_tolerance": 0.02,
+      "metrics_interval_s": 1.0,
+      "output_sanity": {
+        "repeat_min_chars": 12,
+        "repeat_min_count": 8
+      },
+      "sandbox": {
+        "runtime": "auto",
+        "image": "bench-sandbox:py3.13-numpy2.5.3",
+        "image_digest": "sha256:f75a1d43009306248ecbe68c0cc992b700a472037ba6ea336e519404ec1d1de6",
+        "timeout_s": 20.0,
+        "memory_mb": 512,
+        "cpus": 1.0,
+        "pids_limit": 64
+      },
+      "decode": {
+        "trials": 10,
+        "warmup_trials": 1,
+        "max_tokens": 256
+      },
+      "prefill": {
+        "trials": 5,
+        "warmup_trials": 1,
+        "max_tokens": 16,
+        "target_input_tokens": [
+          32000,
+          64000,
+          128000
+        ]
+      },
+      "concurrency": {
+        "levels": [
+          1,
+          2,
+          4
+        ],
+        "rounds": 2,
+        "max_tokens": 128,
+        "input_tokens": 2000
+      },
+      "quality": {
+        "toolcall_tasks": 10,
+        "needle_lengths": [
+          8000,
+          32000
+        ],
+        "needle_depths": [
+          50
+        ],
+        "trials_per_cell": 1,
+        "code_max_tokens": 2048,
+        "code_problem_limit": 10
+      },
+      "agent": {
+        "start_tokens": 20000,
+        "end_tokens": 120000,
+        "step_tokens": 20000,
+        "trials_per_stage": 50,
+        "conversations_per_stage": 5,
+        "threshold": 0.01,
+        "max_tokens": 256
+      }
+    },
+    "harness_version": "0.1.0+g5ea84751",
+    "generator_version": 1,
+    "context_limit": 163840,
+    "warnings": [],
+    "skipped": [],
+    "datasets": [],
+    "output_retokenization": {
+      "enabled": false,
+      "method": "/tokenize",
+      "block_join": "concat",
+      "add_special_tokens": false
+    }
+  },
+  "incomplete": false,
+  "results": [
+    {
+      "condition": "concurrency/c1",
+      "metric": "decode_tps",
+      "tier": "primary",
+      "continuous": {
+        "n": 2,
+        "mean": 44.686454320892906,
+        "median": 44.686454320892906,
+        "min": 40.75544387030703,
+        "max": 48.61746477147878,
+        "stdev": 5.559288293048914,
+        "iqr": 3.931010450585873,
+        "cv": 0.12440656520044596
+      },
+      "proportion": null,
+      "failures": 0,
+      "flags": [
+        "insufficient_trials"
+      ],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0
+      },
+      "count_source": null
+    },
+    {
+      "condition": "concurrency/c1",
+      "metric": "round_total_tps",
+      "tier": "primary",
+      "continuous": {
+        "n": 2,
+        "mean": 45.03831616593931,
+        "median": 45.03831616593931,
+        "min": 41.07635287715984,
+        "max": 49.00027945471877,
+        "stdev": 5.603062216616231,
+        "iqr": 3.9619632887794722,
+        "cv": 0.12440656520044603
+      },
+      "proportion": null,
+      "failures": 0,
+      "flags": [
+        "insufficient_trials"
+      ],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0
+      },
+      "count_source": null
+    },
+    {
+      "condition": "concurrency/c1",
+      "metric": "ttft_s",
+      "tier": "primary",
+      "continuous": {
+        "n": 2,
+        "mean": 0.8909281874999999,
+        "median": 0.8909281874999999,
+        "min": 0.888778958,
+        "max": 0.893077417,
+        "stdev": 0.0030394695075523686,
+        "iqr": 0.0021492295000001826,
+        "cv": 0.0034115763202882936
+      },
+      "proportion": null,
+      "failures": 0,
+      "flags": [
+        "insufficient_trials"
+      ],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0
+      },
+      "count_source": null
+    },
+    {
+      "condition": "concurrency/c1",
+      "metric": "text_wait_s",
+      "tier": "primary",
+      "continuous": null,
+      "proportion": null,
+      "failures": 0,
+      "flags": [
+        "insufficient_trials"
+      ],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0
+      },
+      "count_source": null
+    },
+    {
+      "condition": "concurrency/c1",
+      "metric": "thinking_duration_s",
+      "tier": "primary",
+      "continuous": {
+        "n": 2,
+        "mean": 2.8641411875,
+        "median": 2.8641411875,
+        "min": 2.612182083,
+        "max": 3.116100292,
+        "stdev": 0.35632398274727994,
+        "iqr": 0.25195910450000003,
+        "cv": 0.12440866543255209
+      },
+      "proportion": null,
+      "failures": 0,
+      "flags": [
+        "insufficient_trials"
+      ],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0
+      },
+      "count_source": null
+    },
+    {
+      "condition": "concurrency/c1",
+      "metric": "text_duration_s",
+      "tier": "primary",
+      "continuous": null,
+      "proportion": null,
+      "failures": 0,
+      "flags": [
+        "insufficient_trials"
+      ],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0
+      },
+      "count_source": null
+    },
+    {
+      "condition": "concurrency/c1",
+      "metric": "thinking_chars",
+      "tier": "primary",
+      "continuous": {
+        "n": 2,
+        "mean": 530.5,
+        "median": 530.5,
+        "min": 436.0,
+        "max": 625.0,
+        "stdev": 133.64318164425748,
+        "iqr": 94.5,
+        "cv": 0.2519192867940763
+      },
+      "proportion": null,
+      "failures": 0,
+      "flags": [
+        "insufficient_trials"
+      ],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0
+      },
+      "count_source": null
+    },
+    {
+      "condition": "concurrency/c1",
+      "metric": "text_chars",
+      "tier": "primary",
+      "continuous": {
+        "n": 2,
+        "mean": 0.0,
+        "median": 0.0,
+        "min": 0.0,
+        "max": 0.0,
+        "stdev": 0.0,
+        "iqr": 0.0,
+        "cv": null
+      },
+      "proportion": null,
+      "failures": 0,
+      "flags": [
+        "insufficient_trials"
+      ],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0
+      },
+      "count_source": null
+    },
+    {
+      "condition": "concurrency/c1",
+      "metric": "thinking_chars_per_s",
+      "tier": "primary",
+      "continuous": {
+        "n": 2,
+        "mean": 183.74073582102818,
+        "median": 183.74073582102818,
+        "min": 166.9102635828775,
+        "max": 200.57120805917884,
+        "stdev": 23.801882100336545,
+        "iqr": 16.83047223815069,
+        "cv": 0.12954058333324983
+      },
+      "proportion": null,
+      "failures": 0,
+      "flags": [
+        "insufficient_trials"
+      ],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0
+      },
+      "count_source": null
+    },
+    {
+      "condition": "concurrency/c1",
+      "metric": "text_chars_per_s",
+      "tier": "primary",
+      "continuous": null,
+      "proportion": null,
+      "failures": 0,
+      "flags": [
+        "insufficient_trials"
+      ],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0
+      },
+      "count_source": null
+    },
+    {
+      "condition": "concurrency/c2",
+      "metric": "decode_tps",
+      "tier": "primary",
+      "continuous": {
+        "n": 4,
+        "mean": 30.400696249212395,
+        "median": 31.204182134031498,
+        "min": 25.93566463033667,
+        "max": 33.25875609844991,
+        "stdev": 3.4516870617901363,
+        "iqr": 4.502760496022383,
+        "cv": 0.11353973716570918
+      },
+      "proportion": null,
+      "failures": 0,
+      "flags": [
+        "insufficient_trials"
+      ],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0
+      },
+      "count_source": null
+    },
+    {
+      "condition": "concurrency/c2",
+      "metric": "round_total_tps",
+      "tier": "primary",
+      "continuous": {
+        "n": 2,
+        "mean": 52.613513383791414,
+        "median": 52.613513383791414,
+        "min": 52.279764924143215,
+        "max": 52.947261843439605,
+        "stdev": 0.47199159805560703,
+        "iqr": 0.33374845964819855,
+        "cv": 0.008970919592703212
+      },
+      "proportion": null,
+      "failures": 0,
+      "flags": [
+        "insufficient_trials"
+      ],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0
+      },
+      "count_source": null
+    },
+    {
+      "condition": "concurrency/c2",
+      "metric": "ttft_s",
+      "tier": "primary",
+      "continuous": {
+        "n": 4,
+        "mean": 1.367591354,
+        "median": 1.3694687915000001,
+        "min": 0.868159,
+        "max": 1.863268833,
+        "stdev": 0.5705561752829975,
+        "iqr": 0.9847465835000002,
+        "cv": 0.4171978519856872
+      },
+      "proportion": null,
+      "failures": 0,
+      "flags": [
+        "insufficient_trials"
+      ],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0
+      },
+      "count_source": null
+    },
+    {
+      "condition": "concurrency/c2",
+      "metric": "text_wait_s",
+      "tier": "primary",
+      "continuous": null,
+      "proportion": null,
+      "failures": 0,
+      "flags": [
+        "insufficient_trials"
+      ],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0
+      },
+      "count_source": null
+    },
+    {
+      "condition": "concurrency/c2",
+      "metric": "thinking_duration_s",
+      "tier": "primary",
+      "continuous": {
+        "n": 4,
+        "mean": 4.22029221875,
+        "median": 4.08317975,
+        "min": 3.81842175,
+        "max": 4.896387625,
+        "stdev": 0.5049473690497794,
+        "iqr": 0.6192054692500002,
+        "cv": 0.11964748952842388
+      },
+      "proportion": null,
+      "failures": 0,
+      "flags": [
+        "insufficient_trials"
+      ],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0
+      },
+      "count_source": null
+    },
+    {
+      "condition": "concurrency/c2",
+      "metric": "text_duration_s",
+      "tier": "primary",
+      "continuous": null,
+      "proportion": null,
+      "failures": 0,
+      "flags": [
+        "insufficient_trials"
+      ],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0
+      },
+      "count_source": null
+    },
+    {
+      "condition": "concurrency/c2",
+      "metric": "thinking_chars",
+      "tier": "primary",
+      "continuous": {
+        "n": 4,
+        "mean": 580.0,
+        "median": 604.0,
+        "min": 493.0,
+        "max": 619.0,
+        "stdev": 58.42944463196617,
+        "iqr": 31.5,
+        "cv": 0.10074042177925202
+      },
+      "proportion": null,
+      "failures": 0,
+      "flags": [
+        "insufficient_trials"
+      ],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0
+      },
+      "count_source": null
+    },
+    {
+      "condition": "concurrency/c2",
+      "metric": "text_chars",
+      "tier": "primary",
+      "continuous": {
+        "n": 4,
+        "mean": 0.0,
+        "median": 0.0,
+        "min": 0.0,
+        "max": 0.0,
+        "stdev": 0.0,
+        "iqr": 0.0,
+        "cv": null
+      },
+      "proportion": null,
+      "failures": 0,
+      "flags": [
+        "insufficient_trials"
+      ],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0
+      },
+      "count_source": null
+    },
+    {
+      "condition": "concurrency/c2",
+      "metric": "thinking_chars_per_s",
+      "tier": "primary",
+      "continuous": {
+        "n": 4,
+        "mean": 139.89465521051426,
+        "median": 149.05723787357186,
+        "min": 100.68647291787892,
+        "max": 160.77767217703445,
+        "stdev": 27.735398227683675,
+        "iqr": 28.707747362278695,
+        "cv": 0.19825916998721138
+      },
+      "proportion": null,
+      "failures": 0,
+      "flags": [
+        "insufficient_trials"
+      ],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0
+      },
+      "count_source": null
+    },
+    {
+      "condition": "concurrency/c2",
+      "metric": "text_chars_per_s",
+      "tier": "primary",
+      "continuous": null,
+      "proportion": null,
+      "failures": 0,
+      "flags": [
+        "insufficient_trials"
+      ],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0
+      },
+      "count_source": null
+    },
+    {
+      "condition": "concurrency/c4",
+      "metric": "decode_tps",
+      "tier": "reference",
+      "continuous": {
+        "n": 8,
+        "mean": 21.159686645503704,
+        "median": 22.05534423359599,
+        "min": 16.2928654103638,
+        "max": 24.370342276859535,
+        "stdev": 2.77755267129591,
+        "iqr": 3.1419353260449405,
+        "cv": 0.13126624783387905
+      },
+      "proportion": null,
+      "failures": 0,
+      "flags": [],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0
+      },
+      "count_source": null
+    },
+    {
+      "condition": "concurrency/c4",
+      "metric": "round_total_tps",
+      "tier": "reference",
+      "continuous": {
+        "n": 2,
+        "mean": 64.13475085556064,
+        "median": 64.13475085556064,
+        "min": 62.584878954379036,
+        "max": 65.68462275674224,
+        "stdev": 2.1918498625919973,
+        "iqr": 1.5498719011816036,
+        "cv": 0.03417569778244424
+      },
+      "proportion": null,
+      "failures": 0,
+      "flags": [
+        "insufficient_trials"
+      ],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0
+      },
+      "count_source": null
+    },
+    {
+      "condition": "concurrency/c4",
+      "metric": "ttft_s",
+      "tier": "reference",
+      "continuous": {
+        "n": 8,
+        "mean": 2.372264708375,
+        "median": 2.8455249795,
+        "min": 0.870201708,
+        "max": 2.894786,
+        "stdev": 0.92070736945021,
+        "iqr": 0.5407065624999996,
+        "cv": 0.3881132515270162
+      },
+      "proportion": null,
+      "failures": 0,
+      "flags": [],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0
+      },
+      "count_source": null
+    },
+    {
+      "condition": "concurrency/c4",
+      "metric": "text_wait_s",
+      "tier": "reference",
+      "continuous": null,
+      "proportion": null,
+      "failures": 0,
+      "flags": [
+        "insufficient_trials"
+      ],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0
+      },
+      "count_source": null
+    },
+    {
+      "condition": "concurrency/c4",
+      "metric": "thinking_duration_s",
+      "tier": "reference",
+      "continuous": {
+        "n": 8,
+        "mean": 6.103844828,
+        "median": 5.760300104000001,
+        "min": 5.211220458,
+        "max": 7.794780958,
+        "stdev": 0.8922334330490101,
+        "iqr": 0.8974438964999996,
+        "cv": 0.14617564145079381
+      },
+      "proportion": null,
+      "failures": 0,
+      "flags": [],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0
+      },
+      "count_source": null
+    },
+    {
+      "condition": "concurrency/c4",
+      "metric": "text_duration_s",
+      "tier": "reference",
+      "continuous": null,
+      "proportion": null,
+      "failures": 0,
+      "flags": [
+        "insufficient_trials"
+      ],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0
+      },
+      "count_source": null
+    },
+    {
+      "condition": "concurrency/c4",
+      "metric": "thinking_chars",
+      "tier": "reference",
+      "continuous": {
+        "n": 8,
+        "mean": 601.875,
+        "median": 598.5,
+        "min": 488.0,
+        "max": 697.0,
+        "stdev": 62.95222111138846,
+        "iqr": 50.75,
+        "cv": 0.10459351378839205
+      },
+      "proportion": null,
+      "failures": 0,
+      "flags": [],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0
+      },
+      "count_source": null
+    },
+    {
+      "condition": "concurrency/c4",
+      "metric": "text_chars",
+      "tier": "reference",
+      "continuous": {
+        "n": 8,
+        "mean": 0.0,
+        "median": 0.0,
+        "min": 0.0,
+        "max": 0.0,
+        "stdev": 0.0,
+        "iqr": 0.0,
+        "cv": null
+      },
+      "proportion": null,
+      "failures": 0,
+      "flags": [],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0
+      },
+      "count_source": null
+    },
+    {
+      "condition": "concurrency/c4",
+      "metric": "thinking_chars_per_s",
+      "tier": "reference",
+      "continuous": {
+        "n": 8,
+        "mean": 99.5686761778289,
+        "median": 102.43060878485471,
+        "min": 79.397034947479,
+        "max": 112.27052289506238,
+        "stdev": 11.283173676313888,
+        "iqr": 15.678612233319384,
+        "cv": 0.11332051514034619
+      },
+      "proportion": null,
+      "failures": 0,
+      "flags": [],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0
+      },
+      "count_source": null
+    },
+    {
+      "condition": "concurrency/c4",
+      "metric": "text_chars_per_s",
+      "tier": "reference",
+      "continuous": null,
+      "proportion": null,
+      "failures": 0,
+      "flags": [
+        "insufficient_trials"
+      ],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0
+      },
+      "count_source": null
+    }
+  ],
+  "agent": null,
+  "server_metrics": {
+    "concurrency/c1": {
+      "spec_acceptance_rate": 0.5846501128668171,
+      "mean_acceptance_length": 3.0393700787401574,
+      "decode_steps": 130.0,
+      "tokens_per_step": 2.953846153846154,
+      "prefix_cache_hit_rate": 0.0,
+      "kv_usage_peak": 0.21084337349397586,
+      "preemptions": 0.0,
+      "missing": []
+    },
+    "concurrency/c2": {
+      "spec_acceptance_rate": 0.6662404092071611,
+      "mean_acceptance_length": 3.100806451612903,
+      "decode_steps": 138.0,
+      "tokens_per_step": 5.565217391304348,
+      "prefix_cache_hit_rate": 0.0,
+      "kv_usage_peak": 0.42168674698795183,
+      "preemptions": 0.0,
+      "missing": []
+    },
+    "concurrency/c4": {
+      "spec_acceptance_rate": 0.6179913739987677,
+      "mean_acceptance_length": 2.853974121996303,
+      "decode_steps": 160.0,
+      "tokens_per_step": 9.6,
+      "prefix_cache_hit_rate": 0.0,
+      "kv_usage_peak": 0.8433734939759037,
+      "preemptions": 0.0,
+      "missing": []
+    }
+  },
+  "datasets": [],
+  "output_phases": {
+    "concurrency/c1": {
+      "requests": 2,
+      "request_successes": 2,
+      "request_failures": 0,
+      "text_arrived": 0,
+      "text_not_reached": 2,
+      "thinking_only": 2,
+      "thinking_observed": 2,
+      "no_text": 0,
+      "unknown": 0,
+      "text_speed_n": 0
+    },
+    "concurrency/c2": {
+      "requests": 4,
+      "request_successes": 4,
+      "request_failures": 0,
+      "text_arrived": 0,
+      "text_not_reached": 4,
+      "thinking_only": 4,
+      "thinking_observed": 4,
+      "no_text": 0,
+      "unknown": 0,
+      "text_speed_n": 0
+    },
+    "concurrency/c4": {
+      "requests": 8,
+      "request_successes": 8,
+      "request_failures": 0,
+      "text_arrived": 0,
+      "text_not_reached": 8,
+      "thinking_only": 8,
+      "thinking_observed": 8,
+      "no_text": 0,
+      "unknown": 0,
+      "text_speed_n": 0
+    }
+  },
+  "phase_warnings": [
+    "concurrency/c1: 本文未到達 2 件 (うち思考のみ 2 件)",
+    "concurrency/c2: 本文未到達 4 件 (うち思考のみ 4 件)",
+    "concurrency/c4: 本文未到達 8 件 (うち思考のみ 8 件)"
+  ],
+  "output_retokenization_counts": {}
+}
