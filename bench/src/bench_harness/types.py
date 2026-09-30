@@ -163,6 +163,14 @@ ThinkingMode = Literal["server_default"]
 出力を変えなかった。効かない選択肢を残すと、「設定では切り替えたのに、実際には
 変わっていない」計測が黙って残るので、選択肢から外した。
 
+2026-09-30 に、固定した vLLM (`0961bbae`) のソース木 (`serving/var/nope-build-0961bbae/source/`
+からの相対パス) でも確かめた (issue #130)。`vllm/entrypoints/anthropic/protocol.py:121-177` に
+`thinking` の項目は無い。`protocol.py:114-118` と
+`vllm/entrypoints/openai/chat_completion/protocol.py:584-586` の `output_config.effort` には
+`"none"` が無く、`enable_thinking` は `/v1/messages` 経由では常に `True` になる。
+`vllm/parser/glm47_moe.py:192-199, 222-224` の `chat_template_kwargs.enable_thinking=false` は、
+思考を止めずに全出力を「本文」として返す誤動作を起こすため、渡し方として採用できない。
+
 切り替えが効く構成が見つかったら、その構成で実測した渡し方と一緒に、選択肢を足し直す
 こと (要求の組み立てと、送った本文が変わることを確かめる試験も、そのときに足す)。
 """

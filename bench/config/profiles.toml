@@ -262,7 +262,8 @@ max_tokens = 256
 # JSON 追加前の 4 条件では、この機械 (1 本 14〜30 tok/s) で 15〜20 分の見込み
 # (issue #39 の目安。実測は未確認。上限どおり生成すると 23〜48 分だが、コードの回答は
 # 上限の前に終わる)。現行の 6 条件の所要時間は未計測。
-# prefill・agent は quick のまま (issue の指定範囲)
+# prefill は 32k・64k・128k (issue #130)、agent は quick のまま
+# prefill は 36 要求、約 16 分 (計算。README の算式)
 [profiles.fast]
 seed = 0
 min_successes = 5
@@ -312,7 +313,9 @@ max_tokens = 256
 trials = 5
 warmup_trials = 1
 max_tokens = 16
-target_input_tokens = [8000, 32000, 128000]
+# issue #130: 成功の基準の 32k と、会話が 10 万トークンまで伸びる用途に合わせる。
+# probe・quick・full は 8k/32k/128k のまま
+target_input_tokens = [32000, 64000, 128000]
 
 [profiles.fast.concurrency]
 # 同時度は 1、2、4 だけ。8 は確認には要らないので落とす

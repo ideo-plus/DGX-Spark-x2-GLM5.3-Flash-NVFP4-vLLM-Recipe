@@ -7,21 +7,14 @@ from pathlib import Path
 from bench_harness import cli
 from bench_harness.store import list_run_dirs
 from bench_harness.types import Summary
-from fake_server import FakeServer, Script, UsageSpec, thinking_events
+from fake_server import FakeServer, Script, UsageSpec, thinking_events, thinking_response
 
 
-def test_thinking_only_is_not_text_speed_success(fake_server: FakeServer, tmp_path: Path) -> None:
-    fake_server.set_response(
-        Script(
-            events=thinking_events("思考だけ", chunks=("思考", "だけ")),
-            gap_s=0.001,
-            stop_reason="max_tokens",
-            usage=UsageSpec(output_tokens=256),
-        )
-    )
+def run_decode(base_url: str, tmp_path: Path) -> Path:
+    """偽のサーバーに対して decode を 10 試行流し、できた計測ランのディレクトリを返す。"""
     targets = tmp_path / "targets.toml"
     targets.write_text(
-        f'[targets.fake]\nbase_url = "{fake_server.base_url}"\nmodel = "fake-model"\n',
+        f'[targets.fake]\nbase_url = "{base_url}"\nmodel = "fake-model"\n',
         encoding="utf-8",
     )
     profiles = tmp_path / "profiles.toml"
@@ -51,7 +44,20 @@ def test_thinking_only_is_not_text_speed_success(fake_server: FakeServer, tmp_pa
     assert code == 0
     runs = list_run_dirs(root)
     assert len(runs) == 1
-    summary = Summary.model_validate_json((runs[0] / "summary.json").read_text(encoding="utf-8"))
+    return runs[0]
+
+
+def test_thinking_only_is_not_text_speed_success(fake_server: FakeServer, tmp_path: Path) -> None:
+    fake_server.set_response(
+        Script(
+            events=thinking_events("思考だけ", chunks=("思考", "だけ")),
+            gap_s=0.001,
+            stop_reason="max_tokens",
+            usage=UsageSpec(output_tokens=256),
+        )
+    )
+    run_dir = run_decode(fake_server.base_url, tmp_path)
+    summary = Summary.model_validate_json((run_dir / "summary.json").read_text(encoding="utf-8"))
     for condition in ("decode/json/en", "decode/json/ja"):
         total = next(
             row
@@ -67,6 +73,25 @@ def test_thinking_only_is_not_text_speed_success(fake_server: FakeServer, tmp_pa
         assert text_speed.continuous is None
         assert summary.output_phases[condition]["request_successes"] == 10
         assert summary.output_phases[condition]["thinking_only"] == 10
+        assert summary.output_phases[condition]["thinking_observed"] == 10
         assert summary.output_phases[condition]["text_speed_n"] == 0
-    assert "本文未到達" in (runs[0] / "summary.json").read_text(encoding="utf-8")
-    assert "本文未到達" in (runs[0] / "summary.md").read_text(encoding="utf-8")
+    assert "本文未到達" in (run_dir / "summary.json").read_text(encoding="utf-8")
+    assert "本文未到達" in (run_dir / "summary.md").read_text(encoding="utf-8")
+    assert "思考あり" in (run_dir / "summary.md").read_text(encoding="utf-8")
+
+
+def test_thinking_with_an_answer_is_counted_as_thinking_observed_not_thinking_only(
+    fake_server: FakeServer, tmp_path: Path
+) -> None:
+    """思考のあとに本文が届いた試行は、本文への到達として数え、二重に「思考のみ」へ入れない
+
+    (issue #130)。
+    """
+    fake_server.set_response(thinking_response("考え中", answer="答え"))
+    run_dir = run_decode(fake_server.base_url, tmp_path)
+    summary = Summary.model_validate_json((run_dir / "summary.json").read_text(encoding="utf-8"))
+    for condition in ("decode/json/en", "decode/json/ja"):
+        counts = summary.output_phases[condition]
+        assert counts["text_arrived"] == 10
+        assert counts["thinking_observed"] == 10
+        assert counts["thinking_only"] == 0

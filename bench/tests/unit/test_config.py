@@ -457,7 +457,10 @@ def test_real_profiles_include_probe_derived_from_quick() -> None:
 
 
 def test_real_profiles_include_fast_derived_from_quick() -> None:
-    """fast は quick を元に decode、concurrency、quality だけを縮めた確認の設定 (issue #39)。"""
+    """fast は quick を元に decode、concurrency、quality、prefill を変えた確認の設定
+
+    (issue #39、#130)。
+    """
     profiles = c.load_profiles()
     fast, quick = profiles["fast"], profiles["quick"]
 
@@ -477,7 +480,13 @@ def test_real_profiles_include_fast_derived_from_quick() -> None:
         "code_max_tokens": 2048,
         "code_problem_limit": 10,
     }
-    excluded = {"name", "decode", "concurrency", "quality"}
+    assert fast.prefill.model_dump() == {
+        "trials": 5,
+        "warmup_trials": 1,
+        "max_tokens": 16,
+        "target_input_tokens": [32000, 64000, 128000],
+    }
+    excluded = {"name", "decode", "concurrency", "quality", "prefill"}
     assert fast.model_dump(exclude=excluded) == quick.model_dump(exclude=excluded)
 
 

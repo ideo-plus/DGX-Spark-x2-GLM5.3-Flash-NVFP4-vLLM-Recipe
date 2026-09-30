@@ -13,6 +13,7 @@ _NS_PER_S = 1_000_000_000
 class PhaseMetrics:
     status: str
     observed: bool = True
+    thinking_observed: bool = False
     duration_reason: str | None = None
     text_wait_s: float | None = None
     thinking_duration_s: float | None = None
@@ -41,13 +42,16 @@ def phase_metrics(result: StreamResult) -> PhaseMetrics:
     """旧記録の段階別時刻をblocksから補完しない。"""
     phases = result.output_phases
     if phases is None:
+        thinking_observed = any(
+            block.type == "thinking" and bool(block.text) for block in result.blocks
+        )
         if any(block.type == "text" and block.text for block in result.blocks):
             status = "text"
-        elif any(block.type == "thinking" and block.text for block in result.blocks):
+        elif thinking_observed:
             status = "thinking_only"
         else:
             status = "no_text"
-        return PhaseMetrics(status=status, observed=False)
+        return PhaseMetrics(status=status, observed=False, thinking_observed=thinking_observed)
     thinking = phases.thinking
     text = phases.text
     thinking_duration = _duration(thinking.first_ns, thinking.last_ns)
@@ -65,9 +69,10 @@ def phase_metrics(result: StreamResult) -> PhaseMetrics:
         thinking_duration = None
         text_duration = None
         duration_reason = "思考と本文の観測区間を分離できないため、段階別の継続時間・速度は不明"
+    thinking_observed = bool(thinking.char_count)
     if text.char_count:
         status = "text"
-    elif thinking.char_count:
+    elif thinking_observed:
         status = "thinking_only"
     else:
         status = "no_text"
@@ -79,6 +84,7 @@ def phase_metrics(result: StreamResult) -> PhaseMetrics:
     counts = result.output_token_counts
     return PhaseMetrics(
         status=status,
+        thinking_observed=thinking_observed,
         duration_reason=duration_reason,
         text_wait_s=wait,
         thinking_duration_s=thinking_duration,
