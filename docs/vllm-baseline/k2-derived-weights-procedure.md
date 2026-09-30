@@ -389,3 +389,25 @@ uv run --directory serving serve smoke glm53-tp2-mtp3-marlin
 uv run --directory serving serve logs glm53-tp2-mtp3-marlin
 uv run --directory serving serve stop --yes
 ```
+
+## 11. ⚠ 思考オフの比較用の構成 glm53-tp2-mtp3-marlin-thinking-toggle で起動する (issue #131)
+
+`glm53-tp2-mtp3-marlin-thinking-toggle` は、§10 の `glm53-tp2-mtp3-marlin` と引数・環境変数・docker の指定が同じ構成です。違いは、`enable_thinking`/`thinking` を読むチャットテンプレート (`serving/payload/chat-template/glm53-flash-thinking-toggle.jinja`) を読み取り専用の bind mount で重ね、`--chat-template` で指すことだけです。用途は、思考オフで公表している他のレシピと同じ条件で比べることです。成功の基準の判定には使いません。**実機では未確認です。** 前提 (重み `k2s4` の照合、重ね合わせの配布、ページキャッシュを捨てること) と、記録の回収・停止は §10 と同じです。
+
+⚠ 了承を得てから実行する。`serve push` は、テンプレートを含む `serving/payload/` の中身を 2 台の `payload/` に配る。
+
+```bash
+uv run --directory serving serve push --yes
+```
+
+配ったあとに、関門を流します (読み取りだけ)。
+
+```bash
+uv run --directory serving serve check glm53-tp2-mtp3-marlin-thinking-toggle
+```
+
+⚠ 了承を得てから実行する。`serve start` は、2 台でコンテナを起こす。
+
+```bash
+uv run --directory serving serve start glm53-tp2-mtp3-marlin-thinking-toggle --yes
+```

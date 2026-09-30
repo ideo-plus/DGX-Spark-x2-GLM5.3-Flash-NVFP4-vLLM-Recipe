@@ -7,7 +7,8 @@
 #
 # `probe` は探り (候補の比較)、`fast` は確認 (有望な候補だけ。
 # JSON 追加前の 4 条件では 15〜20 分の見込み)、`quick` は記録の最小、
-# `full` は公開する結果を作る本番 (issue #39)。
+# `full` は公開する結果を作る本番 (issue #39)。`fast-thinking-off` は、`fast` と
+# 同じで `sampling.thinking` だけ `off` にした、思考オフで比べる用途の設定 (issue #131)。
 # 差は主に試行の回数と出力の上限で、それ以外はそろえてある
 #
 # TOML には null (未設定) を書く記法がないので、既定が `None` の項目
@@ -26,8 +27,10 @@ metrics_interval_s = 1.0
 
 [profiles.quick.sampling]
 temperature = 0.0
-# top_p、top_k は既定の None のまま (省略)。thinking は、対象サーバーの既定しか選べない
-# (2026-09-20 に実機で確かめたところ、/v1/messages からは切り替えられなかった。タスク 8.4)
+# top_p、top_k は既定の None のまま (省略)。thinking は、対象サーバーの既定 (server_default)
+# か、思考オフの比較用 (off) しか選べない (2026-09-20 に実機で確かめたところ、/v1/messages
+# からは切り替えられなかった。タスク 8.4)。off は enable_thinking/thinking を読むチャット
+# テンプレートの構成を相手にしたときだけ意味がある (issue #131。fast-thinking-off が使う)
 thinking = "server_default"
 
 [profiles.quick.chars_per_token]
@@ -334,6 +337,83 @@ code_max_tokens = 2048
 code_problem_limit = 10
 
 [profiles.fast.agent]
+start_tokens = 20000
+end_tokens = 120000
+step_tokens = 20000
+trials_per_stage = 50
+conversations_per_stage = 5
+threshold = 0.01
+max_tokens = 256
+
+# 確認・思考オフ (fast-thinking-off)。fast の全項目を複写し、sampling.thinking だけを
+# "off" にした、思考オフで比べる用途の設定 (issue #131)。enable_thinking/thinking を
+# 読むチャットテンプレートの構成 (例: glm53-tp2-mtp3-marlin-thinking-toggle) を相手に
+# したときだけ意味がある。bench/README.md の制限を参照
+[profiles.fast-thinking-off]
+seed = 0
+min_successes = 5
+max_consecutive_failures = 5
+length_tolerance = 0.05
+compare_tolerance = 0.02
+metrics_interval_s = 1.0
+
+[profiles.fast-thinking-off.sampling]
+temperature = 0.0
+thinking = "off"
+
+[profiles.fast-thinking-off.chars_per_token]
+# fast と同じ (2026-09-20 に実機の GLM-5.3-Flash で測った値)
+prose_en = 4.831
+prose_ja = 1.794
+code = 3.505
+log = 2.316
+
+[profiles.fast-thinking-off.timeout]
+connect_s = 10.0
+first_event_s = 120.0
+idle_s = 60.0
+total_s = 900.0
+
+[profiles.fast-thinking-off.output_sanity]
+repeat_min_chars = 12
+repeat_min_count = 8
+
+[profiles.fast-thinking-off.sandbox]
+# fast と同じ
+runtime = "auto"
+image = "bench-sandbox:py3.13-numpy2.5.3"
+image_digest = "sha256:f75a1d43009306248ecbe68c0cc992b700a472037ba6ea336e519404ec1d1de6"
+timeout_s = 20.0
+memory_mb = 512
+cpus = 1.0
+pids_limit = 64
+
+[profiles.fast-thinking-off.decode]
+trials = 10
+warmup_trials = 1
+max_tokens = 256
+
+[profiles.fast-thinking-off.prefill]
+trials = 5
+warmup_trials = 1
+max_tokens = 16
+target_input_tokens = [32000, 64000, 128000]
+
+[profiles.fast-thinking-off.concurrency]
+levels = [1, 2, 4]
+rounds = 2
+max_tokens = 128
+input_tokens = 2000
+
+[profiles.fast-thinking-off.quality]
+toolcall_tasks = 10
+needle_lengths = [8000, 32000]
+needle_depths = [50]
+trials_per_cell = 1
+code_max_tokens = 2048
+code_problem_limit = 10
+
+[profiles.fast-thinking-off.agent]
 start_tokens = 20000
 end_tokens = 120000
 step_tokens = 20000

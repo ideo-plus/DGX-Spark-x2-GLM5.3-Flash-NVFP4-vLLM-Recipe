@@ -3,7 +3,7 @@
 
 ## 何をするか
 
-同じ、複数ターンの会話 (`_CONVERSATION`)、`temperature 0` で、次の 5 通り (`types.ThinkingVariant`)
+同じ、複数ターンの会話 (`_CONVERSATION`)、`temperature 0` で、次の 6 通り (`types.ThinkingVariant`)
 を、決めた回数 (既定 3) ずつ、head の `/v1/messages` に送る (ストリームでない応答)。
 
 | # | `ThinkingVariant` | 足す項目 | 期待 (design.md 「thinking」) |
@@ -13,15 +13,21 @@
 | 3 | `chat_template_low` | `chat_template_kwargs.reasoning_effort = "low"` | 2 と同じはず |
 | 4 | `output_config_medium` | `output_config.effort = "medium"` | 変わらないはず (`max` に落ちる) |
 | 5 | `clear_thinking` | `chat_template_kwargs.clear_thinking = True` | 深さ同じ、`input_tokens`減 |
+| 6 | `chat_template_off` | `chat_template_kwargs.enable_thinking = False` | `output_tokens`減 ※ |
+
+※ 6 番目の効いた証拠は、`output_tokens` が 1 番目 (`none`) より減ることである。思考の文字数は、
+どちらの構成 (公式のテンプレートでも、変数を読むテンプレートでも) でも 0 になるので、
+効いたかどうかの区別には使えない (下の「6 番目の限界」)。
 
 共通の項目は `model`、`max_tokens`、`temperature` (0)、`messages`、`stream` (`False`) だけ。
-`seed`、`thinking`、`enable_thinking` などは送らない (research.md §g: `/v1/messages` の
-`AnthropicMessagesRequest` は Anthropic 形式の `thinking` を持たず、pydantic の既定
-(`extra="ignore"`) で黙って捨てる。渡しても意味がない)。
+`seed`、`thinking` は送らない (research.md §g: `/v1/messages` の `AnthropicMessagesRequest` は
+Anthropic 形式の `thinking` を持たず、pydantic の既定 (`extra="ignore"`) で黙って捨てる。渡しても
+意味がない)。`enable_thinking` は、要求の**最上位**には今も送らない。6 番目の通りだけ、
+`chat_template_kwargs` の中に `enable_thinking` を送る (issue #131 のコメント 1)。
 
 ## 同じ入力 (親の判断: 決めごとの 2)
 
-5 通りとも、**同じ、合成の固定の会話** (`_CONVERSATION`: user → 過去の thinking のブロックと
+6 通りとも、**同じ、合成の固定の会話** (`_CONVERSATION`: user → 過去の thinking のブロックと
 本文を持つ assistant → user) を送る。5 番目 (`clear_thinking`) の `input_tokens` を、1 番目
 (`none`) と比べられるようにするため (5 番目だけ別の入力にすると、「同じ入力」でなくなり、
 比べる相手もなくなる)。会話はこの module の定数であり、**モデルの出力ではない**。呼ぶ側は
@@ -39,8 +45,8 @@
 
 ## 送る順 (決めごとの 4)
 
-回ごとに 5 通りを `_VARIANTS_ORDER` (types.py の `ThinkingVariant` の列挙と同じ順) で送る
-(1 回目の 1〜5、2 回目の 1〜5、…)。時間とともに変わる影響 (キャッシュ、暖まり) が、1 つの
+回ごとに 6 通りを `_VARIANTS_ORDER` (types.py の `ThinkingVariant` の列挙と同じ順) で送る
+(1 回目の 1〜6、2 回目の 1〜6、…)。時間とともに変わる影響 (キャッシュ、暖まり) が、1 つの
 通りに偏らないようにする。
 
 ## 記録すること (決めごとの 5。requirements 10.5)
@@ -72,10 +78,25 @@ thinking の文字数という**数**) だけを並べる。送った会話の�
   「重なる」
 - `effective = None`: それ以外 (値の欠け、HTTP の失敗、打ち切りで、2 対 1 と 3 対 1 の少なくとも
   一方が判定できない)
-- `detail` には、4 つの比べ (2 対 1、3 対 1、4 対 1、5 対 1) を、範囲の数字つきで書く。4 対 1 は
-  「重なる」が期待どおり (重ならなければ「期待と違う」)。5 対 1 は `input_tokens` だけで比べ、
-  5 の最大 < 1 の最小なら「減った」(期待どおり)。**4 対 1 と 5 対 1 は、`effective` の値を
-  左右しない** (決めごとの 6 のとおり、`effective` は 2 対 1 と 3 対 1 だけで決める)
+- `detail` には、5 つの比べ (2 対 1、3 対 1、4 対 1、5 対 1、6 対 1) を、範囲の数字つきで書く。
+  4 対 1 は「重なる」が期待どおり (重ならなければ「期待と違う」)。5 対 1 は `input_tokens` だけで
+  比べ、5 の最大 < 1 の最小なら「減った」(期待どおり)。6 対 1 (`chat_template_off`) は
+  `output_tokens` だけで比べ、6 の最大 < 1 の最小なら「減った」(期待どおり)。
+  6 番目の thinking の文字数は、どちらの構成 (公式のテンプレートでも、変数を読む
+  テンプレートでも) でも、パーサーが思考のブロックを作らないため 0 になり、効いたかどうかの
+  区別には使えない (1 番目の `none` は思考が有効なので 0 にならない。issue #131。
+  下の「6 番目の限界」)。
+  **4 対 1、5 対 1、6 対 1 は、`effective` の値を左右しない**
+  (決めごとの 6 のとおり、`effective` は 2 対 1 と 3 対 1 だけで決める)
+
+## 6 番目 (`chat_template_off`) の限界 (issue #131)
+
+公式のチャットテンプレートの構成に送ると、`enable_thinking` がテンプレートに届かず、
+生成の書き出しは無条件に `<think>` のまま開くため、この通りは効かない (思考が本文に漏れる)。
+効いたと確かめられるのは、`enable_thinking`/`thinking` を読むテンプレート (issue #131 の
+`glm53-tp2-mtp3-marlin-thinking-toggle`) を相手にしたときだけである。どちらの構成でも
+`thinking_chars` は 0 になる (`glm47` のパーサーは、思考が無効なら思考のブロックを作らない
+ため)。効いたかどうかは、`output_tokens` が 1 番目より減るかで読む (6 対 1)。
 
 ## 中断 (決めごとの 8)
 
@@ -120,7 +141,7 @@ head への HTTP だけで完結するので、Spark の遠隔の実行役 (`Rem
 ## 5.1 への手がかり (終了コードは、ここでは決めない。design.md 「Error Handling」)
 
 `ThinkingOutcome.effective` が `True`/`False` なら「判定できた」、`None` なら「判定できなかった」
-(HTTP の失敗や値の欠けで、5 通りの比べが決着しなかった)。5.1 は、これをもとに終了コードを選ぶ。
+(HTTP の失敗や値の欠けで、6 通りの比べが決着しなかった)。5.1 は、これをもとに終了コードを選ぶ。
 """
 
 from __future__ import annotations
@@ -175,8 +196,10 @@ _VARIANTS_ORDER: Final[tuple[ThinkingVariant, ...]] = (
     "chat_template_low",
     "output_config_medium",
     "clear_thinking",
+    "chat_template_off",
 )
-"""1 回ぶんで送る 5 通りの順 (`types.ThinkingVariant` の列挙と同じ順。決めごとの 4)。"""
+"""1 回ぶんで送る 6 通りの順 (`types.ThinkingVariant` の列挙と同じ順。決めごとの 4。
+issue #131 で `chat_template_off` を末尾に足した)。"""
 
 _STOP_REASON_MAX_TOKENS: Final[str] = "max_tokens"
 """`max_tokens` で打ち切られたことを示す `stop_reason` の値 (Anthropic の Messages API の
@@ -219,7 +242,7 @@ _CONVERSATION: Final[tuple[dict[str, object], ...]] = (
         ),
     },
 )
-"""5 通りとも同じ、合成の固定の会話 (module の docstring の「同じ入力」。モデルの出力ではない)。"""
+"""6 通りとも同じ、合成の固定の会話 (module の docstring の「同じ入力」。モデルの出力ではない)。"""
 
 
 _CompareVerdict = Literal["candidate_below", "candidate_above", "overlap"]
@@ -290,7 +313,8 @@ def _build_body(
     messages: Sequence[Mapping[str, object]],
 ) -> dict[str, object]:
     """1 回ぶんの要求の本文 (module の docstring の表)。共通の項目に、通りごとの項目を 1 つだけ
-    足す (`none` は何も足さない)。`seed`、`thinking`、`enable_thinking` は送らない。
+    足す (`none` は何も足さない)。`seed`、`thinking` は送らない。`enable_thinking` は、最上位
+    には今も送らない (6 番目の `chat_template_off` だけ、`chat_template_kwargs` の中に送る)。
     """
     body: dict[str, object] = {
         "model": model,
@@ -307,6 +331,8 @@ def _build_body(
         body["output_config"] = {"effort": "medium"}
     elif variant == "clear_thinking":
         body["chat_template_kwargs"] = {"clear_thinking": True}
+    elif variant == "chat_template_off":
+        body["chat_template_kwargs"] = {"enable_thinking": False}
     return body
 
 
@@ -492,6 +518,34 @@ def _fifth_text(trials: Sequence[ThinkingTrial]) -> str:
     return f"5 対 1: input_tokens {_range_text(cand_range)} 対 {_range_text(base_range)} ({note})"
 
 
+def _sixth_text(trials: Sequence[ThinkingTrial]) -> str:
+    """6 対 1 (`chat_template_off`) の説明文。thinking の文字数の範囲も書くが、判定は
+    `output_tokens` だけで行う (決めごとの 6。issue #131)。
+
+    `glm47` のパーサーは、思考が無効なら思考のブロックを作らないため、6 番目の
+    `thinking_chars` は、どちらの構成でも 0 になる (公式テンプレートの構成に送った場合を含む)。
+    したがって効いたかどうかの区別には使えない (1 番目の `none` は思考が有効なので 0 にならない)。
+    効いたかどうかは、`output_tokens` が 1 番目より減るかどうかで読む。
+    """
+    candidate = [trial for trial in trials if trial.variant == "chat_template_off"]
+    baseline = [trial for trial in trials if trial.variant == "none"]
+    chars_c = _metric_range(candidate, lambda trial: trial.thinking_chars)
+    chars_b = _metric_range(baseline, lambda trial: trial.thinking_chars)
+    tokens_c = _metric_range(candidate, lambda trial: trial.output_tokens)
+    tokens_b = _metric_range(baseline, lambda trial: trial.output_tokens)
+    verdict = _compare_ranges(tokens_c, tokens_b)
+    note = {
+        "candidate_below": "減った (期待どおり)",
+        "candidate_above": "増えた (期待と違う)",
+        "overlap": "変わらなかった (期待と違う)",
+        None: "判定できない",
+    }[verdict]
+    return (
+        f"6 対 1: thinking 文字数 {_range_text(chars_c)} 対 {_range_text(chars_b)}、"
+        f"output_tokens {_range_text(tokens_c)} 対 {_range_text(tokens_b)} ({note})"
+    )
+
+
 def _judge(trials: Sequence[ThinkingTrial]) -> tuple[bool | None, str]:
     """`effective` と `detail` を決める (決めごとの 6)。"""
     second_verdict, second_text = _judge_pair(trials, "output_config_low", "none")
@@ -518,11 +572,12 @@ def _judge(trials: Sequence[ThinkingTrial]) -> tuple[bool | None, str]:
     }
     round_count = max((trial.trial_index for trial in trials), default=0)
     parts = [
-        f"5 通りを、回ごとに 1〜5 の順で {round_count} 回ずつ送った",
+        f"6 通りを、回ごとに 1〜6 の順で {round_count} 回ずつ送った",
         f"2 対 1: {second_text} ({plain_note[second_verdict]})",
         f"3 対 1: {third_text} ({plain_note[third_verdict]})",
         f"4 対 1: {fourth_text} ({fourth_note[fourth_verdict]})",
         _fifth_text(trials),
+        _sixth_text(trials),
     ]
     if effective is True:
         parts.append("2 か 3 のどちらかで範囲が重ならないので、効いたと言える")
@@ -574,7 +629,7 @@ def run_thinking(
 ) -> ThinkingOutcome:
     """thinking の深さの渡し方を確かめる (`serve thinking`。requirements 9.2、10.5)。
 
-    同じ、合成の固定の会話、`temperature 0` で、5 通り (`_VARIANTS_ORDER`) を `trials` 回ずつ、
+    同じ、合成の固定の会話、`temperature 0` で、6 通り (`_VARIANTS_ORDER`) を `trials` 回ずつ、
     `{base_url}/v1/messages` に送る (ストリームでない応答)。**Spark には触らない** (HTTP だけ)。
 
     引数:

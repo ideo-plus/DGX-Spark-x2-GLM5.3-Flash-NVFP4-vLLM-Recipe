@@ -692,6 +692,25 @@ async def test_stored_body_is_the_body_that_was_sent(fake_server: FakeServer) ->
     assert received == expected
 
 
+async def test_run_trial_adds_the_chat_template_switch_when_thinking_is_off(
+    fake_server: FakeServer,
+) -> None:
+    """`sampling.thinking = "off"` の条件では、`run_trial` が送る本文すべてに
+    `chat_template_kwargs == {"enable_thinking": False}` が載る (issue #131、K9)。"""
+    fake_server.set_response(text_response("ok"))
+    profile = make_profile(
+        sampling={"temperature": 0.3, "top_p": 0.9, "top_k": 40, "thinking": "off"}
+    )
+    async with suite_ctx(fake_server, profile=profile) as (ctx, sink):
+        plan = make_plan(ctx, max_tokens=64)
+        await run_trial(ctx, plan, trial_index=0, messages=user_message("本文"))
+
+    assert sink.bodies[0]["chat_template_kwargs"] == {"enable_thinking": False}
+    sent = fake_server.requests_for("/v1/messages")[0].body
+    assert sent is not None
+    assert sent["chat_template_kwargs"] == {"enable_thinking": False}
+
+
 async def test_trial_record_is_complete_and_round_trips_through_json(
     fake_server: FakeServer,
 ) -> None:

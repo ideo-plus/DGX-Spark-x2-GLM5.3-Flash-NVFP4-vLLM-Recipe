@@ -157,6 +157,7 @@ from bench_harness.types import (
     SuiteName,
     TargetDef,
     TextBlockParam,
+    ThinkingMode,
     Tier,
     ToolCallVerdict,
     ToolDef,
@@ -238,6 +239,15 @@ CountInputTokens = Callable[[MessagesRequest], Awaitable[TokenCount]]
 `max_tokens=1` の要求で代え、それも失敗したら `ProbeError`)。
 """
 
+_THINKING_EXTRA: Final[dict[ThinkingMode, dict[str, JsonValue]]] = {
+    "server_default": {},
+    "off": {"chat_template_kwargs": {"enable_thinking": False}},
+}
+"""`sampling.thinking` から、要求に足す項目への対応 (issue #131)。`server_default` は
+何も足さない (既存の契約)。`off` は `/v1/messages` の要求に
+`chat_template_kwargs.enable_thinking = false` を載せる (`enable_thinking`/`thinking` を
+読むチャットテンプレートを相手にしたときだけ意味がある。`bench/README.md` の制限を参照)。"""
+
 
 # --- まとまりの文脈 -------------------------------------------------------
 
@@ -267,12 +277,13 @@ class SuiteContext:
             raise ValueError(
                 f"SuiteContext: context_limit は 1 以上か None (context_limit={self.context_limit})"
             )
-        if self.profile.sampling.thinking != "server_default":
-            # 設定の型は `server_default` しか許さない (task 8.4)。ここに来るのは、検証を
-            # 通らない作り方 (`model_copy(update=…)` など) をしたときだけ。実行の条件と、
-            # 実際に送る本文が食い違うので、送る前に止める
+        if self.profile.sampling.thinking not in _THINKING_EXTRA:
+            # 設定の型は _THINKING_EXTRA にある値しか許さない (task 8.4、issue #131)。
+            # ここに来るのは、検証を通らない作り方 (`model_copy(update=…)` など) を
+            # したときだけ。実行の条件と、実際に送る本文が食い違うので、送る前に止める
             raise ValueError(
-                "SuiteContext: thinking は、対象サーバーの既定 (server_default) しか選べない。"
+                "SuiteContext: thinking は "
+                f"{sorted(_THINKING_EXTRA)} のどれかしか選べない。"
                 f"sampling.thinking={self.profile.sampling.thinking!r}"
             )
 
@@ -642,11 +653,13 @@ async def run_trial(
 
     サンプリングと出力の上限は `cond` からしか読まない (2.7)。送る本文は
     `build_request_body` で組み立て、`ctx.put_body` で保存してから送る
-    (保存するのは、実際に送った形。注 1.2、2.3)。
+    (保存するのは、実際に送った形。注 1.2、2.3)。`cond.sampling.thinking` から引いた
+    項目 (`off` なら `chat_template_kwargs.enable_thinking = false`) を、呼び出し側の
+    `extra` と合わせて本文に足す (issue #131)。
 
     要求の失敗では投げない (クライアントが値として返す)。投げるのは、呼び出し
-    の誤り (`extra` が型のある項目と重なる、`messages` が空、`trial_index` が
-    負) とキャンセルだけ。
+    の誤り (`extra` が型のある項目と重なる、`extra` が `sampling.thinking` の項目と
+    重なる、`messages` が空、`trial_index` が負) とキャンセルだけ。
 
     引数:
 
@@ -669,6 +682,13 @@ async def run_trial(
     if not messages:
         raise ValueError("run_trial: messages は空にできない")
 
+    thinking_extra = _THINKING_EXTRA[cond.sampling.thinking]
+    caller_extra = dict(extra) if extra is not None else {}
+    clashing = sorted(set(thinking_extra) & set(caller_extra))
+    if clashing:
+        # 同じ条件の試行が同じ設定で送られること (2.7) を、呼び出し側の extra が
+        # sampling.thinking の項目と黙って重ならないようにする (issue #131)
+        raise ValueError(f"run_trial: extra が sampling.thinking の項目と重なる: {clashing}")
     request = MessagesRequest(
         model=ctx.target.model,
         max_tokens=cond.max_tokens,
@@ -678,7 +698,7 @@ async def run_trial(
         temperature=cond.sampling.temperature,
         top_p=cond.sampling.top_p,
         top_k=cond.sampling.top_k,
-        extra=dict(extra) if extra is not None else {},
+        extra={**thinking_extra, **caller_extra},
     )
     body_ref = ctx.put_body(build_request_body(request))
     if start_gate is not None:

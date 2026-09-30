@@ -619,7 +619,8 @@ BODY_MARKER = "ZZ-SAFETY-BODY-MARKER-ZZ"
 
 
 def _thinking_reply_factory() -> Callable[[dict[str, Any] | None], MessagesReply]:
-    """thinking の 5 通りの要求に、応答の本文に目印を持つ返事を返す (rule 9 の確認のため)。"""
+    """thinking の 6 通りの要求に、応答の本文に目印を持つ返事を返す (rule 9 の確認のため。
+    issue #131 で `chat_template_off` を足した)。"""
 
     def factory(body: dict[str, Any] | None) -> MessagesReply:
         return MessagesReply(
