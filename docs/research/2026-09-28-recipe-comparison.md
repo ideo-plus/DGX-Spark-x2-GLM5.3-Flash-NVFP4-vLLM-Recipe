@@ -49,9 +49,9 @@ GitHub に公開されている GLM-5.3-Flash の DGX Spark（GB10）向けレ�
 |---|---|---:|---:|---:|---:|
 | [現行構成（MTP N=3 + Marlin）](../results/2026-09-30-mmastrac-32k-same-conditions.md) | NVFP4、モデル付属 MTP `N=3`、KV 4 GiB | 45.026 | 44.137 | 29.120 | 1331.163 |
 | [MiaAI-Lab EXL3 + DFlash2](../results/2026-09-29-miaai-exl3-dflash2.md) | EXL3/TR3 4bpw、DFlash2 `k=7` | 34.212 | 33.423 | 22.675 | 1340.999 |
-| [mmastrac NVFP4 + DFlash2](../results/2026-09-30-mmastrac-32k-same-conditions.md) | NVIDIA NVFP4、DFlash2 `k=7`（adaptive-k）、`VLLM_GLM5NEXT_DRAFT_POOL=0` | 50.590 | 46.346 | 31.204 | 2582.664 |
+| [mmastrac NVFP4 + DFlash2](../results/2026-09-30-mmastrac-32k-same-conditions.md) | NVIDIA NVFP4、DFlash2 `k=7`、既定の構成（実験的な上書きなし） | 33.153 | 31.183 | 23.672 | 1835.091 |
 
-MiaAI の全条件（英日、同時 1/2/4 本、8k/32k/128k prefill）は [実機測定条件と結果](../results/2026-09-29-miaai-exl3-dflash2.md) に記録している。mmastrac と現行構成の全条件（英日、同時 1/2/4 本、8k・32k prefill）は [9 月 30 日の記録](../results/2026-09-30-mmastrac-32k-same-conditions.md) にある。mmastrac は既定の下書きモデル専用の KV の置き場所のままだと、2 台では約 18,700 トークンより長い入力が実行に入らないため、`VLLM_GLM5NEXT_DRAFT_POOL=0` で測った。
+MiaAI の全条件（英日、同時 1/2/4 本、8k/32k/128k prefill）は [実機測定条件と結果](../results/2026-09-29-miaai-exl3-dflash2.md) に記録している。mmastrac と現行構成の全条件（英日、同時 1/2/4 本、8k・32k prefill）は [9 月 30 日の記録](../results/2026-09-30-mmastrac-32k-same-conditions.md) にある。mmastrac は、レシピの README の 2 台の既定の構成で測った。9 月 29 日に使った実験的な上書きを全部重ねた構成は既定ではなく、2 台では約 18,700 トークンより長い入力が実行に入らないため、表には載せない。
 
 ## 比較から言えることと、訂正した点
 

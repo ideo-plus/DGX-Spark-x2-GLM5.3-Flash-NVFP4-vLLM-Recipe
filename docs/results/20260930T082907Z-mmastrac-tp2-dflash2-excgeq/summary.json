@@ -1,0 +1,388 @@
+{
+  "schema_version": 1,
+  "conditions": {
+    "schema_version": 1,
+    "run_id": "20260930T082907Z-mmastrac-tp2-dflash2-excgeq",
+    "status": "completed",
+    "target": {
+      "name": "mmastrac-tp2-dflash2",
+      "base_url": "http://10.0.1.60:8002/",
+      "model": "glm53",
+      "notes": "mmastrac 3df22b8 ＋ 上流の直し 4b95b57（experimental/fixes/model.py）、NVIDIA NVFP4、DFlash2 k=7、TP=2、all experimental overrides（RecoverSSM を除く）。2026-09-29 に実機で測定",
+      "api_key_env": null,
+      "metrics_url": null,
+      "max_context_tokens": 163840,
+      "metric_map": {},
+      "tool_markup_markers": [
+        "<tool_call>",
+        "</tool_call>",
+        "<arg_key>",
+        "<arg_value>"
+      ]
+    },
+    "server_model": "glm53",
+    "server_version": "0.30.1rc1.dev193+gddd6fbca1",
+    "started_at": "2026-09-30T08:29:07.729246Z",
+    "finished_at": "2026-09-30T08:32:10.384637Z",
+    "suites": [
+      "prefill"
+    ],
+    "profile_name": "p32",
+    "profile": {
+      "name": "p32",
+      "seed": 0,
+      "sampling": {
+        "temperature": 0.0,
+        "top_p": null,
+        "top_k": null,
+        "thinking": "server_default"
+      },
+      "chars_per_token": {
+        "prose_en": 4.831,
+        "prose_ja": 1.794,
+        "code": 3.505,
+        "log": 2.316
+      },
+      "timeout": {
+        "connect_s": 10.0,
+        "first_event_s": 120.0,
+        "idle_s": 60.0,
+        "total_s": 900.0
+      },
+      "min_successes": 5,
+      "max_consecutive_failures": 5,
+      "length_tolerance": 0.05,
+      "compare_tolerance": 0.02,
+      "metrics_interval_s": 1.0,
+      "output_sanity": {
+        "repeat_min_chars": 12,
+        "repeat_min_count": 8
+      },
+      "sandbox": {
+        "runtime": "auto",
+        "image": "bench-sandbox:py3.13-numpy2.5.3",
+        "image_digest": "sha256:f75a1d43009306248ecbe68c0cc992b700a472037ba6ea336e519404ec1d1de6",
+        "timeout_s": 20.0,
+        "memory_mb": 512,
+        "cpus": 1.0,
+        "pids_limit": 64
+      },
+      "decode": {
+        "trials": 10,
+        "warmup_trials": 1,
+        "max_tokens": 256
+      },
+      "prefill": {
+        "trials": 5,
+        "warmup_trials": 1,
+        "max_tokens": 16,
+        "target_input_tokens": [
+          8000,
+          32000
+        ]
+      },
+      "concurrency": {
+        "levels": [
+          1,
+          2,
+          4
+        ],
+        "rounds": 2,
+        "max_tokens": 128,
+        "input_tokens": 2000
+      },
+      "quality": {
+        "toolcall_tasks": 10,
+        "needle_lengths": [
+          8000,
+          32000
+        ],
+        "needle_depths": [
+          50
+        ],
+        "trials_per_cell": 1,
+        "code_max_tokens": 2048,
+        "code_problem_limit": 10
+      },
+      "agent": {
+        "start_tokens": 20000,
+        "end_tokens": 120000,
+        "step_tokens": 20000,
+        "trials_per_stage": 50,
+        "conversations_per_stage": 5,
+        "threshold": 0.01,
+        "max_tokens": 256
+      }
+    },
+    "harness_version": "0.1.0+gbf3aaeb3",
+    "generator_version": 1,
+    "context_limit": 163840,
+    "warnings": [],
+    "skipped": [],
+    "datasets": [],
+    "output_retokenization": {
+      "enabled": false,
+      "method": "/tokenize",
+      "block_join": "concat",
+      "add_special_tokens": false
+    }
+  },
+  "incomplete": false,
+  "results": [
+    {
+      "condition": "prefill/cold/8k",
+      "metric": "ttft_s",
+      "tier": "primary",
+      "continuous": {
+        "n": 5,
+        "mean": 4.8258459582,
+        "median": 4.066464125,
+        "min": 4.06239675,
+        "max": 7.861644334,
+        "stdev": 1.697070569562162,
+        "iqr": 0.011979500000000698,
+        "cv": 0.35166281399399557
+      },
+      "proportion": null,
+      "failures": 0,
+      "flags": [],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0
+      },
+      "count_source": null
+    },
+    {
+      "condition": "prefill/cold/8k",
+      "metric": "prefill_tps",
+      "tier": "primary",
+      "continuous": {
+        "n": 5,
+        "mean": 1810.8974922628229,
+        "median": 2004.9359220647248,
+        "min": 1037.0603977516441,
+        "max": 2006.2152602906021,
+        "stdev": 432.5938708552125,
+        "iqr": 5.1491476258968305,
+        "cv": 0.2388836876209161
+      },
+      "proportion": null,
+      "failures": 0,
+      "flags": [],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0
+      },
+      "count_source": null
+    },
+    {
+      "condition": "prefill/warm/8k",
+      "metric": "ttft_s",
+      "tier": "primary",
+      "continuous": {
+        "n": 5,
+        "mean": 4.094584275,
+        "median": 4.068962875,
+        "min": 3.967738959,
+        "max": 4.383548583,
+        "stdev": 0.16852449812707918,
+        "iqr": 0.08988512600000043,
+        "cv": 0.04115790195259302
+      },
+      "proportion": null,
+      "failures": 0,
+      "flags": [],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0
+      },
+      "count_source": null
+    },
+    {
+      "condition": "prefill/warm/8k",
+      "metric": "prefill_tps",
+      "tier": "primary",
+      "continuous": {
+        "n": 5,
+        "mean": 1993.5145754435002,
+        "median": 2003.7046909650162,
+        "min": 1859.452415244282,
+        "max": 2054.822679679215,
+        "stdev": 78.74441318003531,
+        "iqr": 44.95380317299646,
+        "cv": 0.03950029468057284
+      },
+      "proportion": null,
+      "failures": 0,
+      "flags": [],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0
+      },
+      "count_source": null
+    },
+    {
+      "condition": "prefill/cold/32k",
+      "metric": "ttft_s",
+      "tier": "primary",
+      "continuous": {
+        "n": 5,
+        "mean": 17.7224237168,
+        "median": 17.641631,
+        "min": 17.329362667,
+        "max": 18.360694208,
+        "stdev": 0.4133214003261579,
+        "iqr": 0.4503514590000002,
+        "cv": 0.023321945515519367
+      },
+      "proportion": null,
+      "failures": 0,
+      "flags": [],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0
+      },
+      "count_source": null
+    },
+    {
+      "condition": "prefill/cold/32k",
+      "metric": "prefill_tps",
+      "tier": "primary",
+      "continuous": {
+        "n": 5,
+        "mean": 1827.5765190622762,
+        "median": 1835.091097869579,
+        "min": 1763.3864838233026,
+        "max": 1868.2741322999168,
+        "stdev": 42.000366425055304,
+        "iqr": 46.80496001315919,
+        "cv": 0.02298145439437226
+      },
+      "proportion": null,
+      "failures": 0,
+      "flags": [],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0
+      },
+      "count_source": null
+    },
+    {
+      "condition": "prefill/warm/32k",
+      "metric": "ttft_s",
+      "tier": "primary",
+      "continuous": {
+        "n": 5,
+        "mean": 2.6711005749999996,
+        "median": 2.678201375,
+        "min": 2.633198958,
+        "max": 2.6866555,
+        "stdev": 0.02158539860692312,
+        "iqr": 0.0060974579999997225,
+        "cv": 0.00808108792643389
+      },
+      "proportion": null,
+      "failures": 0,
+      "flags": [],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0
+      },
+      "count_source": null
+    },
+    {
+      "condition": "prefill/warm/32k",
+      "metric": "prefill_tps",
+      "tier": "primary",
+      "continuous": {
+        "n": 5,
+        "mean": 12121.711361392252,
+        "median": 12088.710095595407,
+        "min": 12051.042643911733,
+        "max": 12295.690723116259,
+        "stdev": 99.0373290489501,
+        "iqr": 28.632022331492408,
+        "cv": 0.008170243136161845
+      },
+      "proportion": null,
+      "failures": 0,
+      "flags": [],
+      "flag_counts": {
+        "short_output": 0,
+        "length_off_target": 0,
+        "too_few_output_tokens": 0,
+        "replacement_char": 0,
+        "repetition_loop": 0
+      },
+      "count_source": null
+    }
+  ],
+  "agent": null,
+  "server_metrics": {
+    "prefill/cold/8k": {
+      "spec_acceptance_rate": 0.42857142857142855,
+      "mean_acceptance_length": 4.0,
+      "decode_steps": 31.0,
+      "tokens_per_step": 3.096774193548387,
+      "prefix_cache_hit_rate": 0.0,
+      "kv_usage_peak": 0.22289156626506024,
+      "preemptions": 0.0,
+      "missing": []
+    },
+    "prefill/warm/8k": {
+      "spec_acceptance_rate": 0.4880952380952381,
+      "mean_acceptance_length": 4.416666666666666,
+      "decode_steps": 30.0,
+      "tokens_per_step": 3.2,
+      "prefix_cache_hit_rate": 0.0,
+      "kv_usage_peak": 0.22289156626506024,
+      "preemptions": 0.0,
+      "missing": []
+    },
+    "prefill/cold/32k": {
+      "spec_acceptance_rate": 0.46703296703296704,
+      "mean_acceptance_length": 4.269230769230769,
+      "decode_steps": 32.0,
+      "tokens_per_step": 3.0,
+      "prefix_cache_hit_rate": 0.0,
+      "kv_usage_peak": 0.3192771084337349,
+      "preemptions": 0.0,
+      "missing": []
+    },
+    "prefill/warm/32k": {
+      "spec_acceptance_rate": 0.4720496894409938,
+      "mean_acceptance_length": 4.304347826086957,
+      "decode_steps": 29.0,
+      "tokens_per_step": 3.310344827586207,
+      "prefix_cache_hit_rate": 0.7116272605130264,
+      "kv_usage_peak": 0.3192771084337349,
+      "preemptions": 0.0,
+      "missing": []
+    }
+  },
+  "datasets": [],
+  "output_phases": {},
+  "phase_warnings": [],
+  "output_retokenization_counts": {}
+}
