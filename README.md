@@ -96,7 +96,22 @@ The full success criteria are in [`PLAN.md` §3](PLAN.md#3-成功の基準).
   `eh_proj` stay BF16) by
   [`experiments/k2-quant`](experiments/k2-quant/README.md), a from-scratch, CPU-only tool. The
   result is the derived weight set `k2s4`, pinned by a manifest in `serving/weights/`.
-- **MoE kernel**: `--moe-backend marlin` (weight-only 4-bit, BF16 activations) for all MoE layers.
+- **MoE kernel: Marlin** (`--moe-backend marlin`) for all MoE layers. This is the `marlin` at the end of
+  the configuration name `glm53-tp2-mtp3-marlin` (GLM-5.3-Flash, TP=2, MTP N=3, Marlin).
+  - **What it is**: [Marlin](https://github.com/IST-DASLab/marlin) (**M**ixed **A**uto-**R**egressive
+    **Lin**ear kernel, from IST-DASLab) is a GPU matrix-multiply kernel for weight-only quantization.
+    It reads 4-bit weights from memory, dequantizes them inside the kernel, and multiplies them with
+    BF16 activations. vLLM includes it and can run MoE experts with it.
+  - **Why it fits decode**: in decode only a few tokens pass through each step (per request, one token
+    plus the three MTP draft tokens), so the step time depends more on reading weights than on
+    arithmetic. According to its authors, Marlin keeps the benefit of 4-bit weights up to about 16–32
+    tokens per step.
+  - **Why it is chosen**: for the published NVFP4 experts, vLLM's default kernel on this GPU is
+    FlashInfer CUTLASS, which also quantizes activations to 4 bits (W4A4). Marlin keeps activations in
+    BF16 and gave faster decode on this model
+    ([record](docs/results/2026-09-28-k2-stage3.md#k2s4--marlin確認の段n--3)).
+  - **Limit**: Marlin targets steps with few tokens. Whether it limits long-input prefill (many tokens
+    per step) has not been isolated.
 - vLLM model-code fixes needed to load those derived weights are applied as **read-only
   bind-mounted overlay files** on top of the unmodified image
   ([`experiments/k2-vllm-overlay`](experiments/k2-vllm-overlay/README.md)), so no image rebuild is

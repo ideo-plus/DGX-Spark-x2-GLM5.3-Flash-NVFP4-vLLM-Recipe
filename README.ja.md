@@ -91,7 +91,20 @@ MiaAI-Lab と mmastrac は、非商用の条件が付いた DFlash2 の下書き
   [`experiments/k2-quant`](experiments/k2-quant/README.md) (ゼロから書いた、CPU だけで動く道具) で、
   手元で NVFP4A16 (重みだけ NVFP4) に変換する (MLA の `kv_b_proj`、indexer、MTP の `eh_proj` は BF16 のまま)。できた派生の重み `k2s4` は、`serving/weights/` の
   マニフェストで固定する。
-- **MoE のカーネル**: すべての MoE の層で `--moe-backend marlin` (重みだけ 4 bit、活性は BF16) を使う。
+- **MoE のカーネル: Marlin** — すべての MoE の層で `--moe-backend marlin` を使う。構成の名前
+  `glm53-tp2-mtp3-marlin` の末尾の `marlin` は、これを指す (GLM-5.3-Flash、TP=2、MTP N=3、Marlin)。
+  - **何か**: [Marlin](https://github.com/IST-DASLab/marlin) (**M**ixed **A**uto-**R**egressive
+    **Lin**ear kernel。IST-DASLab が作った) は、重みだけを量子化した行列の掛け算を行う GPU のカーネルである。
+    4 bit の重みをメモリから読み、カーネルの中で BF16 に戻して、BF16 の活性と掛ける。
+    vLLM に入っており、MoE の専門家の計算にも使える。
+  - **decode に向く理由**: decode では、1 ステップに流れるトークンが少ない (1 本あたり、本物の 1 トークンと
+    MTP の下書きの 3 トークン)。そのため、1 ステップの時間は、計算の量より重みを読む量で決まりやすい。
+    作者の説明では、Marlin は、1 ステップに 16〜32 トークンくらいまでなら、4 bit の重みで読む量が減るぶんの速さを保つ。
+  - **選んだ理由**: 公開の NVFP4 の専門家に対して、vLLM がこの GPU で選ぶ既定のカーネルは FlashInfer の CUTLASS で、
+    活性も 4 bit にする (W4A4)。Marlin は活性を BF16 のまま計算し、このモデルでは decode が速かった
+    ([記録](docs/results/2026-09-28-k2-stage3.md#k2s4--marlin確認の段n--3))。
+  - **限界**: Marlin は、1 ステップに流れるトークンが少ない計算に向けたものである。長い入力の処理 (prefill。
+    1 ステップに流れるトークンが多い) を Marlin が遅くしているかは、切り分けていない。
 - その派生の重みを読み込むために要る vLLM のモデルコードの直しは、イメージを作り直さず、**読み取り
   専用の bind mount で重ねる**上書きファイルとして当てる
   ([`experiments/k2-vllm-overlay`](experiments/k2-vllm-overlay/README.md))。これにより、探りの回ごとに
