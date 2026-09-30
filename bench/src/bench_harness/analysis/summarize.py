@@ -474,6 +474,7 @@ def _phase_conditions(
             "text_arrived": 0,
             "text_not_reached": 0,
             "thinking_only": 0,
+            "thinking_observed": 0,
             "no_text": 0,
             "unknown": 0,
             "text_speed_n": 0,
@@ -491,6 +492,8 @@ def _phase_conditions(
                 counts["thinking_only"] += 1
             else:
                 counts["no_text"] += 1
+            if phase.thinking_observed:
+                counts["thinking_observed"] += 1
             if record.result.error is None and phase.text_chars_per_s is not None:
                 counts["text_speed_n"] += 1
         not_reached = counts["thinking_only"] + counts["no_text"]
@@ -1291,8 +1294,8 @@ def _output_phases_section(summary: Summary) -> list[str]:
         "## 本文への到達と計測件数",
         "",
         "| 条件 | 要求 | 要求成功 | 要求失敗 | 要求成功率 | 本文あり | 本文未到達 | "
-        "思考のみ | 段階別情報不明 | 本文速度の有効件数 |",
-        "|---|--:|--:|--:|--:|--:|--:|--:|--:|--:|",
+        "思考のみ | 思考あり | 段階別情報不明 | 本文速度の有効件数 |",
+        "|---|--:|--:|--:|--:|--:|--:|--:|--:|--:|--:|",
     ]
     for condition, counts in summary.output_phases.items():
         requests = counts["requests"]
@@ -1307,12 +1310,14 @@ def _output_phases_section(summary: Summary) -> list[str]:
             str(counts["text_arrived"]),
             str(counts["text_not_reached"]),
             str(counts["thinking_only"]),
+            str(counts["thinking_observed"]),
             str(counts["unknown"]),
             str(counts["text_speed_n"]),
         )
         lines.append("| " + " | ".join(values) + " |")
     lines.append("")
     lines.append("本文ありは本文の到達件数であり、JSONの完全性や妥当性の判定ではない。")
+    lines.append("思考ありは、思考のブロックに1文字以上が届いた試行の数で、本文の有無を問わない。")
     lines.append("")
     return lines
 

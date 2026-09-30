@@ -96,6 +96,72 @@ def test_old_text_block_preserves_arrival_without_inventing_timing() -> None:
     assert metrics.text_chars_per_s is None
 
 
+# --- 思考が出たかどうか (issue #130) -----------------------------------------
+
+
+def test_thinking_observed_is_true_when_thinking_and_text_both_arrive() -> None:
+    metrics = phase_metrics(
+        _result(
+            OutputPhases(
+                thinking=PhaseObservation(
+                    has_block=True, first_ns=1_000, last_ns=2_000_001_000, char_count=4
+                ),
+                text=PhaseObservation(
+                    has_block=True, first_ns=3_000_001_000, last_ns=5_000_001_000, char_count=6
+                ),
+            )
+        )
+    )
+    assert metrics.status == "text"
+    assert metrics.thinking_observed is True
+
+
+def test_thinking_observed_is_true_when_only_thinking_arrives() -> None:
+    metrics = phase_metrics(
+        _result(
+            OutputPhases(
+                thinking=PhaseObservation(
+                    has_block=True, first_ns=1_000, last_ns=1_000_001_000, char_count=2
+                )
+            )
+        )
+    )
+    assert metrics.status == "thinking_only"
+    assert metrics.thinking_observed is True
+
+
+def test_thinking_observed_is_false_when_only_text_arrives() -> None:
+    metrics = phase_metrics(
+        _result(
+            OutputPhases(
+                text=PhaseObservation(
+                    has_block=True, first_ns=1_000, last_ns=1_000_001_000, char_count=6
+                )
+            )
+        )
+    )
+    assert metrics.status == "text"
+    assert metrics.thinking_observed is False
+
+
+def test_old_record_thinking_observed_is_true_when_a_thinking_block_arrived() -> None:
+    old = _result(None).model_copy(
+        update={"blocks": [ContentBlock(type="thinking", text="考え中")]}
+    )
+    metrics = phase_metrics(old)
+    assert metrics.status == "thinking_only"
+    assert metrics.observed is False
+    assert metrics.thinking_observed is True
+
+
+def test_old_record_thinking_observed_is_false_when_only_a_text_block_arrived() -> None:
+    old = _result(None).model_copy(update={"blocks": [ContentBlock(type="text", text="本文")]})
+    metrics = phase_metrics(old)
+    assert metrics.status == "text"
+    assert metrics.observed is False
+    assert metrics.thinking_observed is False
+
+
 @pytest.mark.parametrize(
     "thinking_span,text_span,separable",
     [

@@ -11,7 +11,7 @@ Anthropic 互換の `/v1/messages` 経由で測る、コマンドラインの計
 | まとまり (`--suite`) | 測るもの | 条件の鍵 |
 |---|---|---|
 | `decode` | 生成速度 (コード・散文・JSON × 英語と日本語。JSON は固定フィールドの架空の記録を長い配列として出力) | `decode/{code,prose,json}/{en,ja}` |
-| `prefill` | 最初のトークンまでの時間と、入力の処理速度 | `prefill/{cold,warm}/{8k,32k,128k}` |
+| `prefill` | 最初のトークンまでの時間と、入力の処理速度 | `prefill/{cold,warm}/{8k,32k,128k}` (`fast` は `{32k,64k,128k}`) |
 | `concurrency` | 同時 1、2、4、8 本 | `concurrency/c{1,2,4,8}` |
 | `quality` | ツール呼び出しの正確さ、コードの課題、長い入力から情報を探す課題 | `quality/…` |
 | `agent` | 会話を 2 万 → 12 万トークンに伸ばしたときの、ツール呼び出しの崩れ | `agent/stage/NNNk` |
@@ -125,6 +125,22 @@ iteration_tokens_count = "custom:iteration_tokens_count"
 `docs/decisions/0001-bench-harness-measurement-method.md`)。thinking を切り替えて比べたいときは、
 対象サーバーの側 (起動の引数やチャットテンプレート) で切り替えた構成を、別の名前の対象として
 `targets.toml` に足して測ること。
+
+2026-09-30 に、固定した vLLM (`0961bbae`) のソースでも手段の有無を確かめた (issue #130)。
+`vllm/entrypoints/anthropic/protocol.py:121-177` の `AnthropicMessagesRequest` に `thinking` の
+項目は無く、pydantic の既定 (`extra="ignore"`) で Anthropic 形式の `thinking: {type: disabled}` は
+黙って捨てられる。`protocol.py:114-118` と `vllm/entrypoints/openai/chat_completion/protocol.py:584-586`
+の `output_config.effort` には `"none"` が無く、`enable_thinking = reasoning_effort != "none"` は
+`/v1/messages` 経由では常に `True` になる (深さの low/high は変えられるが、切ることはできない)。
+`vllm/parser/glm47_moe.py:192-199, 222-224` の `Glm47MoeParser` は `chat_template_kwargs` の
+`enable_thinking`/`thinking` を読むが、GLM-5.3-Flash のチャットテンプレートはその変数を読まずに
+無条件で `<think>` を開くため (`docs/decisions/0004-vllm-baseline-messages-api.md`)、
+`enable_thinking=false` を送っても思考は止まらず、パーサーが思考の中身をそのまま「本文」として
+返してしまう。これは渡し方として採用できない (計測が歪む)。サーバー側の口は
+`vllm/entrypoints/launchers/cli_args.py:80-82, 93-98` の `--default-chat-template-kwargs` があるが、
+上記と同じ理由で深さ (low/high) までしか変えられない。生成プロンプトで `<think>` を開かない
+チャットテンプレートに `--chat-template` で差し替えることが、思考を止める唯一の候補だが未検証で
+あり (`glm47` パーサーとの整合も未確認)、今回は構成を変更していない。
 
 ## コマンド
 
@@ -270,6 +286,10 @@ uv run bench run --target candidate-d --suite quality --no-download
 本文→思考→本文など、思考と本文の観測区間を分離できない場合は、両段階の継続時間・速度を
 理由付き不明として警告に件数を示す。本文到達、文字数、本文までの待ち時間は残る。
 サーバーが全体の `usage.output_tokens` しか返さない場合、生成時の段階別トークン数は不明である。
+
+要約の表の「思考あり」は、思考のブロックに1文字以上が届いた試行の数であり、本文の有無を問わない
+(思考のみの試行も、思考のあとに本文が届いた試行も数える。issue #130)。`thinking=server_default`
+では、これが対象サーバーの既定でどれだけ思考が出たかの記録になる。
 
 ```bash
 # 終了した出力を同じサーバーで再計数する。既定では送らない追加要求を有効にする
@@ -462,6 +482,16 @@ uv run bench run --target candidate-d --suite agent --set agent.end_tokens=20000
 uv run bench run --target <名前> --suite decode --profile probe
 uv run bench run --target <名前> --suite decode --suite quality --profile fast
 ```
+
+`fast` の `prefill` は入力長 32k・64k・128k で測る (成功の基準の 32k と、takt のエージェント作業で
+会話が 10 万トークンまで伸びる用途に合わせた。issue #130)。所要時間は 36 要求で約 16 分の見込み
+(計算、実測ではない)。cold はウォームアップが短い文書 (`suites/prefill.py:128-130`) なので、
+本番 5 回 × 中央値 (32k 21.2 秒、64k 43 秒 [計算]、128k 86.4 秒) ≈ 753 秒、warm はウォームアップ
+1 回が cold と同じ (150.6 秒) + 本番 5 回 × 3 条件 × 約 2 秒 ≈ 181 秒、16 トークンの生成 36 回
+≈ 36 秒で、合計 約 970 秒 (≈ 16 分)。中央値の根拠は `quick` の計測ラン
+`20260923T054510Z-p2-nope-tp2-full-0ywcnj` (`docs/results/20260923T054510Z-p2-nope-tp2-full-0ywcnj/summary.md:46-52`)
+で、64k はこのランで測っておらず、32k と 128k で保たれた入力の処理速度 (約 1,500 tok/s) から計算した
+値である (実測ではない)。
 
 ## うまくいかないとき
 
