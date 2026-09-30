@@ -112,20 +112,16 @@ NCCL のログは古いものも回収される。所有確認済みコンテナ
 
 使っている TAKT は 0.66.0。固定したワークフローの導入元、使い分け、検証結果は
 [開発手順](docs/development/takt-preparation.md) を参照する。
-`.takt/runtime.yaml` に、段階の割り当てとプロファイル（モデル）の両方を置き、Git で管理する（2026-09-26 から。同じ名前のプロファイルは `~/.takt/runtime.yaml` よりこちらが勝つ）。
+`.takt/runtime.yaml` に、段階の割り当てとプロファイル（モデル）の両方を置き、Git で管理する（2026-09-26 から）。
+`~/.takt/runtime.yaml` には何も書かない（2026-09-30 から。コメントだけ）。全体の設定はすべてのプロジェクトに重ねて読まれ、ほかのプロジェクトでトラブルになるため。
 PR まで作る依頼は GitHub issue の本文に書き、`--pipeline --auto-pr -b <branch> -i <番号>` で渡す（`--task` では全文が PR タイトルになり失敗する）。
 TAKT のコミットが、依頼で分けるよう求めた変更を 1 つにまとめることがあるので、PR の前に差分を確かめる。
 worktree は作っていない。今後 worktree を使う場合は `mise trust` を実行する。
 
-2026-09-23 に `~/.takt/` の設定を次のように変えた（Git 対象外。控えは `~/.takt/*.bak-20260923`・`*.codex-20260923`）。
+`~/.takt/config.yaml`（Git 対象外）の設定は次のとおり。
 
 | 項目 | 設定 |
 |---|---|
-| `t0-test-code` | **2026-09-24 から opencode / `opencode-go/deepseek-v4.1-flash`**。以前は `ollama/glm-5.3-flash:cloud` |
-| `t0-production-code` | **2026-09-24 から opencode / `opencode-go/deepseek-v4.1-flash`**。以前は claude / `claude-sonnet-5`、本来は codex / `gpt-6-luna` |
-| `t1` | claude / `claude-sonnet-5-5` (2026-09-30 から。以前は `claude-sonnet-5`) |
-| `t2` | claude / `claude-opus-5-5` |
-| `t3-judge` | 本来は codex / `gpt-6-astra`。**9/27 19:38 までは claude / `claude-opus-5-5`** |
 | `rate_limit_fallback` | `claude-opus-5-5`。本来は続けて codex / `gpt-6-sol`（上限中はコメントアウト） |
 | `codex_cli_path` | mise の codex 0.156.0 の実体。codex を更新したらパスも直す |
 
