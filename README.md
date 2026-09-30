@@ -46,9 +46,9 @@ at two simultaneous requests, and prefill is cold 32k input.
 
 | Implementation | Code/en | Prose/en | Concurrency 2 (per stream) | Cold prefill 32k |
 |---|---:|---:|---:|---:|
-| [This recipe: MTP N=3 + Marlin](docs/results/2026-09-30-mmastrac-32k-same-conditions.md) | **45.026** | **44.137** | **29.120** | **1,331.163** |
-| [MiaAI-Lab EXL3 + DFlash2](docs/results/2026-09-29-miaai-exl3-dflash2.md) | 34.212 | 33.423 | 22.675 | 1,340.999 |
-| [mmastrac NVFP4 + DFlash2](docs/results/2026-09-30-mmastrac-32k-same-conditions.md) | 33.153 | 31.183 | 23.672 | 1,835.091 |
+| [This recipe: MTP N=3 + Marlin (KV 4 GiB)](docs/results/2026-09-30-mmastrac-32k-same-conditions.md) | **45.026** | **44.137** | **29.120** | **1,331.163** |
+| [MiaAI-Lab EXL3 + DFlash2 (Sep 29)](docs/results/2026-09-29-miaai-exl3-dflash2.md) | 34.212 | 33.423 | 22.675 | 1,340.999 |
+| [mmastrac NVFP4 + DFlash2 (default config)](docs/results/2026-09-30-mmastrac-32k-same-conditions.md) | 33.153 | 31.183 | 23.672 | 1,835.091 |
 
 mmastrac runs in its README's two-node default: `TP=2` in `compose/.env` and `compose/glm53.yaml` only, with no experimental overrides.
 During these runs the GPU driver logged `NV_ERR_NO_MEMORY` on both nodes while serving.
