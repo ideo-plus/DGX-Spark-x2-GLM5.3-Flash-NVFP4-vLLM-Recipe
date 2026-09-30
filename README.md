@@ -33,25 +33,25 @@ performance or a performance advantage over other recipes.
 | Single stream, prose/ja (thinking only) | 43.0 tok/s | [September 30](docs/results/2026-09-30-fast-prefill-long-input.md) |
 | JSON instruction, English (answer phase, retokenized) | 58.6 tok/s | [September 29](docs/results/2026-09-29-json-text-decode.md) |
 | JSON instruction, Japanese (answer phase, retokenized) | 58.9 tok/s | [September 29](docs/results/2026-09-29-json-text-decode.md) |
-| Decode, 2 streams, per stream (aggregate) | 27.2 tok/s (45.8 aggregate) | [September 28](docs/results/2026-09-28-k2-stage3.md) |
-| Prefill, 32k tokens (cold) | 1,332 tok/s | [September 30](docs/results/2026-09-30-fast-prefill-long-input.md) |
+| Decode, 2 streams, per stream (aggregate) | 29.1 tok/s (47.4 aggregate) | [September 30](docs/results/2026-09-30-mmastrac-32k-same-conditions.md) |
+| Prefill, 32k tokens (cold) | 1,331 tok/s | [September 30](docs/results/2026-09-30-mmastrac-32k-same-conditions.md) |
 | Prefill, 128k tokens (cold) | 1,332 tok/s | [September 30](docs/results/2026-09-30-fast-prefill-long-input.md) |
 
 The JSON answer-phase values are retokenized measurements. See the [measurement record](docs/results/2026-09-29-json-text-decode.md)
-and the [recipe comparison](docs/research/2026-09-28-recipe-comparison.md). Concurrency was not remeasured.
+and the [recipe comparison](docs/research/2026-09-28-recipe-comparison.md).
 
-The comparison below contains only measurements made under the same conditions: this repository's `fast` profile,
+The comparison below contains only measurements made under the same conditions: this repository's `fast` profile (prefill with 8k and 32k inputs only),
 two DGX Spark nodes at TP=2, and the same `300–1800 MHz` GPU clock cap. Values are median tok/s; concurrency is per stream
 at two simultaneous requests, and prefill is cold 32k input.
 
 | Implementation | Code/en | Prose/en | Concurrency 2 (per stream) | Cold prefill 32k |
 |---|---:|---:|---:|---:|
-| [This recipe: MTP N=3 + Marlin](docs/results/2026-09-30-fast-prefill-long-input.md) | **45.026** | **44.137** | **27.235** | **1,332.142** |
+| [This recipe: MTP N=3 + Marlin](docs/results/2026-09-30-mmastrac-32k-same-conditions.md) | **45.026** | **44.137** | **29.120** | **1,331.163** |
 | [MiaAI-Lab EXL3 + DFlash2](docs/results/2026-09-29-miaai-exl3-dflash2.md) | 34.212 | 33.423 | 22.675 | 1,340.999 |
-| [mmastrac NVFP4 + DFlash2](docs/results/2026-09-29-mmastrac-dflash2.md) | 48.638 | 47.050 | 32.105 | not measured |
+| [mmastrac NVFP4 + DFlash2](docs/results/2026-09-30-mmastrac-32k-same-conditions.md) | 50.590 | 46.346 | 31.204 | 2,582.664 |
 
-This recipe's concurrency value is from the [September 28 record](docs/results/2026-09-28-k2-stage3.md); the other values are from September 30.
-mmastrac's cold 32k prefill could not be measured: the requests never left the server's waiting queue (cold 8k was 2,772.774).
+mmastrac was measured with `VLLM_GLM5NEXT_DRAFT_POOL=0`, the recipe's switch that returns the drafter's KV to the shared pool.
+With the default drafter pool, two nodes (TP=2) never schedule prompts longer than about 18,700 tokens, so cold 32k cannot be measured.
 MiaAI-Lab and mmastrac use the non-commercial DFlash2 drafter. Published values from other recipes are omitted
 because their prompts, sampling, thinking mode, and timing definitions differ.
 
@@ -158,7 +158,7 @@ and facts measured in this repo's own environment. Every non-trivial choice is r
 
 ## Status and known limitations
 
-- **2-stream concurrency measured 27.2 tok/s per stream.**
-- **Cold prefill measured 1,332 tok/s at both 32k and 128k**, with the KV cache pinned at 4 GiB per node. The prefix cache rarely hits with MTP enabled.
+- **2-stream concurrency measured 29.1 tok/s per stream.**
+- **Cold prefill measured 1,331 tok/s at 32k and 1,332 tok/s at 128k**, with the KV cache pinned at 4 GiB per node. The prefix cache rarely hits with MTP enabled.
 - **Startup takes ~5 minutes** (`instanttensor` after evicting the page cache).
 - **P8 (large-sample verification of every success criterion) has not been run yet.**
