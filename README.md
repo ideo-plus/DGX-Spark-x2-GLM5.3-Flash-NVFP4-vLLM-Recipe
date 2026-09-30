@@ -25,8 +25,11 @@ Details: [record](docs/results/2026-09-30-sparkdash.md).
 | This recipe (effort low) | 60.39 | 42.74 | 58.23 | 45.92 / 91.83 | 1,588 | 1,594 |
 | This recipe (default effort) | 60.01 | 42.38 | 55.18 | 40.41 / 77.95 | 1,583 | 1,568 |
 | mmastrac NVFP4 + DFlash2 (default config) | 69.67 | 32.16 | 66.18 | 53.93 / 107.85 | 1,861 | 1,824 |
+| MiaAI-Lab EXL3 + DFlash2 (Sep 29 config) | 70.52 | 32.56 | 67.30 | 55.00 / 110.00 | 1,446 | 1,500 |
 
 mmastrac runs in its README's two-node default and its own chat template reads sparkDash's thinking-off as low reasoning effort.
+MiaAI-Lab runs with its default serving settings (only host and network values set for these nodes) and fully stops thinking.
+Thinking is not yet off on the same terms for all three rows; see [#131](https://github.com/ideo-plus/DGX-Spark-x2-GLM5.3-Flash-NVFP4-vLLM-Recipe/issues/131).
 
 ### Measured with this repository's `bench`
 
