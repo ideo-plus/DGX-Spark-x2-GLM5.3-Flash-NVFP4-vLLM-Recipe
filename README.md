@@ -12,6 +12,21 @@ become the backend for `takt`, a coding-agent workflow tool, called through the 
 
 ## Current results
 
+### Measured with sparkDash
+
+[sparkDash](https://github.com/MiaAI-Lab/sparkDash) is the tool MiaAI-Lab and knapcio publish their numbers with. Measured with
+sparkDash 1.8.6 on two DGX Spark nodes at TP=2 with the GPU clock capped at `300–1800 MHz` and X925 cores at 3.0 GHz: `/v1/chat/completions`, temperature 0, 400 output tokens forced with
+`min_tokens` / `ignore_eos`, one run per cell. Prefill fills the prompt with a repeated word. sparkDash asks for thinking off,
+which this recipe's stock chat template ignores; the "effort low" row sets the server's default `reasoning_effort` to low.
+Details: [record](docs/results/2026-09-30-sparkdash.md).
+
+| Implementation | Structured c1 | Prose c1 | Code c1 | Structured c2 (per stream / total) | Prefill 32k | Prefill 128k |
+|---|---:|---:|---:|---:|---:|---:|
+| This recipe (effort low) | 60.39 | 42.74 | 58.23 | 45.92 / 91.83 | 1,588 | 1,594 |
+| This recipe (default effort) | 60.01 | 42.38 | 55.18 | 40.41 / 77.95 | 1,583 | 1,568 |
+
+### Measured with this repository's `bench`
+
 Configuration `glm53-tp2-mtp3-marlin`, measured at the confirmation stage (`fast`). The JSON values below
 are answer-phase measurements using an 8,192-token output limit and same-server output retokenization.
 Both nodes used the same clock caps for these measurements: GPU graphics clocks `300–1800 MHz`
@@ -54,19 +69,6 @@ mmastrac runs in its README's two-node default: `TP=2` in `compose/.env` and `co
 During these runs the GPU driver logged `NV_ERR_NO_MEMORY` on both nodes while serving.
 MiaAI-Lab and mmastrac use the non-commercial DFlash2 drafter. Published values from other recipes are omitted
 because their prompts, sampling, thinking mode, and timing definitions differ.
-
-### Measured with sparkDash
-
-[sparkDash](https://github.com/MiaAI-Lab/sparkDash) is the tool MiaAI-Lab and knapcio publish their numbers with. Measured with
-sparkDash 1.8.6 on the same two nodes and clock caps: `/v1/chat/completions`, temperature 0, 400 output tokens forced with
-`min_tokens` / `ignore_eos`, one run per cell. Prefill fills the prompt with a repeated word. sparkDash asks for thinking off,
-which this recipe's stock chat template ignores; the "effort low" row sets the server's default `reasoning_effort` to low.
-Details: [record](docs/results/2026-09-30-sparkdash.md).
-
-| Implementation | Structured c1 | Prose c1 | Code c1 | Structured c2 (per stream / total) | Prefill 32k | Prefill 128k |
-|---|---:|---:|---:|---:|---:|---:|
-| This recipe (effort low) | 60.39 | 42.74 | 58.23 | 45.92 / 91.83 | 1,588 | 1,594 |
-| This recipe (default effort) | 60.01 | 42.38 | 55.18 | 40.41 / 77.95 | 1,583 | 1,568 |
 
 Quality checks at this stage (tool calls, HumanEval+, needle 8k/32k) found no breakage. These are
 small-sample numbers; the pass/fail judgment against every success criterion is made in phase
