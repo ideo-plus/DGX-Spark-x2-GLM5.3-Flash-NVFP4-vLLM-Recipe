@@ -33,9 +33,10 @@ GPU の上限を 2200 MHz に上げ、X925 の上限を外しても、decode (1 
 | JSON 指示・日本語（本文、再計数） | 58.9 tok/s | [9月29日の記録](docs/results/2026-09-29-json-text-decode.md) |
 | 同時 2 本の1本あたり（合計） | 27.2 tok/s（45.8） | [9月28日の記録](docs/results/2026-09-28-k2-stage3.md) |
 | 入力の処理 32k（cold） | 1,326 tok/s | [9月28日の記録](docs/results/2026-09-28-k2-stage3.md) |
+| 入力の処理 128k（cold） | 1,332 tok/s | [9月30日の記録](docs/results/2026-09-30-fast-prefill-long-input.md) |
 
 JSON 本文の値は再計数による速度で、配列の完成率とは別である。根拠と制約は[今回の記録](docs/results/2026-09-29-json-text-decode.md)と
-[レシピの比較表](docs/research/2026-09-28-recipe-comparison.md)を参照。同時実行と入力処理は測り直していない。
+[レシピの比較表](docs/research/2026-09-28-recipe-comparison.md)を参照。同時実行は測り直していない。
 
 以下の比較表には、同じ条件で測った値だけを載せる。条件はこのリポジトリの `fast`、DGX Spark 2 台の TP=2、
 GPU クロック上限 `300〜1800 MHz` である。値は tok/s の中央値で、同時 2 本は 1 本あたり、入力の処理は cold 32k である。
