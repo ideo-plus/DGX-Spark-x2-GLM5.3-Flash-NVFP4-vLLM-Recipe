@@ -25,14 +25,14 @@ GPU の上限を 2200 MHz に上げ、X925 の上限を外しても、decode (1 
 
 | 項目 | 値 | 記録 |
 |---|---:|---|
-| 1 本、コード・英語（思考のみ） | 45.0 tok/s | [9月28日の記録](docs/results/2026-09-28-k2-stage3.md) |
-| 1 本、コード・日本語（思考のみ） | 43.9 tok/s | [9月28日の記録](docs/results/2026-09-28-k2-stage3.md) |
-| 1 本、散文・英語（思考のみ） | 46.3 tok/s | [9月28日の記録](docs/results/2026-09-28-k2-stage3.md) |
-| 1 本、散文・日本語（思考のみ） | 42.2 tok/s | [9月28日の記録](docs/results/2026-09-28-k2-stage3.md) |
+| 1 本、コード・英語（思考のみ） | 45.0 tok/s | [9月30日の記録](docs/results/2026-09-30-fast-prefill-long-input.md) |
+| 1 本、コード・日本語（思考のみ） | 43.4 tok/s | [9月30日の記録](docs/results/2026-09-30-fast-prefill-long-input.md) |
+| 1 本、散文・英語（思考のみ） | 44.1 tok/s | [9月30日の記録](docs/results/2026-09-30-fast-prefill-long-input.md) |
+| 1 本、散文・日本語（思考のみ） | 43.0 tok/s | [9月30日の記録](docs/results/2026-09-30-fast-prefill-long-input.md) |
 | JSON 指示・英語（本文、再計数） | 58.6 tok/s | [9月29日の記録](docs/results/2026-09-29-json-text-decode.md) |
 | JSON 指示・日本語（本文、再計数） | 58.9 tok/s | [9月29日の記録](docs/results/2026-09-29-json-text-decode.md) |
 | 同時 2 本の1本あたり（合計） | 27.2 tok/s（45.8） | [9月28日の記録](docs/results/2026-09-28-k2-stage3.md) |
-| 入力の処理 32k（cold） | 1,326 tok/s | [9月28日の記録](docs/results/2026-09-28-k2-stage3.md) |
+| 入力の処理 32k（cold） | 1,332 tok/s | [9月30日の記録](docs/results/2026-09-30-fast-prefill-long-input.md) |
 | 入力の処理 128k（cold） | 1,332 tok/s | [9月30日の記録](docs/results/2026-09-30-fast-prefill-long-input.md) |
 
 JSON 本文の値は再計数による速度で、配列の完成率とは別である。根拠と制約は[今回の記録](docs/results/2026-09-29-json-text-decode.md)と
@@ -43,10 +43,11 @@ GPU クロック上限 `300〜1800 MHz` である。値は tok/s の中央値で
 
 | 実装 | コード・英語 | 散文・英語 | 同時 2 本（1 本あたり） | cold 32k 入力処理 |
 |---|---:|---:|---:|---:|
-| [現行構成: MTP N=3 + Marlin](docs/results/2026-09-28-k2-stage3.md) | **45.021** | **46.267** | **27.235** | **1,326.033** |
+| [現行構成: MTP N=3 + Marlin](docs/results/2026-09-30-fast-prefill-long-input.md) | **45.026** | **44.137** | **27.235** | **1,332.142** |
 | [MiaAI-Lab EXL3 + DFlash2](docs/results/2026-09-29-miaai-exl3-dflash2.md) | 34.212 | 33.423 | 22.675 | 1,340.999 |
 | [mmastrac NVFP4 + DFlash2](docs/results/2026-09-29-mmastrac-dflash2.md) | 48.638 | 47.050 | 32.105 | 測れず |
 
+現行構成の同時 2 本は [9月28日の記録](docs/results/2026-09-28-k2-stage3.md) の値で、ほかは 9 月 30 日の値である。
 mmastrac の cold 32k は、要求がサーバーの待ち行列から出ず、測れなかった (cold 8k は 2,772.774)。
 MiaAI-Lab と mmastrac は、非商用の条件が付いた DFlash2 の下書きモデルを使う。ほかのレシピの公開値は、
 プロンプト、サンプリング、思考モード、計測方法が異なるため、ここには載せない。
@@ -149,6 +150,6 @@ DFlash2 ドラフターなど) は使わない。GLM-5.3-Flash の重みは、�
 ## 状況・既知の限界
 
 - **同時 2 本の 1 本あたりの速さは 27.2 tok/s だった。**
-- **32k の入力の処理は 1,326 tok/s だった。** MTP を使う構成では、プレフィックスキャッシュがほとんど当たらない。
+- **cold の入力の処理は、32k でも 128k でも 1,332 tok/s だった** (KV キャッシュを 1 台あたり 4 GiB に固定)。MTP を使う構成では、プレフィックスキャッシュがほとんど当たらない。
 - **起動には約 5 分かかる** (ページキャッシュを捨てたうえで `instanttensor` を使う)。
 - **P8 (すべての成功基準に対する、大量サンプルでの最終検証) は、まだ行っていない。**
