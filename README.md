@@ -48,10 +48,10 @@ at two simultaneous requests, and prefill is cold 32k input.
 |---|---:|---:|---:|---:|
 | [This recipe: MTP N=3 + Marlin](docs/results/2026-09-30-mmastrac-32k-same-conditions.md) | **45.026** | **44.137** | **29.120** | **1,331.163** |
 | [MiaAI-Lab EXL3 + DFlash2](docs/results/2026-09-29-miaai-exl3-dflash2.md) | 34.212 | 33.423 | 22.675 | 1,340.999 |
-| [mmastrac NVFP4 + DFlash2](docs/results/2026-09-30-mmastrac-32k-same-conditions.md) | 50.590 | 46.346 | 31.204 | 2,582.664 |
+| [mmastrac NVFP4 + DFlash2](docs/results/2026-09-30-mmastrac-32k-same-conditions.md) | 33.153 | 31.183 | 23.672 | 1,835.091 |
 
-mmastrac was measured with `VLLM_GLM5NEXT_DRAFT_POOL=0`, the recipe's switch that returns the drafter's KV to the shared pool.
-With the default drafter pool, two nodes (TP=2) never schedule prompts longer than about 18,700 tokens, so cold 32k cannot be measured.
+mmastrac runs in its README's two-node default: `TP=2` in `compose/.env` and `compose/glm53.yaml` only, with no experimental overrides.
+During these runs the GPU driver logged `NV_ERR_NO_MEMORY` on both nodes while serving.
 MiaAI-Lab and mmastrac use the non-commercial DFlash2 drafter. Published values from other recipes are omitted
 because their prompts, sampling, thinking mode, and timing definitions differ.
 

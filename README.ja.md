@@ -45,10 +45,10 @@ GPU クロック上限 `300〜1800 MHz` である。値は tok/s の中央値で
 |---|---:|---:|---:|---:|
 | [現行構成: MTP N=3 + Marlin](docs/results/2026-09-30-mmastrac-32k-same-conditions.md) | **45.026** | **44.137** | **29.120** | **1,331.163** |
 | [MiaAI-Lab EXL3 + DFlash2](docs/results/2026-09-29-miaai-exl3-dflash2.md) | 34.212 | 33.423 | 22.675 | 1,340.999 |
-| [mmastrac NVFP4 + DFlash2](docs/results/2026-09-30-mmastrac-32k-same-conditions.md) | 50.590 | 46.346 | 31.204 | 2,582.664 |
+| [mmastrac NVFP4 + DFlash2](docs/results/2026-09-30-mmastrac-32k-same-conditions.md) | 33.153 | 31.183 | 23.672 | 1,835.091 |
 
-mmastrac は、下書きモデルの KV を共有の置き場所に戻す設定 `VLLM_GLM5NEXT_DRAFT_POOL=0` で測った。
-既定の専用の置き場所のままだと、2 台 (TP=2) では約 18,700 トークンより長い入力が実行に入らず、cold 32k を測れない。
+mmastrac は、レシピの README の 2 台の既定の構成 (`compose/.env` に `TP=2`、`compose/glm53.yaml` だけ、実験的な上書きなし) で測った。
+この計測の最中に、2 台とも GPU ドライバーの `NV_ERR_NO_MEMORY` が出ていた。
 MiaAI-Lab と mmastrac は、非商用の条件が付いた DFlash2 の下書きモデルを使う。ほかのレシピの公開値は、
 プロンプト、サンプリング、思考モード、計測方法が異なるため、ここには載せない。
 
