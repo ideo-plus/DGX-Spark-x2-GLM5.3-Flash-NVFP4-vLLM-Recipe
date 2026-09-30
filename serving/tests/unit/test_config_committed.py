@@ -88,8 +88,13 @@ MARLIN_WEIGHTS_LABEL = (
     "derived:k2s4:RedHatAI/GLM-5.3-Flash-NVFP4@18d55bfd5a2194887738da73753975c9d3842f46"
 )
 MARLIN_RESULTS_DOC = "docs/results/2026-09-28-k2-stage3.md"
+MARLIN_KV_CACHE_RESULTS_DOC = "docs/results/2026-09-30-fast-prefill-long-input.md"
+MARLIN_KV_CACHE_UTILS_SOURCE = (
+    "https://github.com/vllm-project/vllm/blob/"
+    "0961bbae2894d574be790d219651824eb199318e/vllm/v1/worker/utils.py"
+)
 
-MARLIN_CONFIG_SHA256 = "80a7fd6b1cb19309fef25fbbad7811a5569460016dec8e574430d91ef667ba72"
+MARLIN_CONFIG_SHA256 = "80bb969a7605d79da97b1e95b0284c44e27f7f138ee55d83e1bcf84f50e6650a"
 """`glm53-tp2-mtp3-marlin` の `config-sha256` (issue #103)。
 
 構成の値 (フラグ、値、イメージ、重み、ノードの値) を 1 つでも変えると変わるので、この
@@ -100,6 +105,11 @@ Issue #103 が指す、実機で起動・計測した構成 (リポジトリの�
 `glm53-tp2-mtp3-marlin` に置き換え、この試験と同じ直結の値と `STARTED_AT` で
 `load_configs` → `select_config` → `build_plans` に通して求めた。構成名は `--name` を
 通じて値に効くので、置き換えてから求めている。
+
+Issue #136 で `args.kv-cache-memory-bytes` (`--kv-cache-memory-bytes 4294967296`) を
+`args.gpu-memory-utilization` の直後に足したので、同じ方法 (`load_configs` →
+`select_config` → `build_plans`、同じ直結の値と `STARTED_AT`) で求め直した。変えた理由は
+#135 (既定の KV の量では cold 128k の入力でエンジンが止まっていた)。
 """
 
 FABRIC_HEAD_ADDR = "192.168.100.1"
@@ -221,7 +231,7 @@ _DOCKER_ARGV: tuple[str, ...] = (
     "/dev/infiniband",
 )
 
-_TAIL_ARGV: tuple[str, ...] = (
+_TAIL_UP_TO_GPU_MEMORY_ARGV: tuple[str, ...] = (
     "--master-addr",
     FABRIC_HEAD_ADDR,
     "--master-port",
@@ -234,6 +244,8 @@ _TAIL_ARGV: tuple[str, ...] = (
     "2048",
     "--gpu-memory-utilization",
     "0.90",
+)
+_TAIL_AFTER_GPU_MEMORY_ARGV: tuple[str, ...] = (
     "--language-model-only",
     "--no-enable-flashinfer-autotune",
     "--tool-call-parser",
@@ -245,6 +257,8 @@ _TAIL_ARGV: tuple[str, ...] = (
     "--shutdown-timeout",
     "60",
 )
+_TAIL_ARGV: tuple[str, ...] = (*_TAIL_UP_TO_GPU_MEMORY_ARGV, *_TAIL_AFTER_GPU_MEMORY_ARGV)
+"""`p1-nvfp4-tp2` の末尾の引数の列 (`--kv-cache-memory-bytes` を持たない。issue #136 の対象外)。"""
 
 _HEAD_ARGV: tuple[str, ...] = (
     "docker",
@@ -409,7 +423,10 @@ _MARLIN_DOCKER_ARGV: tuple[str, ...] = (
 )
 
 _MARLIN_TAIL_ARGV: tuple[str, ...] = (
-    *_TAIL_ARGV,
+    *_TAIL_UP_TO_GPU_MEMORY_ARGV,
+    "--kv-cache-memory-bytes",
+    "4294967296",
+    *_TAIL_AFTER_GPU_MEMORY_ARGV,
     "--speculative-config",
     '{"method":"mtp","num_speculative_tokens":3}',
     "--load-format",
@@ -417,6 +434,8 @@ _MARLIN_TAIL_ARGV: tuple[str, ...] = (
     "--moe-backend",
     "marlin",
 )
+"""`glm53-tp2-mtp3-marlin` の末尾の引数の列。`--gpu-memory-utilization 0.90` の直後に
+`--kv-cache-memory-bytes 4294967296` を持つ (issue #136)。"""
 
 _MARLIN_HEAD_ARGV: tuple[str, ...] = (
     "docker",
@@ -663,6 +682,26 @@ def test_the_marlin_config_records_the_measured_reason() -> None:
     assert "43.8" in moe_backend.why
     assert "45.0" in moe_backend.why
     assert MARLIN_RESULTS_DOC in moe_backend.why
+
+
+def test_the_marlin_config_pins_the_kv_cache_with_the_measured_reason() -> None:
+    """`glm53-tp2-mtp3-marlin` は KV キャッシュを 1 台あたり 4 GiB に固定し、その理由と
+    `--gpu-memory-utilization` の役割の変化が、実測に基づく (issue #136)。"""
+    config = _load_configs()[MARLIN_CONFIG]
+    assert "#135" in config.description
+
+    kv_cache = next(
+        setting for setting in config.args.values() if setting.flag == "--kv-cache-memory-bytes"
+    )
+    assert kv_cache.value == "4294967296"
+    assert MARLIN_KV_CACHE_RESULTS_DOC in kv_cache.why
+
+    gpu_mem = next(
+        setting for setting in config.args.values() if setting.flag == "--gpu-memory-utilization"
+    )
+    assert gpu_mem.value == "0.90"
+    assert "request_memory" in gpu_mem.why
+    assert MARLIN_KV_CACHE_UTILS_SOURCE in gpu_mem.why
 
 
 def test_every_setting_carries_provenance() -> None:

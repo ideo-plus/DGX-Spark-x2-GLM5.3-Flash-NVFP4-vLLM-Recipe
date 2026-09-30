@@ -1463,7 +1463,7 @@ quote = "The NCCL_DEBUG_FILE variable directs the NCCL debug logging output to a
 
 [configs.glm53-tp2-mtp3-marlin]
 kind = "serve"
-description = "NoPE 修正イメージ (vllm-nope:0961bbae-fi070) で、2 台 TP=2 の full と同じ構成に、モデル付属の MTP を下書き 3 トークンで有効にし、MoE の実装を Marlin にする。重みは、手元で変換した派生の重み k2s4 (元: RedHatAI/GLM-5.3-Flash-NVFP4@18d55bfd5a2194887738da73753975c9d3842f46、変換 experiments/k2-quant@949fb930)。2026-09-28 の確認の段 (fast、出力 256、N = 3) で、コード・英語 45.0 tok/s、散文・日本語 42.2 tok/s、壊れなし (docs/results/2026-09-28-k2-stage3.md の「k2s4 ＋ Marlin」の節)。固定した vLLM の直したファイル (vllm/model_executor/layers/vocab_parallel_embedding.py, vllm/models/glm5next/common/model.py, vllm/models/glm5next/common/kda.py) を、読み取り専用の bind mount で重ねる (vllm-overlay k2s2b。ADR 0007 の第 2b 段、#79)"
+description = "NoPE 修正イメージ (vllm-nope:0961bbae-fi070) で、2 台 TP=2 の full と同じ構成に、モデル付属の MTP を下書き 3 トークンで有効にし、MoE の実装を Marlin にする。重みは、手元で変換した派生の重み k2s4 (元: RedHatAI/GLM-5.3-Flash-NVFP4@18d55bfd5a2194887738da73753975c9d3842f46、変換 experiments/k2-quant@949fb930)。2026-09-28 の確認の段 (fast、出力 256、N = 3) で、コード・英語 45.0 tok/s、散文・日本語 42.2 tok/s、壊れなし (docs/results/2026-09-28-k2-stage3.md の「k2s4 ＋ Marlin」の節)。固定した vLLM の直したファイル (vllm/model_executor/layers/vocab_parallel_embedding.py, vllm/models/glm5next/common/model.py, vllm/models/glm5next/common/kda.py) を、読み取り専用の bind mount で重ねる (vllm-overlay k2s2b。ADR 0007 の第 2b 段、#79)。KV キャッシュは --kv-cache-memory-bytes で 1 台あたり 4 GiB に固定する (既定の量 12.82 GiB では cold 128k の入力でエンジンが止まったため。#135、docs/results/2026-09-30-fast-prefill-long-input.md)"
 nodes = ["head", "worker"]
 # 初回は 1 台あたり約 92 GiB の読み込みと JIT があるので長く取る。実測で直す
 # (直しても config-sha256 は変わらないので、動いているサーバーを止めずに済む)
@@ -1676,9 +1676,16 @@ quote = "Maximum number of tokens that can be processed in a single iteration. �
 [configs.glm53-tp2-mtp3-marlin.args.gpu-memory-utilization]
 flag = "--gpu-memory-utilization"
 value = "0.90"
-why = "GB10 はユニファイドメモリなので、空きの見積もりが psutil の available になる (上の原文)。要る量は「全体 × この割合」で、それが空きを上回ると起動しない (`vllm/v1/worker/utils.py` の requested_memory。同じ commit)。既定の 0.92 より控えめにして、OS の側に余裕を残す"
+why = "GB10 はユニファイドメモリなので、空きの見積もりが psutil の available になる (上の原文)。要る量は「全体 × この割合」で、それが空きを上回ると起動しない (`vllm/v1/worker/utils.py` の requested_memory。同じ commit)。既定の 0.92 より控えめにして、OS の側に余裕を残す。--kv-cache-memory-bytes で KV の量を指定した後は、この値は起動の前の空きの検査 (`vllm/v1/worker/utils.py` の request_memory。空きが「全体 × この割合」より少ないと起動しない) にだけ効き、KV の量には使われない (https://github.com/vllm-project/vllm/blob/0961bbae2894d574be790d219651824eb199318e/vllm/v1/worker/utils.py)"
 source = "https://github.com/vllm-project/vllm/blob/385dce36bcee42309924a5ece951a96db3dce7f2/vllm/utils/mem_utils.py"
 quote = "On UMA (Unified Memory Architecture) platforms where CPU and GPU share physical memory (e.g. GH200, DGX Spark, Jetson Orin), cudaMemGetInfo underreports free memory because it does not account for reclaimable OS memory (page cache, buffers). Use psutil to get the true available memory."
+
+[configs.glm53-tp2-mtp3-marlin.args.kv-cache-memory-bytes]
+flag = "--kv-cache-memory-bytes"
+value = "4294967296"
+why = "既定の量 (KV 12.82 GiB、1,137,427 トークン) では、cold 128k の入力でエンジンが 10 分間止まり、head のカーネルの記録に NV_ERR_NO_MEMORY が出た (#135)。--kv-cache-memory-bytes 4294967296 (4 GiB) だけを足した一時構成では、cold 128k が 96.8 秒 (1,333 tok/s) で通り、cold 32k が 1,330〜1,335 tok/s にそろい、2 台とも NV_ERR_NO_MEMORY は 0 件だった。KV の容量は 352,886 トークン (163,840 トークンの要求 2.15 本分) で、agent の 12 万トークンの会話 1 本分が収まる。この指定があると、vLLM は起動後のメモリーの見積もりを飛ばし、KV の量に gpu_memory_utilization を使わない (docs/results/2026-09-30-fast-prefill-long-input.md)"
+source = "https://github.com/vllm-project/vllm/blob/0961bbae2894d574be790d219651824eb199318e/vllm/config/cache.py"
+quote = "Note that kv_cache_memory_bytes (when not-None) ignores gpu_memory_utilization"
 
 [configs.glm53-tp2-mtp3-marlin.args.language-model-only]
 flag = "--language-model-only"
