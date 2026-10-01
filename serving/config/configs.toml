@@ -1463,7 +1463,7 @@ quote = "The NCCL_DEBUG_FILE variable directs the NCCL debug logging output to a
 
 [configs.glm53-tp2-mtp3-marlin]
 kind = "serve"
-description = "NoPE 修正イメージ (vllm-nope:0961bbae-fi070) で、2 台 TP=2 の full と同じ構成に、モデル付属の MTP を下書き 3 トークンで有効にし、MoE の実装を Marlin にする。重みは、手元で変換した派生の重み k2s4 (元: RedHatAI/GLM-5.3-Flash-NVFP4@18d55bfd5a2194887738da73753975c9d3842f46、変換 experiments/k2-quant@949fb930)。2026-09-28 の確認の段 (fast、出力 256、N = 3) で、コード・英語 45.0 tok/s、散文・日本語 42.2 tok/s、壊れなし (docs/results/2026-09-28-k2-stage3.md の「k2s4 ＋ Marlin」の節)。固定した vLLM の直したファイル (vllm/model_executor/layers/vocab_parallel_embedding.py, vllm/models/glm5next/common/model.py, vllm/models/glm5next/common/kda.py) を、読み取り専用の bind mount で重ねる (vllm-overlay k2s2b。ADR 0007 の第 2b 段、#79)。KV キャッシュは --kv-cache-memory-bytes で 1 台あたり 4 GiB に固定する (既定の量 12.82 GiB では cold 128k の入力でエンジンが止まったため。#135、docs/results/2026-09-30-fast-prefill-long-input.md)"
+description = "NoPE 修正イメージ (vllm-nope:0961bbae-fi070) で、2 台 TP=2 の full と同じ構成に、モデル付属の MTP を下書き 3 トークンで有効にし、MoE の実装を Marlin にする。重みは、手元で変換した派生の重み k2s4 (元: RedHatAI/GLM-5.3-Flash-NVFP4@18d55bfd5a2194887738da73753975c9d3842f46、変換 experiments/k2-quant@949fb930)。2026-09-28 の確認の段 (fast、出力 256、N = 3) で、コード・英語 45.0 tok/s、散文・日本語 42.2 tok/s、壊れなし (docs/results/2026-09-28-k2-stage3.md の「k2s4 ＋ Marlin」の節)。固定した vLLM の直したファイル (vllm/model_executor/layers/vocab_parallel_embedding.py, vllm/models/glm5next/common/model.py, vllm/models/glm5next/common/kda.py) を、読み取り専用の bind mount で重ねる (vllm-overlay k2s2b。ADR 0007 の第 2b 段、#79)。KV キャッシュは --kv-cache-memory-bytes で 1 台あたり 4 GiB に固定する (既定の量 12.82 GiB では cold 128k の入力でエンジンが止まったため。#135、docs/results/2026-09-30-fast-prefill-long-input.md)。サーバーの既定の思考の深さは --default-chat-template-kwargs で low にする (既定の最大では、コードの課題で答えが本文に出なかったため。#158。要求の側の chat_template_kwargs の reasoning_effort が優先される)"
 nodes = ["head", "worker"]
 # 初回は 1 台あたり約 92 GiB の読み込みと JIT があるので長く取る。実測で直す
 # (直しても config-sha256 は変わらないので、動いているサーバーを止めずに済む)
@@ -1686,6 +1686,13 @@ value = "4294967296"
 why = "既定の量 (KV 12.82 GiB、1,137,427 トークン) では、cold 128k の入力でエンジンが 10 分間止まり、head のカーネルの記録に NV_ERR_NO_MEMORY が出た (#135)。--kv-cache-memory-bytes 4294967296 (4 GiB) だけを足した一時構成では、cold 128k が 96.8 秒 (1,333 tok/s) で通り、cold 32k が 1,330〜1,335 tok/s にそろい、2 台とも NV_ERR_NO_MEMORY は 0 件だった。KV の容量は 352,886 トークン (163,840 トークンの要求 2.15 本分) で、agent の 12 万トークンの会話 1 本分が収まる。この指定があると、vLLM は起動後のメモリーの見積もりを飛ばし、KV の量に gpu_memory_utilization を使わない (docs/results/2026-09-30-fast-prefill-long-input.md)"
 source = "https://github.com/vllm-project/vllm/blob/0961bbae2894d574be790d219651824eb199318e/vllm/config/cache.py"
 quote = "Note that kv_cache_memory_bytes (when not-None) ignores gpu_memory_utilization"
+
+[configs.glm53-tp2-mtp3-marlin.args.default-chat-template-kwargs]
+flag = "--default-chat-template-kwargs"
+value = '{"reasoning_effort":"low"}'
+why = "既定の深さ (最大) では、コードの課題で答えが思考の中に書かれ、本文が空で終わる (#158。bench の fast の decode 60 本のうち 59 本が思考だけで終わり、/v1/messages の経路では 3 本中 0 本しか答えが出なかった)。この引数だけを足した一時構成では、decode の 60 本すべてで本文の答えまで届き、本文が出始めるまでは 0.6〜1.4 秒、quality は toolcall 10/10、humaneval+ 10/10、needle 2/2 で、既定の 7/10、10/10、2/2 と同じか上だった (記録は #158)。要求の側の chat_template_kwargs が優先されるので、深く考えさせたい要求は reasoning_effort を送れば変えられる"
+source = "https://github.com/vllm-project/vllm/blob/0961bbae2894d574be790d219651824eb199318e/vllm/entrypoints/launchers/cli_args.py"
+quote = "Default keyword arguments to pass to the chat template renderer. These will be merged with request-level chat_template_kwargs, with request values taking precedence."
 
 [configs.glm53-tp2-mtp3-marlin.args.language-model-only]
 flag = "--language-model-only"

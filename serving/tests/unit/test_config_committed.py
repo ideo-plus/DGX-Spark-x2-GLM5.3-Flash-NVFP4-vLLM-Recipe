@@ -15,6 +15,8 @@
 - コミットした `glm53-tp2-mtp3-marlin` (重み `k2s4` + MTP N=3 + `--moe-backend marlin`) から、
   2 台ぶんの固定した引数の列ができ、`description` と `--moe-backend` の `why` が実測に基づく
   (issue #103)
+- `glm53-tp2-mtp3-marlin` は、`--default-chat-template-kwargs` でサーバーの既定の思考の深さを
+  low にする (issue #159、根拠は #158)
 
 この試験は、Spark に 1 度も触らない (読み込みと、純粋な組み立てだけを流す)。
 """
@@ -94,7 +96,7 @@ MARLIN_KV_CACHE_UTILS_SOURCE = (
     "0961bbae2894d574be790d219651824eb199318e/vllm/v1/worker/utils.py"
 )
 
-MARLIN_CONFIG_SHA256 = "80bb969a7605d79da97b1e95b0284c44e27f7f138ee55d83e1bcf84f50e6650a"
+MARLIN_CONFIG_SHA256 = "3c6278247e0cb7ee36fe43d5fafba828a32132f1617645a9f7996d27ed275b6d"
 """`glm53-tp2-mtp3-marlin` の `config-sha256` (issue #103)。
 
 構成の値 (フラグ、値、イメージ、重み、ノードの値) を 1 つでも変えると変わるので、この
@@ -110,6 +112,11 @@ Issue #136 で `args.kv-cache-memory-bytes` (`--kv-cache-memory-bytes 4294967296
 `args.gpu-memory-utilization` の直後に足したので、同じ方法 (`load_configs` →
 `select_config` → `build_plans`、同じ直結の値と `STARTED_AT`) で求め直した。変えた理由は
 #135 (既定の KV の量では cold 128k の入力でエンジンが止まっていた)。
+
+Issue #159 で `args.default-chat-template-kwargs`
+(`--default-chat-template-kwargs '{"reasoning_effort":"low"}'`) を
+`args.kv-cache-memory-bytes` の直後に足したので、同じ方法で求め直す。変えた理由は #158
+(既定の深さ (最大) では、コードの課題で答えが思考の中に書かれ、本文が空で終わっていた)。
 """
 
 FABRIC_HEAD_ADDR = "192.168.100.1"
@@ -426,6 +433,9 @@ _MARLIN_TAIL_ARGV: tuple[str, ...] = (
     *_TAIL_UP_TO_GPU_MEMORY_ARGV,
     "--kv-cache-memory-bytes",
     "4294967296",
+    # issue #159: サーバーの既定の思考の深さを low にする (根拠は #158)
+    "--default-chat-template-kwargs",
+    '{"reasoning_effort":"low"}',
     *_TAIL_AFTER_GPU_MEMORY_ARGV,
     "--speculative-config",
     '{"method":"mtp","num_speculative_tokens":3}',
@@ -435,7 +445,8 @@ _MARLIN_TAIL_ARGV: tuple[str, ...] = (
     "marlin",
 )
 """`glm53-tp2-mtp3-marlin` の末尾の引数の列。`--gpu-memory-utilization 0.90` の直後に
-`--kv-cache-memory-bytes 4294967296` を持つ (issue #136)。"""
+`--kv-cache-memory-bytes 4294967296` を持つ (issue #136)。その直後に
+`--default-chat-template-kwargs` を持つ (issue #159)。"""
 
 _MARLIN_HEAD_ARGV: tuple[str, ...] = (
     "docker",
@@ -702,6 +713,24 @@ def test_the_marlin_config_pins_the_kv_cache_with_the_measured_reason() -> None:
     assert gpu_mem.value == "0.90"
     assert "request_memory" in gpu_mem.why
     assert MARLIN_KV_CACHE_UTILS_SOURCE in gpu_mem.why
+
+
+def test_the_marlin_config_defaults_the_reasoning_effort_to_low() -> None:
+    """`glm53-tp2-mtp3-marlin` は、サーバーの既定の思考の深さを low にする
+    (issue #159、根拠は #158)。"""
+    config = _load_configs()[MARLIN_CONFIG]
+    assert "--default-chat-template-kwargs" in config.description
+    assert "#158" in config.description
+
+    setting = next(
+        setting
+        for setting in config.args.values()
+        if setting.flag == "--default-chat-template-kwargs"
+    )
+    assert setting.value is not None
+    assert json.loads(setting.value) == {"reasoning_effort": "low"}
+    assert setting.only_on is None
+    assert "#158" in setting.why
 
 
 def test_every_setting_carries_provenance() -> None:
