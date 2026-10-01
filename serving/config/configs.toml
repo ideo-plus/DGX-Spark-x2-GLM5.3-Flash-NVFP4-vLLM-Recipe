@@ -1668,8 +1668,8 @@ quote = "Maximum number of sequences to be processed in a single iteration. …"
 
 [configs.glm53-tp2-mtp3-marlin.args.max-num-batched-tokens]
 flag = "--max-num-batched-tokens"
-value = "4096"
-why = "チャンク化した prefill の 1 回ぶん。2048 から 4096 に増やすと、入力の処理が速くなる。2026-10-01 の実機の計測 (KV を 1 台あたり 4 GiB に固定した構成で、--max-num-batched-tokens だけを 4096 にした一時構成。起動の前に 2 台のページキャッシュを捨て、bench の fast の入力の処理を各 5 回) で、cold 32k が 1,448 tok/s (1,429〜1,453。2048 の 1,331 より 9% 速い)、cold 64k が 1,461 tok/s、cold 128k が 1,429 tok/s (1,404〜1,431。2048 の 1,332 より 7% 速い) だった。128k の後に続けて流した sparkDash の prefill でも 32k は落ちず (8k 1,561、32k 1,637、128k 1,614 tok/s。2048 では 32k 1,598、128k 1,584)、NV_ERR_NO_MEMORY は 2 台とも 0 件、preemption は 0 回、KV の使用率は最大 41% だった。8192 は選ばない。cold 128k が 1,141 tok/s に落ち、head で NV_ERR_NO_MEMORY が出た (docs/results/2026-10-01-mbt-8192-128k.md)。記録は docs/results/2026-10-01-mbt-4096.md"
+value = "8192"
+why = "チャンク化した prefill の 1 回ぶん。4096 から 8192 に増やすと、入力の処理が速くなる。env の VLLM_SPARSE_INDEXER_MAX_LOGITS_MB=256 と組で使う。2026-10-01 の実機の計測 (KV を 1 台あたり 4 GiB に固定し、8192 と上限 256 MB を組にした構成。起動の前に 2 台のページキャッシュを捨て、bench の fast の入力の処理を各 5 回) で、cold 32k が 1,614 tok/s (1,604〜1,616。4096 は 1,448)、cold 64k が 1,596 tok/s (4096 は 1,461)、cold 128k が 1,576 tok/s (1,565〜1,577。4096 は 1,429) だった。先に行った探り (各 3 回) でも cold 128k は 1,576 tok/s で、128k の後の cold 32k も 1,612 tok/s で落ちなかった。sparkDash の prefill は 32k が 1,669 tok/s、128k が 1,663 tok/s (4096 では 1,637、1,614)。NV_ERR_NO_MEMORY は 2 回の起動で 2 台とも 0 件、preemption は 0 回、head の MemFree は最小で 5.4 GiB だった。8192 だけでは、128k の入力で indexer の logits の小分けが 2 回になってピークが約 1 GiB になり、cold 128k が 1,141 tok/s に落ち、head で NV_ERR_NO_MEMORY が出た (docs/results/2026-10-01-mbt-8192-128k.md)。記録は docs/results/2026-10-01-mbt-8192-logits-256.md (#169)"
 source = "https://github.com/vllm-project/vllm/blob/385dce36bcee42309924a5ece951a96db3dce7f2/vllm/config/scheduler.py"
 quote = "Maximum number of tokens that can be processed in a single iteration. …"
 
@@ -1760,7 +1760,7 @@ why = "主の層の MoE も Marlin にし、k2s4 の MTP の層 (NVFP4A16 で Ma
 source = "https://github.com/vllm-project/vllm/blob/0961bbae2894d574be790d219651824eb199318e/vllm/model_executor/layers/fused_moe/oracle/nvfp4.py"
 quote = "\"marlin\": NvFp4MoeBackend.MARLIN,"
 
-# --- 環境変数 (p1-nvfp4-tp2 の 3 つ + IB の確認のために起動のたびに付ける NCCL の記録の 3 つ) -----
+# --- 環境変数 (p1-nvfp4-tp2 の 3 つ + IB の確認のために起動のたびに付ける NCCL の記録の 3 つ + indexer の logits の上限) -----
 
 [configs.glm53-tp2-mtp3-marlin.env.vllm-host-ip]
 flag = "VLLM_HOST_IP"
@@ -1805,3 +1805,10 @@ value = "/logs/nccl.%h.%p.log"
 why = "2 台ぶんの記録を、mount-logs で結び付けた /logs に書き、serve logs で回収する。標準出力の起動の記録と混ぜない"
 source = "https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html"
 quote = "The NCCL_DEBUG_FILE variable directs the NCCL debug logging output to a file. The filename format can be set to filename.%h.%p where %h is replaced with the hostname and %p is replaced with the process PID. …"
+
+[configs.glm53-tp2-mtp3-marlin.env.vllm-sparse-indexer-max-logits-mb]
+flag = "VLLM_SPARSE_INDEXER_MAX_LOGITS_MB"
+value = "256"
+why = "--max-num-batched-tokens 8192 と組で使う。固定した vLLM の indexer は、logits をこの上限 (既定 512 MB) 以下になるように行の向きに小分けにする。8192 × 128k では小分けが 2 回になり、2 回目の計算の間も 1 回目の logits が残って、ピークが約 1 GiB になる。上限を 256 MB にして、これを防ぐ。既定の上限のままでは、cold 128k が 1,141 tok/s に落ち、head で NV_ERR_NO_MEMORY が出た (docs/results/2026-10-01-mbt-8192-128k.md)。256 MB にした 2026-10-01 の実機の計測では、cold 128k が 1,576 tok/s で、NV_ERR_NO_MEMORY は 2 台とも 0 件だった。記録は docs/results/2026-10-01-mbt-8192-logits-256.md (#169)"
+source = "https://github.com/vllm-project/vllm/blob/0961bbae2894d574be790d219651824eb199318e/vllm/envs.py"
+quote = "Maximum size (in MB) for logits tensor in sparse MLA indexer prefill chunks. Bounds the [M, N] float32 logits tensor to prevent CUDA OOM. Default: 512 MB"
