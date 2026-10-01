@@ -96,7 +96,7 @@ MARLIN_KV_CACHE_UTILS_SOURCE = (
     "0961bbae2894d574be790d219651824eb199318e/vllm/v1/worker/utils.py"
 )
 
-MARLIN_CONFIG_SHA256 = "3c6278247e0cb7ee36fe43d5fafba828a32132f1617645a9f7996d27ed275b6d"
+MARLIN_CONFIG_SHA256 = "4e0dd41e8c87ba5fcdc90b669920f3cdd79256a9f7ac96f634025f0a3e16dc4f"
 """`glm53-tp2-mtp3-marlin` の `config-sha256` (issue #103)。
 
 構成の値 (フラグ、値、イメージ、重み、ノードの値) を 1 つでも変えると変わるので、この
@@ -117,6 +117,13 @@ Issue #159 で `args.default-chat-template-kwargs`
 (`--default-chat-template-kwargs '{"reasoning_effort":"low"}'`) を
 `args.kv-cache-memory-bytes` の直後に足したので、同じ方法で求め直す。変えた理由は #158
 (既定の深さ (最大) では、コードの課題で答えが思考の中に書かれ、本文が空で終わっていた)。
+
+Issue #126 で `args.max-num-batched-tokens` を 2048 から 4096 にしたので、同じ方法で求め直した。
+変えた理由は、2026-10-01 の実測 (KV を 4 GiB に固定した構成、起動前にページキャッシュを捨てた)。
+4096 の一時構成を `bench` の `fast` で測り、cold 32k が 1,448 tok/s (2048 は 1,331)、
+cold 128k が 1,429 tok/s (2048 は 1,332) だった。続けて流した sparkDash の prefill でも、
+128k の後の 32k は落ちなかった。`NV_ERR_NO_MEMORY` は 0 件。8192 は cold 128k が 1,141 tok/s に
+落ち、head で `NV_ERR_NO_MEMORY` が出たので採らない (PR #165 で取り消し)。
 """
 
 FABRIC_HEAD_ADDR = "192.168.100.1"
@@ -249,6 +256,23 @@ _TAIL_UP_TO_GPU_MEMORY_ARGV: tuple[str, ...] = (
     "16",
     "--max-num-batched-tokens",
     "2048",
+    "--gpu-memory-utilization",
+    "0.90",
+)
+_MARLIN_TAIL_UP_TO_GPU_MEMORY_ARGV: tuple[str, ...] = (
+    "--master-addr",
+    FABRIC_HEAD_ADDR,
+    "--master-port",
+    "29501",
+    "--max-model-len",
+    "163840",
+    "--max-num-seqs",
+    "16",
+    # issue #126: 2048 → 4096。2026-10-01 の実測 (cold 32k 1,448 / cold 128k 1,429 tok/s、
+    # `NV_ERR_NO_MEMORY` 0 件)。8192 は cold 128k で落ちたので採らない。
+    # `p1-nvfp4-tp2` は 2048 のまま
+    "--max-num-batched-tokens",
+    "4096",
     "--gpu-memory-utilization",
     "0.90",
 )
@@ -430,7 +454,7 @@ _MARLIN_DOCKER_ARGV: tuple[str, ...] = (
 )
 
 _MARLIN_TAIL_ARGV: tuple[str, ...] = (
-    *_TAIL_UP_TO_GPU_MEMORY_ARGV,
+    *_MARLIN_TAIL_UP_TO_GPU_MEMORY_ARGV,
     "--kv-cache-memory-bytes",
     "4294967296",
     # issue #159: サーバーの既定の思考の深さを low にする (根拠は #158)

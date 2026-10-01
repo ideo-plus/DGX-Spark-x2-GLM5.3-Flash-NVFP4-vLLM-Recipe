@@ -1668,8 +1668,8 @@ quote = "Maximum number of sequences to be processed in a single iteration. …"
 
 [configs.glm53-tp2-mtp3-marlin.args.max-num-batched-tokens]
 flag = "--max-num-batched-tokens"
-value = "2048"
-why = "チャンク化した prefill の 1 回ぶん。小さいほど活性化のピークが下がる。128k の prefill ではチャンクの回数が増えるが、この構成ではメモリが先に効く"
+value = "4096"
+why = "チャンク化した prefill の 1 回ぶん。2048 から 4096 に増やすと、入力の処理が速くなる。2026-10-01 の実機の計測 (KV を 1 台あたり 4 GiB に固定した構成で、--max-num-batched-tokens だけを 4096 にした一時構成。起動の前に 2 台のページキャッシュを捨て、bench の fast の入力の処理を各 5 回) で、cold 32k が 1,448 tok/s (1,429〜1,453。2048 の 1,331 より 9% 速い)、cold 64k が 1,461 tok/s、cold 128k が 1,429 tok/s (1,404〜1,431。2048 の 1,332 より 7% 速い) だった。128k の後に続けて流した sparkDash の prefill でも 32k は落ちず (8k 1,561、32k 1,637、128k 1,614 tok/s。2048 では 32k 1,598、128k 1,584)、NV_ERR_NO_MEMORY は 2 台とも 0 件、preemption は 0 回、KV の使用率は最大 41% だった。8192 は選ばない。cold 128k が 1,141 tok/s に落ち、head で NV_ERR_NO_MEMORY が出た (docs/results/2026-10-01-mbt-8192-128k.md)。記録は docs/results/2026-10-01-mbt-4096.md"
 source = "https://github.com/vllm-project/vllm/blob/385dce36bcee42309924a5ece951a96db3dce7f2/vllm/config/scheduler.py"
 quote = "Maximum number of tokens that can be processed in a single iteration. …"
 
