@@ -18,11 +18,11 @@ become the backend for `takt`, a coding-agent workflow tool, called through the 
 sparkDash 1.8.6 on two DGX Spark nodes at TP=2 with the GPU clock capped at `300–1800 MHz` and X925 cores at 3.0 GHz: `/v1/chat/completions`, temperature 0, 400 output tokens forced with
 `min_tokens` / `ignore_eos`, one run per cell. Prefill fills the prompt with a repeated word. sparkDash asks for thinking off,
 which this recipe's stock chat template ignores; at the server's default reasoning effort `low`, this recipe writes one short
-thinking sentence (counted by sparkDash) before answering. Details: [decode record](docs/results/2026-10-01-default-effort-low.md), [prefill record](docs/results/2026-10-01-mbt-4096.md).
+thinking sentence (counted by sparkDash) before answering. Details: [decode record](docs/results/2026-10-01-default-effort-low.md), [prefill record](docs/results/2026-10-01-mbt-8192-logits-256.md).
 
 | Implementation | Structured c1 | Prose c1 | Code c1 | Structured c2 (per stream / total) | Prefill 32k | Prefill 128k |
 |---|---:|---:|---:|---:|---:|---:|
-| This recipe (default reasoning effort low) | 60.64 | 43.74 | 59.03 | 49.01 / 97.11 | 1,637 | 1,614 |
+| This recipe (default reasoning effort low) | 60.64 | 43.74 | 59.03 | 49.01 / 97.11 | 1,669 | 1,663 |
 | mmastrac NVFP4 + DFlash2 (default config) | 69.67 | 32.16 | 66.18 | 53.93 / 107.85 | 1,861 | 1,824 |
 | MiaAI-Lab EXL3 + DFlash2 (Sep 29 config) | 70.52 | 32.56 | 67.30 | 55.00 / 110.00 | 1,446 | 1,500 |
 
@@ -53,8 +53,8 @@ deeper thinking with `reasoning_effort`.
 | Single stream, JSON/en | 46.9 tok/s | [October 1](docs/results/2026-10-01-default-effort-low.md) |
 | Single stream, JSON/ja | 47.9 tok/s | [October 1](docs/results/2026-10-01-default-effort-low.md) |
 | Decode, 2 streams, per stream (aggregate) | 23.5 tok/s (40.7 aggregate) | [October 1](docs/results/2026-10-01-default-effort-low.md) |
-| Prefill, 32k tokens (cold) | 1,448 tok/s | [October 1](docs/results/2026-10-01-mbt-4096.md) |
-| Prefill, 128k tokens (cold) | 1,429 tok/s | [October 1](docs/results/2026-10-01-mbt-4096.md) |
+| Prefill, 32k tokens (cold) | 1,614 tok/s | [October 1](docs/results/2026-10-01-mbt-8192-logits-256.md) |
+| Prefill, 128k tokens (cold) | 1,576 tok/s | [October 1](docs/results/2026-10-01-mbt-8192-logits-256.md) |
 
 Other recipes' published values are collected in the [recipe comparison](docs/research/2026-09-28-recipe-comparison.md).
 
@@ -65,7 +65,7 @@ default effort `low`, while the other two rows were measured at their own defaul
 
 | Implementation | Code/en | Prose/en | Concurrency 2 (per stream) | Cold prefill 32k |
 |---|---:|---:|---:|---:|
-| [This recipe: MTP N=3 + Marlin (KV 4 GiB, default effort low)](docs/results/2026-10-01-default-effort-low.md) | 44.288 | 37.211 | 23.480 | [1,448.141](docs/results/2026-10-01-mbt-4096.md) |
+| [This recipe: MTP N=3 + Marlin (KV 4 GiB, default effort low)](docs/results/2026-10-01-default-effort-low.md) | 44.288 | 37.211 | 23.480 | [1,613.887](docs/results/2026-10-01-mbt-8192-logits-256.md) |
 | [MiaAI-Lab EXL3 + DFlash2 (Sep 29)](docs/results/2026-09-29-miaai-exl3-dflash2.md) | 34.212 | 33.423 | 22.675 | 1,340.999 |
 | [mmastrac NVFP4 + DFlash2 (default config)](docs/results/2026-09-30-mmastrac-32k-same-conditions.md) | 33.153 | 31.183 | 23.672 | 1,835.091 |
 
@@ -200,6 +200,6 @@ and facts measured in this repo's own environment. Every non-trivial choice is r
 ## Status and known limitations
 
 - **Answer decode for code/en is 44.3 tok/s**, just below the 45 tok/s target. Two streams reach 23.5 tok/s per stream (target 23): with this MoE, each extra token reads its own experts, so two streams are bound by memory bandwidth ([record](docs/results/2026-10-01-concurrency-bandwidth-bound.md)).
-- **Cold prefill measured 1,448 tok/s at 32k and 1,429 tok/s at 128k** (72% of the 2,000 tok/s target), with the KV cache pinned at 4 GiB per node and `--max-num-batched-tokens 4096`. The prefix cache rarely hits with MTP enabled.
+- **Cold prefill measured 1,614 tok/s at 32k and 1,576 tok/s at 128k** (81% of the 2,000 tok/s target), with the KV cache pinned at 4 GiB per node, `--max-num-batched-tokens 8192`, and the sparse-attention indexer's logits chunks capped at 256 MB (`VLLM_SPARSE_INDEXER_MAX_LOGITS_MB=256`; without the cap, 8192 slowed 128k inputs and hit `NV_ERR_NO_MEMORY`). The prefix cache rarely hits with MTP enabled.
 - **Startup takes ~5 minutes** (`instanttensor` after evicting the page cache).
 - **P8 (large-sample verification of every success criterion) has not been run yet.**
