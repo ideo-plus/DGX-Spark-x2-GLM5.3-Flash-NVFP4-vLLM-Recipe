@@ -16,53 +16,52 @@
 [sparkDash](https://github.com/MiaAI-Lab/sparkDash) は、MiaAI-Lab と knapcio が公表値に使っている道具である。DGX Spark 2 台の TP=2、GPU クロック上限 `300〜1800 MHz`、X925 3.0 GHz で、
 sparkDash 1.8.6 を使って測った。条件は `/v1/chat/completions`、温度 0、出力 400 トークン (`min_tokens` と `ignore_eos` で必ずその長さまで生成)、
 各 1 回。prefill の入力は、同じ単語の繰り返しで埋めた文である。sparkDash は思考オフを求めるが、この構成の標準のチャットテンプレートはそれを読まない。
-そのため、現行構成の行は最大の深さで考えた値である。詳細は[記録](docs/results/2026-09-30-sparkdash.md)。
+サーバーの既定の思考の深さは `low` なので、現行構成は答えの前に短い思考の 1 文を書く (sparkDash はこれも数える)。詳細は[記録](docs/results/2026-10-01-default-effort-low.md)。
 
 | 実装 | 構造化 同時 1 本 | 散文 同時 1 本 | コード 同時 1 本 | 構造化 同時 2 本 (1 本あたり / 合計) | prefill 32k | prefill 128k |
 |---|---:|---:|---:|---:|---:|---:|
-| 現行構成 (思考の深さは既定) | 60.01 | 42.38 | 55.18 | 40.41 / 77.95 | 1,583 | 1,568 |
+| 現行構成 (既定の思考の深さ low) | 60.64 | 43.74 | 59.03 | 49.01 / 97.11 | 1,598 | 1,584 |
 | mmastrac NVFP4 + DFlash2 (既定の構成) | 69.67 | 32.16 | 66.18 | 53.93 / 107.85 | 1,861 | 1,824 |
 | MiaAI-Lab EXL3 + DFlash2 (9/29 と同じ構成) | 70.52 | 32.56 | 67.30 | 55.00 / 110.00 | 1,446 | 1,500 |
 
 mmastrac は、レシピの README の 2 台の既定の構成で測った。mmastrac の独自のチャットテンプレートは、sparkDash の思考オフを「思考を浅くする (low)」と読む。
 MiaAI-Lab は、推論の設定をレシピの既定のまま (2 台の IP アドレスとネットワークの値だけ合わせた) で測った。MiaAI-Lab は思考を完全に止める。
-3 つの行で、思考の条件はそろっていない。MiaAI-Lab は思考を止め、mmastrac は短い思考の 1 文が残り、現行構成は最大の深さで考える。
+3 つの行で、思考の条件はそろっていない。MiaAI-Lab は思考を止め、mmastrac と現行構成は短い思考の 1 文が残る。
 
 ### このリポジトリの `bench` で測った値
 
-構成 `glm53-tp2-mtp3-marlin` を確認の段 (`fast`) で測った値。JSON は出力上限8,192トークン、
-各条件10回、同じサーバーでの再計数による本文速度である。
+構成 `glm53-tp2-mtp3-marlin` を確認の段 (`fast`) で測った値。サーバーの既定の思考の深さは `low` である。
+decode はすべての試行で答えの本文まで届いたので、下の decode の値は答えの本文を生成する速さである。
 これらの測定では、2 台とも GPU graphics クロックを `300〜1800 MHz` (`nvidia-smi -lgc 300,1800`)、
 X925 CPU コアを `3.0 GHz` に制限した。詳細な記録には、実効 graphics クロック約 1.8 GHz と
 thermal slowdown がなかったことも記載している。
 GPU の上限を 2200 MHz に上げ、X925 の上限を外しても、decode (1 本・同時 2 本) と cold の入力の処理は
 速くならなかった。そのため、上限はこのままにしている ([9月29日の記録](docs/results/2026-09-29-gpu-clock-2200.md))。
 
-**従来のコード・散文の生成速度は、本文ではなく思考だけを生成したときの値である。**
-前回のコード・散文40試行と旧JSON計測の60試行は、すべて思考だけで256トークンを使い切った。
-その旧値は本文の生成性能を示す値として扱わない。
+**decode の値は答えの本文の速さである。** 思考の深さが最大だと、モデルがコードを思考の中に書いたまま、答えを返さないことが多い
+([#158](https://github.com/ideo-plus/DGX-Spark-x2-GLM5.3-Flash-NVFP4-vLLM-Recipe/issues/158))。そのため、サーバーの既定を `low` にしている。深く考えさせたい要求は、`reasoning_effort` を送れば変えられる。
 
 | 項目 | 値 | 記録 |
 |---|---:|---|
-| 1 本、コード・英語（思考のみ） | 45.0 tok/s | [9月30日の記録](docs/results/2026-09-30-fast-prefill-long-input.md) |
-| 1 本、コード・日本語（思考のみ） | 43.4 tok/s | [9月30日の記録](docs/results/2026-09-30-fast-prefill-long-input.md) |
-| 1 本、散文・英語（思考のみ） | 44.1 tok/s | [9月30日の記録](docs/results/2026-09-30-fast-prefill-long-input.md) |
-| 1 本、散文・日本語（思考のみ） | 43.0 tok/s | [9月30日の記録](docs/results/2026-09-30-fast-prefill-long-input.md) |
-| JSON 指示・英語（本文、再計数） | 58.6 tok/s | [9月29日の記録](docs/results/2026-09-29-json-text-decode.md) |
-| JSON 指示・日本語（本文、再計数） | 58.9 tok/s | [9月29日の記録](docs/results/2026-09-29-json-text-decode.md) |
-| 同時 2 本の1本あたり（合計） | 29.1 tok/s（47.4） | [9月30日の記録](docs/results/2026-09-30-mmastrac-32k-same-conditions.md) |
+| 1 本、コード・英語 | 44.3 tok/s | [10月1日の記録](docs/results/2026-10-01-default-effort-low.md) |
+| 1 本、コード・日本語 | 43.0 tok/s | [10月1日の記録](docs/results/2026-10-01-default-effort-low.md) |
+| 1 本、散文・英語 | 37.2 tok/s | [10月1日の記録](docs/results/2026-10-01-default-effort-low.md) |
+| 1 本、散文・日本語 | 38.6 tok/s | [10月1日の記録](docs/results/2026-10-01-default-effort-low.md) |
+| 1 本、JSON・英語 | 46.9 tok/s | [10月1日の記録](docs/results/2026-10-01-default-effort-low.md) |
+| 1 本、JSON・日本語 | 47.9 tok/s | [10月1日の記録](docs/results/2026-10-01-default-effort-low.md) |
+| 同時 2 本の1本あたり（合計） | 23.5 tok/s（40.7） | [10月1日の記録](docs/results/2026-10-01-default-effort-low.md) |
 | 入力の処理 32k（cold） | 1,331 tok/s | [9月30日の記録](docs/results/2026-09-30-mmastrac-32k-same-conditions.md) |
 | 入力の処理 128k（cold） | 1,332 tok/s | [9月30日の記録](docs/results/2026-09-30-fast-prefill-long-input.md) |
 
-JSON 本文の値は再計数による速度で、配列の完成率とは別である。根拠と制約は[今回の記録](docs/results/2026-09-29-json-text-decode.md)と
-[レシピの比較表](docs/research/2026-09-28-recipe-comparison.md)を参照。
+ほかのレシピの公開値は、[レシピの比較表](docs/research/2026-09-28-recipe-comparison.md)にまとめている。
 
 以下の比較表には、同じ条件で測った値だけを載せる。条件はこのリポジトリの `fast` (入力の処理は 8k・32k だけ)、DGX Spark 2 台の TP=2、
-GPU クロック上限 `300〜1800 MHz` である。値は tok/s の中央値で、同時 2 本は 1 本あたり、入力の処理は cold 32k である。
+GPU クロック上限 `300〜1800 MHz` である。値は tok/s の中央値で、同時 2 本は 1 本あたり、入力の処理は cold 32k である。思考の条件は違う。現行構成の decode は既定の深さ `low` での
+答えの本文の値で、ほかの 2 つは各レシピの既定の思考のままで測り、256 トークンが思考の文に使われた値である。
 
 | 実装 | コード・英語 | 散文・英語 | 同時 2 本（1 本あたり） | cold 32k 入力処理 |
 |---|---:|---:|---:|---:|
-| [現行構成: MTP N=3 + Marlin (KV 4 GiB)](docs/results/2026-09-30-mmastrac-32k-same-conditions.md) | **45.026** | **44.137** | **29.120** | **1,331.163** |
+| [現行構成: MTP N=3 + Marlin (KV 4 GiB、既定の深さ low)](docs/results/2026-10-01-default-effort-low.md) | 44.288 | 37.211 | 23.480 | 1,331.163 |
 | [MiaAI-Lab EXL3 + DFlash2 (9/29)](docs/results/2026-09-29-miaai-exl3-dflash2.md) | 34.212 | 33.423 | 22.675 | 1,340.999 |
 | [mmastrac NVFP4 + DFlash2 (既定の構成)](docs/results/2026-09-30-mmastrac-32k-same-conditions.md) | 33.153 | 31.183 | 23.672 | 1,835.091 |
 
@@ -71,9 +70,9 @@ mmastrac は、レシピの README の 2 台の既定の構成 (`compose/.env` �
 MiaAI-Lab と mmastrac は、非商用の条件が付いた DFlash2 の下書きモデルを使う。ほかのレシピの公開値は、
 プロンプト、サンプリング、思考モード、計測方法が異なるため、ここには載せない。
 
-この段の品質の確認 (ツール呼び出し、HumanEval+、needle 8k・32k) では、壊れは見つかっていない。
+既定の深さ `low` での品質の確認 (ツール呼び出し 10/10、HumanEval+ 10/10、needle 8k・32k 2/2) では、壊れは見つかっていない。
 値は少ないサンプル数のもので、成功の基準に対する判定は、**P8** で大量のサンプル数で行う。
-記録: [`docs/results/2026-09-28-k2-stage3.md`](docs/results/2026-09-28-k2-stage3.md)。
+記録: [`docs/results/2026-10-01-default-effort-low.md`](docs/results/2026-10-01-default-effort-low.md)。
 成功の基準の全体は [`PLAN.md` §3](PLAN.md#3-成功の基準) にある。
 
 ## 仕組み
@@ -90,6 +89,8 @@ MiaAI-Lab と mmastrac は、非商用の条件が付いた DFlash2 の下書き
   [`experiments/k2-quant`](experiments/k2-quant/README.md) (ゼロから書いた、CPU だけで動く道具) で、
   手元で NVFP4A16 (重みだけ NVFP4) に変換する (MLA の `kv_b_proj`、indexer、MTP の `eh_proj` は BF16 のまま)。できた派生の重み `k2s4` は、`serving/weights/` の
   マニフェストで固定する。
+- **既定の思考の深さ `low`** (`--default-chat-template-kwargs '{"reasoning_effort":"low"}'`)。思考の深さが最大だと、モデルがコードを
+  思考の中に書いたまま、答えを返さないことが多い ([#158](https://github.com/ideo-plus/DGX-Spark-x2-GLM5.3-Flash-NVFP4-vLLM-Recipe/issues/158))。深く考えさせたい要求は、`reasoning_effort` を送れば変えられる。
 - **MoE のカーネル: Marlin** — すべての MoE の層で `--moe-backend marlin` を使う。構成の名前
   `glm53-tp2-mtp3-marlin` の末尾の `marlin` は、これを指す (GLM-5.3-Flash、TP=2、MTP N=3、Marlin)。
   - **何か**: [Marlin](https://github.com/IST-DASLab/marlin) (**M**ixed **A**uto-**R**egressive
@@ -181,7 +182,7 @@ DFlash2 ドラフターなど) は使わない。GLM-5.3-Flash の重みは、�
 
 ## 状況・既知の限界
 
-- **同時 2 本の 1 本あたりの速さは 29.1 tok/s だった。**
+- **答えの本文の生成速度は、2 つの基準に届いていない**: コード・英語は 44.3 tok/s (基準 45)、同時 2 本の 1 本あたりは 23.5 tok/s (基準 30)。
 - **cold の入力の処理は、32k で 1,331 tok/s、128k で 1,332 tok/s だった** (KV キャッシュを 1 台あたり 4 GiB に固定)。MTP を使う構成では、プレフィックスキャッシュがほとんど当たらない。
 - **起動には約 5 分かかる** (ページキャッシュを捨てたうえで `instanttensor` を使う)。
 - **P8 (すべての成功基準に対する、大量サンプルでの最終検証) は、まだ行っていない。**
