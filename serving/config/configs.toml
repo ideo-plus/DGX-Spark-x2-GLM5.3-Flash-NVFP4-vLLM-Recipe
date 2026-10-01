@@ -1668,8 +1668,8 @@ quote = "Maximum number of sequences to be processed in a single iteration. …"
 
 [configs.glm53-tp2-mtp3-marlin.args.max-num-batched-tokens]
 flag = "--max-num-batched-tokens"
-value = "2048"
-why = "チャンク化した prefill の 1 回ぶん。小さいほど活性化のピークが下がる。128k の prefill ではチャンクの回数が増えるが、この構成ではメモリが先に効く"
+value = "8192"
+why = "チャンク化した prefill の 1 回ぶん。2048 から 8192 に増やすと、入力の処理が速くなる。KV を 4 GiB に固定した構成での 2026-10-01 の測り直し (起動の前に 2 台のページキャッシュを捨て、p32 の 8k・32k を各 10 回) で、2048 → 8192 は、cold 32k が 1,331 → 1,610 tok/s (+21%。8192 の最低〜最高は 1,599〜1,614)、cold 8k が 1,367 → 1,678 tok/s (+23%)、warm 32k が 8,277 → 10,709 (+29%) だった。8192 の 20 回すべてで、半分の速さに落ちる回は無かった。decode (fast、コード・英語) は 44.29 → 43.84 tok/s で、6 条件ともばらつきの範囲 (変動係数 3〜6%) に収まった。NV_ERR_NO_MEMORY は 2 台とも 0 件。KV の容量は --kv-cache-memory-bytes で固定しているので、8192 にしても変わらない (記録は #126 の 2026-10-01 のコメント)。16384 は選ばない。KV を固定する前の計測で、8192 より速くならず、cold 32k が不安定だった (docs/results/2026-09-30-prefill-profile-batched-tokens.md の C。2026-10-01 の測り直しは 2048 と 8192 だけ)"
 source = "https://github.com/vllm-project/vllm/blob/385dce36bcee42309924a5ece951a96db3dce7f2/vllm/config/scheduler.py"
 quote = "Maximum number of tokens that can be processed in a single iteration. …"
 
