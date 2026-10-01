@@ -25,12 +25,21 @@ NAS に写してから Spark から消す。消すのは、NAS の写しを照�
 | `ideo-plus-glm-5.3-flash-k2s2a` | 同 `k2s2a` | 20 | 181 GiB | 2026-10-01 |
 | `ideo-plus-glm-5.3-flash-k2s2b` | 同 `k2s2b` | 20 | 177 GiB | 2026-10-01 |
 | `ideo-plus-glm-5.3-flash-k2s3` | 同 `k2s3` | 20 | 174 GiB | 2026-09-30 |
-| `ideo-plus-glm-5.3-flash-k2s4` | 今の構成 (`glm53-tp2-mtp3-marlin`) の重み。Spark にも残す | 20 | 171 GiB | 2026-09-30 |
-| `redhatai-glm-5.3-flash-nvfp4` | `RedHatAI/GLM-5.3-Flash-NVFP4` の `18d55bfd5a2194887738da73753975c9d3842f46` (k2s4 の元)。Spark にも残す | 62 | 185 GiB | 2026-10-01 |
+| `ideo-plus-glm-5.3-flash-k2s4` | 今の構成 (`glm53-tp2-mtp3-marlin`) の重み | 20 | 171 GiB | 2026-09-30 |
+| `redhatai-glm-5.3-flash-nvfp4` | `RedHatAI/GLM-5.3-Flash-NVFP4` の `18d55bfd5a2194887738da73753975c9d3842f46` (k2s4 の元) | 62 | 185 GiB | 2026-10-01 |
 | `miaai-glm-5.3-flash-exl3-tr3-4bpw` | `Mia-AiLab/GLM-5.3-Flash-EXL3-TR3-4bpw` の `25a44fdbf16862a46b7cc9921142c6c81350af2f` (MiaAI の比較用) | 144 | 164 GiB | 2026-10-01 |
+| `mmastrac-glm-5.3-flash-dflash2-draft-tp2` | mmastrac の比較で使った DFlash2 の下書きの重み (`incoai/GLM-5.3-Flash-DFlash2` から作ったもの。CC BY-NC-ND 4.0) | 4 | 2.2 GiB | 2026-10-01 |
 
 `nvidia-glm-5.3-flash-nvfp4` は空のディレクトリである。
-2026-09-30〜10-01 に写したものは、送った rsync が正常に終わったことまでを確かめた。チェックサムでの照合 (下の「照合する」) はまだで、Spark から消すのは照合の後にする。
+**照合と Spark からの削除 (2026-10-02)**:
+
+- **照合**: 上の 11 組を、NAS と head の両側で `sha256sum` を取り、照合した。`.cache/` の下は除いた。
+  - 363 ファイルが、1 つ残らず一致した。
+  - MiaAI の TR3 は、head の Hugging Face のキャッシュの `snapshots/25a44fdb…/` の実体と照合した。
+- **削除**: 照合の後、2 台からこれらの重みをすべて消した。今の構成 (`k2s4`) と元の RedHatAI も含む。
+  - 計測者の指示による。別のプロジェクトで Spark を使うため。
+- **今の状態**: 2 台の Spark には、このリポジトリの重みは残っていない。動かすときは、下の「NAS から Spark に戻す」で戻す。
+
 `redhatai-glm-5.3-flash-nvfp4` は、Hugging Face の取得記録 `.cache/huggingface/trees/…json` が読めず (権限)、その 1 ファイルだけ写していない (rsync の終わりの値は 23)。重みのファイルは全部ある。
 派生の重みのファイルの一覧と SHA-256 は、`serving/weights/*.manifest.json` にある (`k2s1` の分は無い)。
 
@@ -77,6 +86,16 @@ rsync -aL -c -n -i --rsync-path=/usr/bin/rsync -e "$E" <元>/ j5ik2o@10.0.1.30:/
 ```
 
 何も表示されなければ、中身が同じである。
+
+## Docker のイメージ
+
+| レジストリの上の名前 | 中身 |
+|---|---|
+| `registry.j5ik2o-vega.synology.me:5001/ideo-plus/vllm-nope:0961bbae-fi070` | このリポジトリの推論サーバーのイメージ (vLLM `0961bbae`)。digest は `sha256:10ca7aae678c963dec0814e5948546df8d2902bac92d5f5c54105021ec107296` (2026-10-02 に上げた) |
+| `registry.j5ik2o-vega.synology.me:5001/mmastrac/glm53:v20260929` | mmastrac の比較用 |
+| `registry.j5ik2o-vega.synology.me:5001/miaai/glm53-exl3:20260929` | MiaAI の比較用 |
+
+2026-10-02 に、2 台の Spark からこの 3 つのイメージを消した。動かすときは、`docker pull` してから、`vllm-nope:0961bbae-fi070` の名前を付け直す。
 
 ## NAS から Spark に戻す
 
