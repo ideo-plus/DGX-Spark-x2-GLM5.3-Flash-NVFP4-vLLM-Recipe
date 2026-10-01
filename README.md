@@ -17,56 +17,55 @@ become the backend for `takt`, a coding-agent workflow tool, called through the 
 [sparkDash](https://github.com/MiaAI-Lab/sparkDash) is the tool MiaAI-Lab and knapcio publish their numbers with. Measured with
 sparkDash 1.8.6 on two DGX Spark nodes at TP=2 with the GPU clock capped at `300–1800 MHz` and X925 cores at 3.0 GHz: `/v1/chat/completions`, temperature 0, 400 output tokens forced with
 `min_tokens` / `ignore_eos`, one run per cell. Prefill fills the prompt with a repeated word. sparkDash asks for thinking off,
-which this recipe's stock chat template ignores, so this recipe's row thinks at full depth.
-Details: [record](docs/results/2026-09-30-sparkdash.md).
+which this recipe's stock chat template ignores; at the server's default reasoning effort `low`, this recipe writes one short
+thinking sentence (counted by sparkDash) before answering. Details: [record](docs/results/2026-10-01-default-effort-low.md).
 
 | Implementation | Structured c1 | Prose c1 | Code c1 | Structured c2 (per stream / total) | Prefill 32k | Prefill 128k |
 |---|---:|---:|---:|---:|---:|---:|
-| This recipe (default effort) | 60.01 | 42.38 | 55.18 | 40.41 / 77.95 | 1,583 | 1,568 |
+| This recipe (default reasoning effort low) | 60.64 | 43.74 | 59.03 | 49.01 / 97.11 | 1,598 | 1,584 |
 | mmastrac NVFP4 + DFlash2 (default config) | 69.67 | 32.16 | 66.18 | 53.93 / 107.85 | 1,861 | 1,824 |
 | MiaAI-Lab EXL3 + DFlash2 (Sep 29 config) | 70.52 | 32.56 | 67.30 | 55.00 / 110.00 | 1,446 | 1,500 |
 
 mmastrac runs in its README's two-node default and its own chat template reads sparkDash's thinking-off as low reasoning effort.
 MiaAI-Lab runs with its default serving settings (only host and network values set for these nodes) and fully stops thinking.
-Thinking is therefore not off on the same terms in the three rows: MiaAI-Lab stops it, mmastrac keeps one short sentence, and this recipe thinks at full depth.
+Thinking is therefore not off on the same terms in the three rows: MiaAI-Lab stops it, while mmastrac and this recipe keep one short sentence.
 
 ### Measured with this repository's `bench`
 
-Configuration `glm53-tp2-mtp3-marlin`, measured at the confirmation stage (`fast`). The JSON values below
-are answer-phase measurements using an 8,192-token output limit and same-server output retokenization.
+Configuration `glm53-tp2-mtp3-marlin`, measured at the confirmation stage (`fast`) with the server's default
+reasoning effort `low`. Every decode trial produced an answer, so the decode values below measure answer text.
 Both nodes used the same clock caps for these measurements: GPU graphics clocks `300–1800 MHz`
 (`nvidia-smi -lgc 300,1800`) and X925 CPU cores capped at `3.0 GHz`. The detailed measurement record
 also records the observed ~1.8 GHz graphics clock and no thermal slowdown.
 Raising the GPU cap to 2200 MHz and removing the X925 cap did not speed up decode (single stream or two streams)
 or cold prefill, so both caps stay in place ([September 29 record](docs/results/2026-09-29-gpu-clock-2200.md)).
 
-**The earlier code and prose values measure thinking-only output, not answer generation.**
-All 40 earlier code/prose trials and all 60 trials in the latest six-condition run exhausted the
-256-token limit without producing a text block. These values do not establish answer-generation
-performance or a performance advantage over other recipes.
+**Decode values measure answer text.** At maximum reasoning effort the model often writes code inside its
+thinking and returns no answer ([#158](https://github.com/ideo-plus/DGX-Spark-x2-GLM5.3-Flash-NVFP4-vLLM-Recipe/issues/158)), so the server defaults to `low`; a request can still ask for
+deeper thinking with `reasoning_effort`.
 
 | Metric | Value | Record |
 |---|---:|---|
-| Single stream, code/en (thinking only) | 45.0 tok/s | [September 30](docs/results/2026-09-30-fast-prefill-long-input.md) |
-| Single stream, code/ja (thinking only) | 43.4 tok/s | [September 30](docs/results/2026-09-30-fast-prefill-long-input.md) |
-| Single stream, prose/en (thinking only) | 44.1 tok/s | [September 30](docs/results/2026-09-30-fast-prefill-long-input.md) |
-| Single stream, prose/ja (thinking only) | 43.0 tok/s | [September 30](docs/results/2026-09-30-fast-prefill-long-input.md) |
-| JSON instruction, English (answer phase, retokenized) | 58.6 tok/s | [September 29](docs/results/2026-09-29-json-text-decode.md) |
-| JSON instruction, Japanese (answer phase, retokenized) | 58.9 tok/s | [September 29](docs/results/2026-09-29-json-text-decode.md) |
-| Decode, 2 streams, per stream (aggregate) | 29.1 tok/s (47.4 aggregate) | [September 30](docs/results/2026-09-30-mmastrac-32k-same-conditions.md) |
+| Single stream, code/en | 44.3 tok/s | [October 1](docs/results/2026-10-01-default-effort-low.md) |
+| Single stream, code/ja | 43.0 tok/s | [October 1](docs/results/2026-10-01-default-effort-low.md) |
+| Single stream, prose/en | 37.2 tok/s | [October 1](docs/results/2026-10-01-default-effort-low.md) |
+| Single stream, prose/ja | 38.6 tok/s | [October 1](docs/results/2026-10-01-default-effort-low.md) |
+| Single stream, JSON/en | 46.9 tok/s | [October 1](docs/results/2026-10-01-default-effort-low.md) |
+| Single stream, JSON/ja | 47.9 tok/s | [October 1](docs/results/2026-10-01-default-effort-low.md) |
+| Decode, 2 streams, per stream (aggregate) | 23.5 tok/s (40.7 aggregate) | [October 1](docs/results/2026-10-01-default-effort-low.md) |
 | Prefill, 32k tokens (cold) | 1,331 tok/s | [September 30](docs/results/2026-09-30-mmastrac-32k-same-conditions.md) |
 | Prefill, 128k tokens (cold) | 1,332 tok/s | [September 30](docs/results/2026-09-30-fast-prefill-long-input.md) |
 
-The JSON answer-phase values are retokenized measurements. See the [measurement record](docs/results/2026-09-29-json-text-decode.md)
-and the [recipe comparison](docs/research/2026-09-28-recipe-comparison.md).
+Other recipes' published values are collected in the [recipe comparison](docs/research/2026-09-28-recipe-comparison.md).
 
 The comparison below contains only measurements made under the same conditions: this repository's `fast` profile (prefill with 8k and 32k inputs only),
 two DGX Spark nodes at TP=2, and the same `300–1800 MHz` GPU clock cap. Values are median tok/s; concurrency is per stream
-at two simultaneous requests, and prefill is cold 32k input.
+at two simultaneous requests, and prefill is cold 32k input. Thinking differs: this recipe's decode values are answer text at its
+default effort `low`, while the other two rows were measured at their own default thinking, where the 256-token budget went to thinking text.
 
 | Implementation | Code/en | Prose/en | Concurrency 2 (per stream) | Cold prefill 32k |
 |---|---:|---:|---:|---:|
-| [This recipe: MTP N=3 + Marlin (KV 4 GiB)](docs/results/2026-09-30-mmastrac-32k-same-conditions.md) | **45.026** | **44.137** | **29.120** | **1,331.163** |
+| [This recipe: MTP N=3 + Marlin (KV 4 GiB, default effort low)](docs/results/2026-10-01-default-effort-low.md) | 44.288 | 37.211 | 23.480 | 1,331.163 |
 | [MiaAI-Lab EXL3 + DFlash2 (Sep 29)](docs/results/2026-09-29-miaai-exl3-dflash2.md) | 34.212 | 33.423 | 22.675 | 1,340.999 |
 | [mmastrac NVFP4 + DFlash2 (default config)](docs/results/2026-09-30-mmastrac-32k-same-conditions.md) | 33.153 | 31.183 | 23.672 | 1,835.091 |
 
@@ -75,9 +74,9 @@ During these runs the GPU driver logged `NV_ERR_NO_MEMORY` on both nodes while s
 MiaAI-Lab and mmastrac use the non-commercial DFlash2 drafter. Published values from other recipes are omitted
 because their prompts, sampling, thinking mode, and timing definitions differ.
 
-Quality checks at this stage (tool calls, HumanEval+, needle 8k/32k) found no breakage. These are
+Quality checks at the default effort `low` (tool calls 10/10, HumanEval+ 10/10, needle 8k/32k 2/2) found no breakage. These are
 small-sample numbers; the pass/fail judgment against every success criterion is made in phase
-**P8** with large samples. Records: [`docs/results/2026-09-28-k2-stage3.md`](docs/results/2026-09-28-k2-stage3.md).
+**P8** with large samples. Records: [`docs/results/2026-10-01-default-effort-low.md`](docs/results/2026-10-01-default-effort-low.md).
 The full success criteria are in [`PLAN.md` §3](PLAN.md#3-成功の基準).
 
 ## How it works
@@ -95,6 +94,9 @@ The full success criteria are in [`PLAN.md` §3](PLAN.md#3-成功の基準).
   `eh_proj` stay BF16) by
   [`experiments/k2-quant`](experiments/k2-quant/README.md), a from-scratch, CPU-only tool. The
   result is the derived weight set `k2s4`, pinned by a manifest in `serving/weights/`.
+- **Default reasoning effort `low`** (`--default-chat-template-kwargs '{"reasoning_effort":"low"}'`). At maximum effort the model
+  often writes code inside its thinking and returns no answer ([#158](https://github.com/ideo-plus/DGX-Spark-x2-GLM5.3-Flash-NVFP4-vLLM-Recipe/issues/158)). A request can still ask for deeper thinking with
+  `reasoning_effort`.
 - **MoE kernel: Marlin** (`--moe-backend marlin`) for all MoE layers. This is the `marlin` at the end of
   the configuration name `glm53-tp2-mtp3-marlin` (GLM-5.3-Flash, TP=2, MTP N=3, Marlin).
   - **What it is**: [Marlin](https://github.com/IST-DASLab/marlin) (**M**ixed **A**uto-**R**egressive
@@ -193,7 +195,7 @@ and facts measured in this repo's own environment. Every non-trivial choice is r
 
 ## Status and known limitations
 
-- **2-stream concurrency measured 29.1 tok/s per stream.**
+- **Answer decode is below two speed targets**: code/en 44.3 tok/s (target 45) and 23.5 tok/s per stream at 2 streams (target 30).
 - **Cold prefill measured 1,331 tok/s at 32k and 1,332 tok/s at 128k**, with the KV cache pinned at 4 GiB per node. The prefix cache rarely hits with MTP enabled.
 - **Startup takes ~5 minutes** (`instanttensor` after evicting the page cache).
 - **P8 (large-sample verification of every success criterion) has not been run yet.**
