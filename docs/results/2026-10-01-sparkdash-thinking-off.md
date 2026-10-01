@@ -1,5 +1,7 @@
 # sparkDash で測った値 (思考オフの構成)
 
+**注 (同日)**: この構成と思考オフのテンプレートは、効果が無かったので取り消した。理由は [思考の深さと答えまでの時間の記録](2026-10-01-thinking-modes-time-to-answer.md) にある。README の表からも外した。
+
 日付は 2026-10-01 JST。#131 (PR #152) で足した思考オフの構成 `glm53-tp2-mtp3-marlin-thinking-toggle` を、
 [9 月 30 日の記録](2026-09-30-sparkdash.md) と同じ sparkDash の手順で測った。実機操作は対話側が行った。
 

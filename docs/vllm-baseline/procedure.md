@@ -668,9 +668,8 @@ cd serving
 uv run serve thinking p1-nvfp4-tp2
 ```
 
-- 同じ入力、温度 0 で、6 通り (何も渡さない、`/v1/messages` の本来の口で低く、チャット
-  テンプレートの項目で低く、効かないはずの値、過去の thinking を消す指定、思考を切る指定) を、
-  3 回ずつ送る (issue #131 で「思考を切る指定」を 6 番目として足した)
+- 同じ入力、温度 0 で、5 通り (何も渡さない、`/v1/messages` の本来の口で低く、チャット
+  テンプレートの項目で低く、効かないはずの値、過去の thinking を消す指定) を、3 回ずつ送る
 - 記録するのは、thinking のブロックの文字数、入力と出力のトークンの数、終わりの理由だけで、
   **本文は保存しない**
 - `effective=` が空 (判定できなかった) のときは終了コード 1 になる。4xx が返るなら、過去の
@@ -852,7 +851,7 @@ research.md の「Open questions that only hardware can answer」を、design.md
 | 16 | `--max-num-seqs` の既定が実際にいくつになるか | 段 2 | 同じ起動の記録の設定のダンプ (回収した `container.stdout.log`) |
 | 17 | KDA の状態と KV の実際の内訳 | 段 2 | 同じ実行の `observation.kv_cache_tokens` / `kv_cache_gib` と、`serve status` の `max_model_len` |
 | 18 | `--gpu-memory-utilization` をどこまで上げられるか | 段 2 | 値を上げた構成で起こし直し、`observation.kv_cache_gib` の増分を見る |
-| 19 | thinking の深さが実際に変わるか、過去の thinking の掃除が入力を減らすか | bench と確かめ | `serve thinking p1-nvfp4-tp2` の `effective=` と、6 通りの結果 |
+| 19 | thinking の深さが実際に変わるか、過去の thinking の掃除が入力を減らすか | bench と確かめ | `serve thinking p1-nvfp4-tp2` の `effective=` と、5 通りの結果 |
 | 20 | 2 時間の連続の負荷で固まるか | bench と確かめ | `serve watch p1-nvfp4-tp2 --duration 2h` の `event.<番号>.finding` |
 | 21 | 同時実行で日本語が壊れるか | bench と確かめ | `bench run --suite concurrency` の要約の、壊れの疑いの印の数 (同時の本数ごと) |
 | 22 | イメージの中のライセンスの表記 | 取得 | `serve image-licenses p1-image-licenses` の出力 (`LICENSES.md` に写す) |
