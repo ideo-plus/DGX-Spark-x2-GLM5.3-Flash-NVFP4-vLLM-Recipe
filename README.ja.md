@@ -91,6 +91,10 @@ MiaAI-Lab と mmastrac は、非商用の条件が付いた DFlash2 の下書き
   マニフェストで固定する。
 - **既定の思考の深さ `low`** (`--default-chat-template-kwargs '{"reasoning_effort":"low"}'`)。思考の深さが最大だと、モデルがコードを
   思考の中に書いたまま、答えを返さないことが多い ([#158](https://github.com/ideo-plus/DGX-Spark-x2-GLM5.3-Flash-NVFP4-vLLM-Recipe/issues/158))。深く考えさせたい要求は、`reasoning_effort` を送れば変えられる。
+  - **モデルのチャットテンプレートが知っている深さは、`low`・`high`・`max` の 3 つだけである。**
+    - `medium`・`xhigh`・`minimal`・`none` など、ほかの値はすべて `max` で動く。
+    - 要求に付けた値はサーバーの既定より優先されるので、`medium` を送るクライアントは最大の深さになる。
+    - 送るのは `low` か `high` にする。`/v1/chat/completions` では `reasoning_effort`、`/v1/messages` では `output_config.effort` で送る ([決定の記録](docs/decisions/0004-vllm-baseline-messages-api.md))。
 - **MoE のカーネル: Marlin** — すべての MoE の層で `--moe-backend marlin` を使う。構成の名前
   `glm53-tp2-mtp3-marlin` の末尾の `marlin` は、これを指す (GLM-5.3-Flash、TP=2、MTP N=3、Marlin)。
   - **何か**: [Marlin](https://github.com/IST-DASLab/marlin) (**M**ixed **A**uto-**R**egressive
