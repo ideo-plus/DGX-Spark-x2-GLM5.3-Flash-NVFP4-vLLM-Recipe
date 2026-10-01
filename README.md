@@ -97,6 +97,10 @@ The full success criteria are in [`PLAN.md` §3](PLAN.md#3-成功の基準).
 - **Default reasoning effort `low`** (`--default-chat-template-kwargs '{"reasoning_effort":"low"}'`). At maximum effort the model
   often writes code inside its thinking and returns no answer ([#158](https://github.com/ideo-plus/DGX-Spark-x2-GLM5.3-Flash-NVFP4-vLLM-Recipe/issues/158)). A request can still ask for deeper thinking with
   `reasoning_effort`.
+  - **The model's chat template knows only `low`, `high`, and `max`.** Any other value, such as `medium`, `xhigh`, `minimal`,
+    or `none`, runs at `max`. A value in the request overrides the server default, so a client that sends `medium` gets
+    maximum effort. Send `low` or `high`: `reasoning_effort` on `/v1/chat/completions`, `output_config.effort` on `/v1/messages`
+    ([decision](docs/decisions/0004-vllm-baseline-messages-api.md)).
 - **MoE kernel: Marlin** (`--moe-backend marlin`) for all MoE layers. This is the `marlin` at the end of
   the configuration name `glm53-tp2-mtp3-marlin` (GLM-5.3-Flash, TP=2, MTP N=3, Marlin).
   - **What it is**: [Marlin](https://github.com/IST-DASLab/marlin) (**M**ixed **A**uto-**R**egressive
