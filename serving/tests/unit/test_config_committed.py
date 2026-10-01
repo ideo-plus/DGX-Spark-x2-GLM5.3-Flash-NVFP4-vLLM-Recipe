@@ -96,7 +96,7 @@ MARLIN_KV_CACHE_UTILS_SOURCE = (
     "0961bbae2894d574be790d219651824eb199318e/vllm/v1/worker/utils.py"
 )
 
-MARLIN_CONFIG_SHA256 = "4e0dd41e8c87ba5fcdc90b669920f3cdd79256a9f7ac96f634025f0a3e16dc4f"
+MARLIN_CONFIG_SHA256 = "c3cd1296120f80874f179113cc84cac5819e89877357bb14e4c77e22809b8bd7"
 """`glm53-tp2-mtp3-marlin` の `config-sha256` (issue #103)。
 
 構成の値 (フラグ、値、イメージ、重み、ノードの値) を 1 つでも変えると変わるので、この
@@ -124,6 +124,13 @@ Issue #126 で `args.max-num-batched-tokens` を 2048 から 4096 にしたの�
 cold 128k が 1,429 tok/s (2048 は 1,332) だった。続けて流した sparkDash の prefill でも、
 128k の後の 32k は落ちなかった。`NV_ERR_NO_MEMORY` は 0 件。8192 は cold 128k が 1,141 tok/s に
 落ち、head で `NV_ERR_NO_MEMORY` が出たので採らない (PR #165 で取り消し)。
+
+Issue #169 で `args.max-num-batched-tokens` を 4096 から 8192 にし、
+`env.vllm-sparse-indexer-max-logits-mb` (`VLLM_SPARSE_INDEXER_MAX_LOGITS_MB=256`) を
+`env.nccl-debug-file` の直後に足したので、同じ方法で求め直した。変えた理由は、2026-10-01 の実測。
+cold 32k が 1,614 tok/s、cold 128k が 1,576 tok/s (4096 は 1,448、1,429) で、
+`NV_ERR_NO_MEMORY` は 2 台とも 0 件。8192 だけでは cold 128k が 1,141 tok/s に落ちたが、
+indexer の logits の上限を 256 MB にすると落ちない。
 """
 
 FABRIC_HEAD_ADDR = "192.168.100.1"
@@ -268,11 +275,11 @@ _MARLIN_TAIL_UP_TO_GPU_MEMORY_ARGV: tuple[str, ...] = (
     "163840",
     "--max-num-seqs",
     "16",
-    # issue #126: 2048 → 4096。2026-10-01 の実測 (cold 32k 1,448 / cold 128k 1,429 tok/s、
-    # `NV_ERR_NO_MEMORY` 0 件)。8192 は cold 128k で落ちたので採らない。
-    # `p1-nvfp4-tp2` は 2048 のまま
+    # issue #169: 4096 → 8192。env の `VLLM_SPARSE_INDEXER_MAX_LOGITS_MB=256` と組で使う。
+    # 2026-10-01 の実測 (cold 32k 1,614 / cold 128k 1,576 tok/s、`NV_ERR_NO_MEMORY` 0 件)。
+    # 8192 だけでは cold 128k で落ちた。`p1-nvfp4-tp2` は 2048 のまま
     "--max-num-batched-tokens",
-    "4096",
+    "8192",
     "--gpu-memory-utilization",
     "0.90",
 )
@@ -500,6 +507,9 @@ _MARLIN_HEAD_ARGV: tuple[str, ...] = (
     "NCCL_DEBUG_SUBSYS=INIT,NET",
     "-e",
     "NCCL_DEBUG_FILE=/logs/nccl.%h.%p.log",
+    "-e",
+    # issue #169: indexer の logits の上限を 256 MB にする (8192 × 128k のピークを防ぐ)
+    "VLLM_SPARSE_INDEXER_MAX_LOGITS_MB=256",
     MARLIN_IMAGE_REF,
     MARLIN_MOUNT_AT,
     "--served-model-name",
@@ -545,6 +555,9 @@ _MARLIN_WORKER_ARGV: tuple[str, ...] = (
     "NCCL_DEBUG_SUBSYS=INIT,NET",
     "-e",
     "NCCL_DEBUG_FILE=/logs/nccl.%h.%p.log",
+    "-e",
+    # issue #169: indexer の logits の上限を 256 MB にする (8192 × 128k のピークを防ぐ)
+    "VLLM_SPARSE_INDEXER_MAX_LOGITS_MB=256",
     MARLIN_IMAGE_REF,
     MARLIN_MOUNT_AT,
     "--served-model-name",
