@@ -16,11 +16,11 @@
 [sparkDash](https://github.com/MiaAI-Lab/sparkDash) は、MiaAI-Lab と knapcio が公表値に使っている道具である。DGX Spark 2 台の TP=2、GPU クロック上限 `300〜1800 MHz`、X925 3.0 GHz で、
 sparkDash 1.8.6 を使って測った。条件は `/v1/chat/completions`、温度 0、出力 400 トークン (`min_tokens` と `ignore_eos` で必ずその長さまで生成)、
 各 1 回。prefill の入力は、同じ単語の繰り返しで埋めた文である。sparkDash は思考オフを求めるが、この構成の標準のチャットテンプレートはそれを読まない。
-サーバーの既定の思考の深さは `low` なので、現行構成は答えの前に短い思考の 1 文を書く (sparkDash はこれも数える)。詳細は[記録](docs/results/2026-10-01-default-effort-low.md)。
+サーバーの既定の思考の深さは `low` なので、現行構成は答えの前に短い思考の 1 文を書く (sparkDash はこれも数える)。詳細は [decode の記録](docs/results/2026-10-01-default-effort-low.md) と [prefill の記録](docs/results/2026-10-01-mbt-4096.md)。
 
 | 実装 | 構造化 同時 1 本 | 散文 同時 1 本 | コード 同時 1 本 | 構造化 同時 2 本 (1 本あたり / 合計) | prefill 32k | prefill 128k |
 |---|---:|---:|---:|---:|---:|---:|
-| 現行構成 (既定の思考の深さ low) | 60.64 | 43.74 | 59.03 | 49.01 / 97.11 | 1,598 | 1,584 |
+| 現行構成 (既定の思考の深さ low) | 60.64 | 43.74 | 59.03 | 49.01 / 97.11 | 1,637 | 1,614 |
 | mmastrac NVFP4 + DFlash2 (既定の構成) | 69.67 | 32.16 | 66.18 | 53.93 / 107.85 | 1,861 | 1,824 |
 | MiaAI-Lab EXL3 + DFlash2 (9/29 と同じ構成) | 70.52 | 32.56 | 67.30 | 55.00 / 110.00 | 1,446 | 1,500 |
 
@@ -50,8 +50,8 @@ GPU の上限を 2200 MHz に上げ、X925 の上限を外しても、decode (1 
 | 1 本、JSON・英語 | 46.9 tok/s | [10月1日の記録](docs/results/2026-10-01-default-effort-low.md) |
 | 1 本、JSON・日本語 | 47.9 tok/s | [10月1日の記録](docs/results/2026-10-01-default-effort-low.md) |
 | 同時 2 本の1本あたり（合計） | 23.5 tok/s（40.7） | [10月1日の記録](docs/results/2026-10-01-default-effort-low.md) |
-| 入力の処理 32k（cold） | 1,331 tok/s | [9月30日の記録](docs/results/2026-09-30-mmastrac-32k-same-conditions.md) |
-| 入力の処理 128k（cold） | 1,332 tok/s | [9月30日の記録](docs/results/2026-09-30-fast-prefill-long-input.md) |
+| 入力の処理 32k（cold） | 1,448 tok/s | [10月1日の記録](docs/results/2026-10-01-mbt-4096.md) |
+| 入力の処理 128k（cold） | 1,429 tok/s | [10月1日の記録](docs/results/2026-10-01-mbt-4096.md) |
 
 ほかのレシピの公開値は、[レシピの比較表](docs/research/2026-09-28-recipe-comparison.md)にまとめている。
 
@@ -61,7 +61,7 @@ GPU クロック上限 `300〜1800 MHz` である。値は tok/s の中央値で
 
 | 実装 | コード・英語 | 散文・英語 | 同時 2 本（1 本あたり） | cold 32k 入力処理 |
 |---|---:|---:|---:|---:|
-| [現行構成: MTP N=3 + Marlin (KV 4 GiB、既定の深さ low)](docs/results/2026-10-01-default-effort-low.md) | 44.288 | 37.211 | 23.480 | 1,331.163 |
+| [現行構成: MTP N=3 + Marlin (KV 4 GiB、既定の深さ low)](docs/results/2026-10-01-default-effort-low.md) | 44.288 | 37.211 | 23.480 | [1,448.141](docs/results/2026-10-01-mbt-4096.md) |
 | [MiaAI-Lab EXL3 + DFlash2 (9/29)](docs/results/2026-09-29-miaai-exl3-dflash2.md) | 34.212 | 33.423 | 22.675 | 1,340.999 |
 | [mmastrac NVFP4 + DFlash2 (既定の構成)](docs/results/2026-09-30-mmastrac-32k-same-conditions.md) | 33.153 | 31.183 | 23.672 | 1,835.091 |
 
@@ -183,6 +183,6 @@ DFlash2 ドラフターなど) は使わない。GLM-5.3-Flash の重みは、�
 ## 状況・既知の限界
 
 - **答えの本文の生成速度は、コード・英語で 44.3 tok/s で、基準の 45 tok/s にわずかに届いていない。** 同時 2 本の 1 本あたりは 23.5 tok/s (基準 23)。この MoE ではトークンごとに別の専門家を読むので、同時 2 本はメモリ帯域で頭打ちになる ([記録](docs/results/2026-10-01-concurrency-bandwidth-bound.md))。
-- **cold の入力の処理は、32k で 1,331 tok/s、128k で 1,332 tok/s だった** (KV キャッシュを 1 台あたり 4 GiB に固定)。MTP を使う構成では、プレフィックスキャッシュがほとんど当たらない。
+- **cold の入力の処理は、32k で 1,448 tok/s、128k で 1,429 tok/s だった** (基準 2,000 tok/s の 72%)。KV キャッシュを 1 台あたり 4 GiB に固定し、`--max-num-batched-tokens` は 4096 にしている。MTP を使う構成では、プレフィックスキャッシュがほとんど当たらない。
 - **起動には約 5 分かかる** (ページキャッシュを捨てたうえで `instanttensor` を使う)。
 - **P8 (すべての成功基準に対する、大量サンプルでの最終検証) は、まだ行っていない。**
