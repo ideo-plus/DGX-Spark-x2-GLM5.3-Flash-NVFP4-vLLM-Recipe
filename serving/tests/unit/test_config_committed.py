@@ -96,7 +96,7 @@ MARLIN_KV_CACHE_UTILS_SOURCE = (
     "0961bbae2894d574be790d219651824eb199318e/vllm/v1/worker/utils.py"
 )
 
-MARLIN_CONFIG_SHA256 = "3c6278247e0cb7ee36fe43d5fafba828a32132f1617645a9f7996d27ed275b6d"
+MARLIN_CONFIG_SHA256 = "b6c2c3f50cb28d674f37fca6824c3542a67e901511c4ad6360b49a242e42ea97"
 """`glm53-tp2-mtp3-marlin` の `config-sha256` (issue #103)。
 
 構成の値 (フラグ、値、イメージ、重み、ノードの値) を 1 つでも変えると変わるので、この
@@ -117,6 +117,10 @@ Issue #159 で `args.default-chat-template-kwargs`
 (`--default-chat-template-kwargs '{"reasoning_effort":"low"}'`) を
 `args.kv-cache-memory-bytes` の直後に足したので、同じ方法で求め直す。変えた理由は #158
 (既定の深さ (最大) では、コードの課題で答えが思考の中に書かれ、本文が空で終わっていた)。
+
+Issue #126 で `args.max-num-batched-tokens` の値を 2048 から 8192 にしたので、同じ方法で求め直した。
+変えた理由は #126 の 2026-10-01 の測り直し (KV を 4 GiB に固定した構成で、cold 32k が
+1,331 → 1,610 tok/s、半分の速さに落ちる回なし)。
 """
 
 FABRIC_HEAD_ADDR = "192.168.100.1"
@@ -238,7 +242,7 @@ _DOCKER_ARGV: tuple[str, ...] = (
     "/dev/infiniband",
 )
 
-_TAIL_UP_TO_GPU_MEMORY_ARGV: tuple[str, ...] = (
+_TAIL_UP_TO_MAX_NUM_SEQS_ARGV: tuple[str, ...] = (
     "--master-addr",
     FABRIC_HEAD_ADDR,
     "--master-port",
@@ -247,10 +251,13 @@ _TAIL_UP_TO_GPU_MEMORY_ARGV: tuple[str, ...] = (
     "163840",
     "--max-num-seqs",
     "16",
+)
+_GPU_MEMORY_ARGV: tuple[str, ...] = ("--gpu-memory-utilization", "0.90")
+_TAIL_UP_TO_GPU_MEMORY_ARGV: tuple[str, ...] = (
+    *_TAIL_UP_TO_MAX_NUM_SEQS_ARGV,
     "--max-num-batched-tokens",
     "2048",
-    "--gpu-memory-utilization",
-    "0.90",
+    *_GPU_MEMORY_ARGV,
 )
 _TAIL_AFTER_GPU_MEMORY_ARGV: tuple[str, ...] = (
     "--language-model-only",
@@ -430,7 +437,11 @@ _MARLIN_DOCKER_ARGV: tuple[str, ...] = (
 )
 
 _MARLIN_TAIL_ARGV: tuple[str, ...] = (
-    *_TAIL_UP_TO_GPU_MEMORY_ARGV,
+    *_TAIL_UP_TO_MAX_NUM_SEQS_ARGV,
+    # issue #126: 1 回に流すトークンを 2048 から 8192 にする (根拠は #126 の 2026-10-01 の測り直し)
+    "--max-num-batched-tokens",
+    "8192",
+    *_GPU_MEMORY_ARGV,
     "--kv-cache-memory-bytes",
     "4294967296",
     # issue #159: サーバーの既定の思考の深さを low にする (根拠は #158)
@@ -446,7 +457,8 @@ _MARLIN_TAIL_ARGV: tuple[str, ...] = (
 )
 """`glm53-tp2-mtp3-marlin` の末尾の引数の列。`--gpu-memory-utilization 0.90` の直後に
 `--kv-cache-memory-bytes 4294967296` を持つ (issue #136)。その直後に
-`--default-chat-template-kwargs` を持つ (issue #159)。"""
+`--default-chat-template-kwargs` を持つ (issue #159)。`--max-num-batched-tokens` は 8192
+(issue #126。`p1-nvfp4-tp2` は 2048 のまま)。"""
 
 _MARLIN_HEAD_ARGV: tuple[str, ...] = (
     "docker",
