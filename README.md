@@ -195,7 +195,7 @@ and facts measured in this repo's own environment. Every non-trivial choice is r
 
 ## Status and known limitations
 
-- **Answer decode is below two speed targets**: code/en 44.3 tok/s (target 45) and 23.5 tok/s per stream at 2 streams (target 30).
+- **Answer decode for code/en is 44.3 tok/s**, just below the 45 tok/s target. Two streams reach 23.5 tok/s per stream (target 23): with this MoE, each extra token reads its own experts, so two streams are bound by memory bandwidth ([record](docs/results/2026-10-01-concurrency-bandwidth-bound.md)).
 - **Cold prefill measured 1,331 tok/s at 32k and 1,332 tok/s at 128k**, with the KV cache pinned at 4 GiB per node. The prefix cache rarely hits with MTP enabled.
 - **Startup takes ~5 minutes** (`instanttensor` after evicting the page cache).
 - **P8 (large-sample verification of every success criterion) has not been run yet.**
