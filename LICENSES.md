@@ -85,11 +85,7 @@
 | pytest | 9.1.1 | https://pypi.org/project/pytest/ | MIT | 試験 |
 | ruff | 0.16.8 | https://pypi.org/project/ruff/ | MIT | 整形と静的検査 |
 | mypy | 2.3.1 | https://pypi.org/project/mypy/ | MIT | 型の検査 (strict) |
-| jinja2 | 3.1.6 | https://pypi.org/project/jinja2/ | BSD-3-Clause | チャットテンプレート (`serving/payload/chat-template/`) の描画を、公式テンプレートと比べる試験だけで使う (issue #131)。実行時の依存には入れない |
 
-- `jinja2` のライセンスは、PyPI がライセンス表記を申告していないため (`Classifier:
-  License :: OSI Approved :: BSD License` のみ)、公式リポジトリが配布する
-  `LICENSE.txt` (Copyright 2007 Pallets、3 条項の BSD) を 2026-09-30 に確かめた
 - `uv` と `hatchling` (依存の解決、仮想環境の管理、パッケージのビルド) は、
   上の「bench-harness の依存する部品」の「開発に使う外部の道具」と同じもの
   (バージョンは固定していない) を、`serving/` でも使う
@@ -152,24 +148,6 @@ ADR 0007 の第 2a 段 (#73、`k2s2a`) と第 2b 段 (#79、`k2s2b`)。固定し
   (`serving/tests/unit/test_vllm_overlay.py`) で確かめる
 - 上流のソースと Issue だけを見て書いた。他のレシピのパッチは写していない (`PLAN.md` §2)
 - 上流へ返すときは、同じパッチをそのまま PR にする
-
-## serving-kit が配る、チャットテンプレートの写し (`serving/payload/chat-template/`、issue #131)
-
-比較用に思考オフで測れるようにするため、重みに付いている公式のチャットテンプレートを元に、
-`enable_thinking`/`thinking` を読む分岐だけを足したテンプレートを Spark に配る
-(`glm53-tp2-mtp3-marlin-thinking-toggle` が `--chat-template` で指す)。
-
-| 名前 | 出典 | リビジョン | ライセンス | 用途 | 変更の有無 |
-|---|---|---|---|---|---|
-| `chat-template/glm53-flash-thinking-toggle.jinja` | https://huggingface.co/RedHatAI/GLM-5.3-Flash-NVFP4/resolve/18d55bfd5a2194887738da73753975c9d3842f46/chat_template.jinja | `18d55bfd5a2194887738da73753975c9d3842f46`。元のファイルの SHA-256: `0c4099f3382d6c92700dfb99725025360966fd73032f0ecf32377c0d9e6309c5` (10,950 バイト) | MIT (`RedHatAI/GLM-5.3-Flash-NVFP4` の重みに付属。モデルカードの記載) | 生成の書き出しを、`enable_thinking`/`thinking` が `false` のときだけ空の思考の区間 (`<think></think>`) にする (issue #131) | あり。生成の書き出しの塊だけを差し替え、それ以外は 1 バイトも変えていない |
-
-- 元のファイルは、2026-09-30 に `curl -L` で取得した (要約する道具は使っていない)。取得した
-  内容と、SHA-256・大きさの照合の記録は `serving/tests/fixtures/chat-template/glm53-flash.official.jinja`
-  (このリポジトリのコミット対象) と、下の「serving-kit の確かめ方」の節を参照
-- 材料は、重みに付いている公式のテンプレートと、`RedHatAI/GLM-5.3-Flash-NVFP4` のモデルカード
-  だけである。他のレシピ (MiaAI-Lab、tonyd2wild、mmastrac など) のテンプレート・スクリプト・
-  設定は開いていない (クリーンルームの決めごと)
-- 取り直しの手順は `serving/payload/UPSTREAM.md` に書く
 
 ## 公開の課題
 

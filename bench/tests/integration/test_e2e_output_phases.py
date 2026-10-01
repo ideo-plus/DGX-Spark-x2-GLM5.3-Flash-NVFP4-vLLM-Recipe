@@ -7,17 +7,10 @@ from pathlib import Path
 from bench_harness import cli
 from bench_harness.store import list_run_dirs
 from bench_harness.types import Summary
-from fake_server import (
-    FakeServer,
-    Script,
-    UsageSpec,
-    text_response,
-    thinking_events,
-    thinking_response,
-)
+from fake_server import FakeServer, Script, UsageSpec, thinking_events, thinking_response
 
 
-def run_decode(base_url: str, tmp_path: Path, *, thinking: str = "server_default") -> Path:
+def run_decode(base_url: str, tmp_path: Path) -> Path:
     """偽のサーバーに対して decode を 10 試行流し、できた計測ランのディレクトリを返す。"""
     targets = tmp_path / "targets.toml"
     targets.write_text(
@@ -27,8 +20,6 @@ def run_decode(base_url: str, tmp_path: Path, *, thinking: str = "server_default
     profiles = tmp_path / "profiles.toml"
     profiles.write_text(
         "[profiles.test]\nmin_successes = 1\n"
-        "[profiles.test.sampling]\n"
-        f'thinking = "{thinking}"\n'
         "[profiles.test.decode]\ntrials = 10\nwarmup_trials = 0\nmax_tokens = 256\n",
         encoding="utf-8",
     )
@@ -104,56 +95,3 @@ def test_thinking_with_an_answer_is_counted_as_thinking_observed_not_thinking_on
         assert counts["text_arrived"] == 10
         assert counts["thinking_observed"] == 10
         assert counts["thinking_only"] == 0
-
-
-# --- issue #131: thinking = "off" なのに思考が出た試行の警告 -----------------
-
-
-def test_off_thinking_with_thinking_in_the_response_warns_with_a_count(
-    fake_server: FakeServer, tmp_path: Path
-) -> None:
-    """`thinking = "off"` を指定したのに思考が出た試行の件数が、条件ごとに警告として
-    `summary.json` と `summary.md` に出る (issue #131 のコメント。#130 の
-    `thinking_observed` を使う)。"""
-    fake_server.set_response(thinking_response("考え中", answer="答え"))
-    run_dir = run_decode(fake_server.base_url, tmp_path, thinking="off")
-    summary = Summary.model_validate_json((run_dir / "summary.json").read_text(encoding="utf-8"))
-
-    md = (run_dir / "summary.md").read_text(encoding="utf-8")
-    for condition in ("decode/json/en", "decode/json/ja"):
-        assert summary.output_phases[condition]["thinking_observed"] == 10
-        warnings = [w for w in summary.phase_warnings if w.startswith(f"{condition}:")]
-        assert warnings, f"{condition} に警告が付いていない"
-        assert all("本文未到達" not in w and "段階別計測情報が不明" not in w for w in warnings), (
-            warnings
-        )
-        assert any("10" in w for w in warnings), warnings
-        for warning in warnings:
-            assert warning in md
-
-
-def test_off_thinking_with_a_text_only_response_has_no_thinking_warning(
-    fake_server: FakeServer, tmp_path: Path
-) -> None:
-    """`thinking = "off"` でも、実際に思考が出なかった試行には、思考の警告が付かない。"""
-    fake_server.set_response(text_response("ok"))
-    run_dir = run_decode(fake_server.base_url, tmp_path, thinking="off")
-    summary = Summary.model_validate_json((run_dir / "summary.json").read_text(encoding="utf-8"))
-
-    for condition in ("decode/json/en", "decode/json/ja"):
-        assert summary.output_phases[condition]["thinking_observed"] == 0
-    assert summary.phase_warnings == []
-
-
-def test_server_default_thinking_with_thinking_in_the_response_has_no_off_warning(
-    fake_server: FakeServer, tmp_path: Path
-) -> None:
-    """`server_default` では、思考が出ても「off なのに思考が出た」警告は付かない
-    (`thinking_observed` の数そのものは、既存の別の試験がすでに固定している)。"""
-    fake_server.set_response(thinking_response("考え中", answer="答え"))
-    run_dir = run_decode(fake_server.base_url, tmp_path, thinking="server_default")
-    summary = Summary.model_validate_json((run_dir / "summary.json").read_text(encoding="utf-8"))
-
-    for condition in ("decode/json/en", "decode/json/ja"):
-        assert summary.output_phases[condition]["thinking_observed"] == 10
-    assert summary.phase_warnings == []

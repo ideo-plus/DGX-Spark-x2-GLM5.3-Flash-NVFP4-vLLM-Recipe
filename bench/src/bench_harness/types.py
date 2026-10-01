@@ -154,9 +154,8 @@ Lang = Literal["en", "ja"]
 Tier = Literal["primary", "reference"]
 """主な結果か、参考か (4.4)。"""
 
-ThinkingMode = Literal["server_default", "off"]
-"""thinking の設定。「対象サーバーの既定」と、思考オフの比較用の「オフ」の 2 つを選べる
-(タスク 8.4、issue #131 で `off` を足した)。
+ThinkingMode = Literal["server_default"]
+"""thinking の設定。選べるのは「対象サーバーの既定」だけである (タスク 8.4)。
 
 2026-09-20 に実機 (head の 8001 番の glm-5.3-flash、EXL3 の構成) で確かめたところ、
 `/v1/messages` からは thinking を切り替えられなかった。Anthropic の形の
@@ -170,29 +169,10 @@ ThinkingMode = Literal["server_default", "off"]
 `vllm/entrypoints/openai/chat_completion/protocol.py:584-586` の `output_config.effort` には
 `"none"` が無く、`enable_thinking` は `/v1/messages` 経由では常に `True` になる。
 `vllm/parser/glm47_moe.py:192-199, 222-224` の `chat_template_kwargs.enable_thinking=false` は、
-思考を止めずに全出力を「本文」として返す誤動作を起こすため、渡し方として採用できない
-(重みに付いている公式のチャットテンプレートが `enable_thinking` を参照しないため、
-`vllm/renderers/hf.py:674-682,709-737` の絞り込みで描画に届く前に落ち、パーサーだけが
-思考を切ってしまう)。
+思考を止めずに全出力を「本文」として返す誤動作を起こすため、渡し方として採用できない。
 
-**`off` が効く条件 (issue #131)**: `enable_thinking`/`thinking` を読むチャットテンプレート
-(`serving/payload/chat-template/glm53-flash-thinking-toggle.jinja`。`--chat-template` で指す
-構成、例 `glm53-tp2-mtp3-marlin-thinking-toggle`) を相手にしたときだけ意味がある。`off` の
-とき、`/v1/messages` の要求に `chat_template_kwargs.enable_thinking = false` を載せる
-(`vllm/entrypoints/anthropic/protocol.py:171` がそのまま `chat_template_kwargs` を渡す)。
-テンプレートがこの変数を読めば、プロンプトの側の生成の書き出しが `<think></think>` になり
-(モデルはその後ろから本文を生成する)、`glm47` のパーサー (`vllm/parser/glm47_moe.py:192-198`)
-は思考のブロックを作らず、出力全体を本文として返す (`vllm/parser/glm47_moe.py:95-132`、
-`:217-223`)。パーサーは要求の `chat_template_kwargs` だけで思考の有無を決め、テンプレートには
-依存しない。公式テンプレートの構成 (`server_default` の既定の相手) に `off` を送っても、
-パーサーは同じく思考のブロックを作らないが、テンプレートが変数を読まないので、プロンプトは
-`<think>` を開いたままになり、思考が本文に漏れる (制限として `bench/README.md` に書く)。
-
-`glm47` の構成では、`off` のとき、要約の警告 (`analysis/summarize.py` の `_phase_conditions`)
-は出ない。この警告が効くのは、`off` でも思考を分けて返す相手 (`enable_thinking` を読まない
-パーサーのサーバーなど) のときだけである。思考が本文に漏れていないことは、相手が変数を読む
-テンプレートの構成であることで担保する (対象の定義、`serve status`、`serve thinking` の
-6 番目と 1 番目の `output_tokens` の比べで確かめる)。
+切り替えが効く構成が見つかったら、その構成で実測した渡し方と一緒に、選択肢を足し直す
+こと (要求の組み立てと、送った本文が変わることを確かめる試験も、そのときに足す)。
 """
 
 SandboxRuntime = Literal["auto", "podman", "docker"]

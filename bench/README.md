@@ -83,7 +83,7 @@ docker build -t bench-sandbox:py3.13-numpy2.5.3 sandbox/
 docker image inspect bench-sandbox:py3.13-numpy2.5.3 --format '{{.Id}}'
 ```
 
-**出てきた識別子 (`sha256:…`) を、`config/profiles.toml` の全 5 設定の `sandbox.image_digest` に書き写すこと。**
+**出てきた識別子 (`sha256:…`) を、`config/profiles.toml` の全 4 設定の `sandbox.image_digest` に書き写すこと。**
 採点の側は、手元のイメージの識別子がこの値と合わなければ、使えないものとして扱う (合わないイメージでは
 動かさない)。**作り直すと識別子が変わる**ので、そのたびに書き換える。
 
@@ -95,7 +95,7 @@ Podman を使うなら、`docker` を `podman` に読み替える。`profiles.to
 | ファイル | 中身 |
 |---|---|
 | `config/targets.toml` | 対象サーバーの定義 (接続先、モデルの名前、メモ、認証の情報の環境変数の名前、内部の指標の名前の上書き) |
-| `config/profiles.toml` | 計測の設定。`probe` (探り)、`fast` (確認)、`fast-thinking-off` (`fast` と同じで思考オフの比較用)、`quick` (開発中の素早い確認・記録の最小)、`full` (公開する結果を作る本番) の 5 つ |
+| `config/profiles.toml` | 計測の設定。`probe` (探り)、`fast` (確認)、`quick` (開発中の素早い確認・記録の最小)、`full` (公開する結果を作る本番) の 4 つ |
 
 **認証の情報は、値ではなく、値を入れた環境変数の名前を `api_key_env` に書く。** 値は実行時に読み、
 生データにも要約にも標準エラーにも出さない。`targets.toml` に実在する秘密の値を書いてはならない。
@@ -118,14 +118,11 @@ iteration_tokens_sum = "custom:iteration_tokens_sum"  # Histogram は _sum と _
 iteration_tokens_count = "custom:iteration_tokens_count"
 ```
 
-### thinking は、対象サーバーの既定 (`server_default`) か、比較用のオフ (`off`)
+### thinking は、対象サーバーの既定のまま
 
-`sampling.thinking` に書けるのは `"server_default"` (既定) か `"off"` (issue #131) の
-どちらかである。2026-09-20 に、head の 8001 番の glm-5.3-flash (EXL3 の構成) で、`/v1/messages` に
-5 通りの渡し方 (何も渡さない、Anthropic の形の `thinking: {type: enabled, budget_tokens}`、同じ形の
-`disabled`、`chat_template_kwargs.enable_thinking` の true と false) を試したが、出力は 5 通りとも
-同じだった。これは当時の構成での結果で、別の構成では効く可能性がある (くわしくは
-`docs/decisions/0001-bench-harness-measurement-method.md`)。深さを切り替えて比べたいときは、
+`sampling.thinking` に書けるのは `"server_default"` だけである。`/v1/messages` から thinking を
+切り替える渡し方を、2026-09-20 に実機で 5 通り試したが、どれも出力を変えなかった (くわしくは
+`docs/decisions/0001-bench-harness-measurement-method.md`)。thinking を切り替えて比べたいときは、
 対象サーバーの側 (起動の引数やチャットテンプレート) で切り替えた構成を、別の名前の対象として
 `targets.toml` に足して測ること。
 
@@ -135,38 +132,15 @@ iteration_tokens_count = "custom:iteration_tokens_count"
 黙って捨てられる。`protocol.py:114-118` と `vllm/entrypoints/openai/chat_completion/protocol.py:584-586`
 の `output_config.effort` には `"none"` が無く、`enable_thinking = reasoning_effort != "none"` は
 `/v1/messages` 経由では常に `True` になる (深さの low/high は変えられるが、切ることはできない)。
-
-**`off` は、`chat_template_kwargs.enable_thinking = false` を送る (issue #131)。** `off` の
-とき、`/v1/messages` の要求に `"chat_template_kwargs": {"enable_thinking": false}` を載せ、
-`"server_default"` では何も載せない (既存の契約のまま)。`vllm/parser/glm47_moe.py:192-199,
-222-224` の `Glm47MoeParser` は `chat_template_kwargs` の `enable_thinking`/`thinking` を読むが、
-GLM-5.3-Flash のチャットテンプレート (重みに付いているもの) はその変数を読まずに無条件で
-`<think>` を開く。したがって **`off` は、`enable_thinking`/`thinking` を読むチャットテンプレート
-の構成 (`--chat-template` で差し替えた構成。例: `glm53-tp2-mtp3-marlin-thinking-toggle`) を
-相手にしたときだけ意味がある**。公式のチャットテンプレートの構成 (`server_default` の既定の
-相手) に `off` を送ると、思考は本文に漏れる (計測が歪む)。
-
-**制限 (実装では解いていない)**:
-
-1. `glm47` のパーサーは、要求の `chat_template_kwargs` だけで思考の有無を決め、テンプレートに
-   依存しない。`off` では思考のブロックを作らず、出力全体を本文として返す
-   (`vllm/parser/glm47_moe.py:192-198`、`:95-132`、`:217-223`)。したがって `glm47` の構成では、
-   `off` を指定したのに思考が出た試行の警告 (`summary.md`) は、`off` のとき出ない。この警告が
-   効くのは、`off` でも思考を分けて返す相手 (`enable_thinking` を読まないパーサーのサーバー
-   など) のときだけである。思考が本文に漏れていないことは、相手が変数を読むテンプレートの
-   構成であることで担保する。確かめる手段は、対象の定義、`serve status`、`serve thinking` の
-   6 番目と 1 番目の `output_tokens` の比べである
-2. `serve thinking` の `chat_template_off` の通りも、`thinking_chars` は常に 0 になる (公式
-   テンプレートの構成でも、思考オフのテンプレートの構成でも)。効いたかどうかは、
-   `output_tokens` が 1 番目 (`none`) より減るかで読む
-3. `thinking = "off"` だけを、`output_config` (`reasoning_effort`) と一緒に送ると食い違う。
-   vLLM は `reasoning_effort` があり要求が `enable_thinking` を持たなければ
-   `enable_thinking = True` を足してしまう
-   (`vllm/entrypoints/openai/chat_completion/protocol.py:584-586`)。`bench` と `serve thinking`
-   は、どちらも `chat_template_kwargs.enable_thinking = false` を送るので、この不一致には
-   当たらない
-4. `off` は、変数を読むチャットテンプレートの構成を相手にしたときだけ意味がある。公式の
-   チャットテンプレートの構成には効かない (上の「相手にしたときだけ意味がある」を参照)
+`vllm/parser/glm47_moe.py:192-199, 222-224` の `Glm47MoeParser` は `chat_template_kwargs` の
+`enable_thinking`/`thinking` を読むが、GLM-5.3-Flash のチャットテンプレートはその変数を読まずに
+無条件で `<think>` を開くため (`docs/decisions/0004-vllm-baseline-messages-api.md`)、
+`enable_thinking=false` を送っても思考は止まらず、パーサーが思考の中身をそのまま「本文」として
+返してしまう。これは渡し方として採用できない (計測が歪む)。サーバー側の口は
+`vllm/entrypoints/launchers/cli_args.py:80-82, 93-98` の `--default-chat-template-kwargs` があるが、
+上記と同じ理由で深さ (low/high) までしか変えられない。生成プロンプトで `<think>` を開かない
+チャットテンプレートに `--chat-template` で差し替えることが、思考を止める唯一の候補だが未検証で
+あり (`glm47` パーサーとの整合も未確認)、今回は構成を変更していない。
 
 ## コマンド
 
@@ -315,10 +289,7 @@ uv run bench run --target candidate-d --suite quality --no-download
 
 要約の表の「思考あり」は、思考のブロックに1文字以上が届いた試行の数であり、本文の有無を問わない
 (思考のみの試行も、思考のあとに本文が届いた試行も数える。issue #130)。`thinking=server_default`
-では、これが対象サーバーの既定でどれだけ思考が出たかの記録になる。`thinking=off` では、これが
-1件以上あると、条件ごとに件数つきの警告として`summary.json`・`summary.md`に出る (issue #131。
-`glm47`の構成では`off`のときこの警告は出ない。効くのは、`off`でも思考を分けて返す相手のときだけ
-である。上の「制限」の1番目を参照)。
+では、これが対象サーバーの既定でどれだけ思考が出たかの記録になる。
 
 ```bash
 # 終了した出力を同じサーバーで再計数する。既定では送らない追加要求を有効にする
@@ -329,9 +300,8 @@ uv run bench run --target candidate-d --suite decode --profile probe --set decod
 ```
 
 `--set decode.max_tokens=N` の上限は**思考と本文の合計**に適用される。上限を増やしても本文到達は
-保証されない。既定の `probe`・`fast`・`quick`・`full`、試行数、6条件の生成指示、これらの設定の
-`thinking=server_default` は変更しない。思考を無効化して比べたいときは、`--set` で上書きせず、
-専用の設定 (`fast-thinking-off`。issue #131) を選ぶこと。
+保証されない。既定の `probe`・`fast`・`quick`・`full`、試行数、6条件の生成指示、
+`thinking=server_default` は変更しない。思考を無効化できるという前提では測らない。
 
 再計数は生文字列を `/tokenize` に送り、`add_special_tokens=false` で会話の包みを加えずに数える。
 `thinking_retokenized_tps`・`text_retokenized_tps` と `count_source=retokenized` で区別する。

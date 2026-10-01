@@ -332,11 +332,10 @@ def test_requests_are_recorded_even_when_a_fault_is_returned(fake_vllm: FakeVllm
     assert fake_vllm.call_count("/metrics") == 1
 
 
-def test_six_thinking_request_shapes_are_recorded_with_only_expected_fields(
+def test_five_thinking_request_shapes_are_recorded_with_only_expected_fields(
     fake_vllm: FakeVllm,
 ) -> None:
-    """4.6 が送る 6 通りの要求の形が、そのまま記録から読めることを確かめる (期待した項目だけ。
-    issue #131 で `chat_template_off` (6 番目) を足した)。"""
+    """4.6 が送る 5 通りの要求の形が、そのまま記録から読めることを確かめる (期待した項目だけ)。"""
     shapes: list[dict[str, Any]] = [
         {"model": "glm-5-3-flash", "messages": [], "temperature": 0},
         {
@@ -363,18 +362,12 @@ def test_six_thinking_request_shapes_are_recorded_with_only_expected_fields(
             "temperature": 0,
             "chat_template_kwargs": {"clear_thinking": True},
         },
-        {
-            "model": "glm-5-3-flash",
-            "messages": [],
-            "temperature": 0,
-            "chat_template_kwargs": {"enable_thinking": False},
-        },
     ]
     for shape in shapes:
         httpx.post(f"{fake_vllm.base_url}/v1/messages", json=shape, timeout=TIMEOUT)
 
     recorded = fake_vllm.requests_for("/v1/messages")
-    assert len(recorded) == 6
+    assert len(recorded) == 5
     for shape, call in zip(shapes, recorded, strict=True):
         assert call.body == shape
         assert set(call.body or {}) == set(shape)

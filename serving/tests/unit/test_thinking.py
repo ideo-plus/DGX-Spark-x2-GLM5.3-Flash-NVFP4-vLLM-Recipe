@@ -2,11 +2,11 @@
 
 確かめること (design.md 「確認 › thinking」、tasks.md 4.6 の完了の状態、requirements 9.2、10.5):
 
-- 6 通り (`none`、`output_config_low`、`chat_template_low`、`output_config_medium`、
-  `clear_thinking`、`chat_template_off`) の要求の本文が、それぞれ「期待した項目だけ」を持つ
-  (共通の 5 項目 + 通りごとに 0 か 1 個の追加の項目。issue #131 で `chat_template_off` を足した)
-- 6 通りを、回ごとに 1〜6 の順で送る (`trials` 回ぶん)
-- 6 通りとも、同じ合成の会話 (`messages`) を送る。呼ぶ側は `messages=` で差し替えられる
+- 5 通り (`none`、`output_config_low`、`chat_template_low`、`output_config_medium`、
+  `clear_thinking`) の要求の本文が、それぞれ「期待した項目だけ」を持つ (共通の 5 項目 + 通り
+  ごとに 0 か 1 個の追加の項目)
+- 5 通りを、回ごとに 1〜5 の順で送る (`trials` 回ぶん)
+- 5 通りとも、同じ合成の会話 (`messages`) を送る。呼ぶ側は `messages=` で差し替えられる
 - 記録するのは thinking の文字数、`input_tokens`/`output_tokens`、`stop_reason`、HTTP の状態
   だけで、応答の本文・thinking の文・誤りの応答の本文は、結果のファイルにも `detail` にも
   `report` にも入らない
@@ -50,7 +50,6 @@ _EXPECTED_KEYS = {
     "chat_template_low": _COMMON_KEYS | {"chat_template_kwargs"},
     "output_config_medium": _COMMON_KEYS | {"output_config"},
     "clear_thinking": _COMMON_KEYS | {"chat_template_kwargs"},
-    "chat_template_off": _COMMON_KEYS | {"chat_template_kwargs"},
 }
 _VARIANT_ORDER = (
     "none",
@@ -58,12 +57,11 @@ _VARIANT_ORDER = (
     "chat_template_low",
     "output_config_medium",
     "clear_thinking",
-    "chat_template_off",
 )
 
 
 def variant_of(body: dict[str, Any] | None) -> str:
-    """記録した要求の本文から、6 通りのどれかを見分ける (試験専用。実装の内部は見ない)。"""
+    """記録した要求の本文から、5 通りのどれかを見分ける (試験専用。実装の内部は見ない)。"""
     if body is None:
         return "unknown"
     if "output_config" in body:
@@ -75,8 +73,6 @@ def variant_of(body: dict[str, Any] | None) -> str:
             return "chat_template_low"
         if ctk.get("clear_thinking") is True:
             return "clear_thinking"
-        if ctk.get("enable_thinking") is False:
-            return "chat_template_off"
     return "none"
 
 
@@ -122,7 +118,7 @@ class _InterruptingTransport(httpx.BaseTransport):
 def test_sends_the_expected_number_of_requests_with_exact_body_keys(
     tmp_path: Path, fake_vllm: FakeVllm
 ) -> None:
-    """6 通り x `trials` 回ぶんの要求が届き、本文が「期待した項目だけ」を持つ (issue #131)。"""
+    """5 通り x `trials` 回ぶんの要求が届き、本文が「期待した項目だけ」を持つ (完了の状態)。"""
     outcome = th.run_thinking(
         base_url=fake_vllm.base_url,
         model=MODEL,
@@ -131,15 +127,8 @@ def test_sends_the_expected_number_of_requests_with_exact_body_keys(
     )
 
     sent = fake_vllm.requests_for("/v1/messages")
-    assert len(sent) == 6 * th.DEFAULT_TRIALS
-    assert len(outcome.trials) == 6 * th.DEFAULT_TRIALS
-    chat_template_off_bodies = [
-        request.body for request in sent if variant_of(request.body) == "chat_template_off"
-    ]
-    assert len(chat_template_off_bodies) == th.DEFAULT_TRIALS
-    for body in chat_template_off_bodies:
-        assert body is not None
-        assert body["chat_template_kwargs"] == {"enable_thinking": False}
+    assert len(sent) == 5 * th.DEFAULT_TRIALS
+    assert len(outcome.trials) == 5 * th.DEFAULT_TRIALS
     for request in sent:
         body = request.body
         assert body is not None, "要求の本文が JSON として届いていない"
@@ -174,7 +163,7 @@ def test_sends_variants_round_robin_in_order(tmp_path: Path, fake_vllm: FakeVllm
 def test_uses_the_same_conversation_for_every_variant_in_a_round(
     tmp_path: Path, fake_vllm: FakeVllm
 ) -> None:
-    """6 通りとも同じ会話を送る (「同じ入力」)。会話は 3 発話、assistant は thinking と text の
+    """5 通りとも同じ会話を送る (「同じ入力」)。会話は 3 発話、assistant は thinking と text の
     両方のブロックを持つ (過去の thinking を持つ会話)。"""
     th.run_thinking(
         base_url=fake_vllm.base_url,
@@ -240,7 +229,7 @@ def test_trials_controls_the_total_number_of_requests(
         report=io.StringIO(),
     )
 
-    assert len(fake_vllm.requests_for("/v1/messages")) == 6 * trials
+    assert len(fake_vllm.requests_for("/v1/messages")) == 5 * trials
 
 
 # --- 記録すること (requirements 10.5) ------------------------------------------
@@ -252,7 +241,7 @@ def test_never_persists_or_reports_response_bodies(tmp_path: Path, fake_vllm: Fa
     """応答の本文・thinking の文・誤りの応答の本文が、report にも結果にも出ない (requirements
     10.5)。1 回目は誤りの本文に目印を入れ、それ以外は正常な応答の thinking と text に目印を
     入れる。"""
-    faults = [Fault()] * (6 * th.DEFAULT_TRIALS)
+    faults = [Fault()] * (5 * th.DEFAULT_TRIALS)
     faults[0] = Fault(status=500, body=json.dumps({"error": {"message": _MARKER}}))
     fake_vllm.set_messages_fault_sequence(faults)
     fake_vllm.set_messages_factory(lambda _body: MessagesReply(text=_MARKER, thinking=_MARKER))
@@ -345,15 +334,15 @@ def test_http_failure_is_recorded_and_the_run_continues(
     tmp_path: Path, fake_vllm: FakeVllm
 ) -> None:
     """1 回の失敗 (2xx 以外) は、値の欠けた `ThinkingTrial` になり、残りの回は続く。"""
-    faults = [Fault()] * 18
-    faults[7] = Fault(status=500)  # 2 回目の output_config_low (6 通り分の 2 巡目、0 始まりで 7)
+    faults = [Fault()] * 15
+    faults[6] = Fault(status=500)  # 2 回目の output_config_low (0 始まりで 5+1=6)
     fake_vllm.set_messages_fault_sequence(faults)
 
     outcome = th.run_thinking(
         base_url=fake_vllm.base_url, model=MODEL, var_root=tmp_path / "var", report=io.StringIO()
     )
 
-    assert len(fake_vllm.requests_for("/v1/messages")) == 18
+    assert len(fake_vllm.requests_for("/v1/messages")) == 15
     failed = [
         trial
         for trial in outcome.trials
@@ -450,11 +439,6 @@ def _table(**overrides: list[MessagesReply]) -> dict[str, list[MessagesReply]]:
             MessagesReply(thinking="a" * 11, output_tokens=21, input_tokens=100),
             MessagesReply(thinking="a" * 12, output_tokens=22, input_tokens=100),
         ],
-        "chat_template_off": [
-            MessagesReply(thinking="a" * 10, output_tokens=20, input_tokens=100),
-            MessagesReply(thinking="a" * 11, output_tokens=21, input_tokens=100),
-            MessagesReply(thinking="a" * 12, output_tokens=22, input_tokens=100),
-        ],
     }
     base.update(overrides)
     return base
@@ -490,9 +474,6 @@ def test_effective_is_true_when_the_second_variant_clearly_separates(
 def test_effective_is_false_when_neither_variant_separates(
     tmp_path: Path, fake_vllm: FakeVllm
 ) -> None:
-    """2 対 1、3 対 1 が重なれば `effective` は `False` になり、5 対 1 の部分に「変わらなかった」が
-    出る。6 対 1 も既定値で同じ文言を出すので、`detail` 全体ではなく「5 対 1:」で始まる部分だけを
-    見る。"""
     table = _table()  # 2、3 とも baseline と重なり、5 の input_tokens も変わらない
     fake_vllm.set_messages_factory(sequenced_factory(table))
 
@@ -501,9 +482,7 @@ def test_effective_is_false_when_neither_variant_separates(
     )
 
     assert outcome.effective is False
-    fifth = [part for part in outcome.detail.split("。") if part.startswith("5 対 1:")]
-    assert len(fifth) == 1
-    assert "変わらなかった (期待と違う)" in fifth[0]
+    assert "変わらなかった" in outcome.detail
 
 
 def test_effective_is_none_when_a_variant_has_a_missing_value(
@@ -511,8 +490,8 @@ def test_effective_is_none_when_a_variant_has_a_missing_value(
 ) -> None:
     """2 対 1 が値の欠けで判定できず、3 対 1 は判定できて重なる: 効いたとは言えるが判定できたと
     は言えないので `None`。"""
-    faults = [Fault()] * 18
-    faults[7] = Fault(status=500)  # 2 回目の output_config_low (6 通り分の 2 巡目)
+    faults = [Fault()] * 15
+    faults[6] = Fault(status=500)  # 2 回目の output_config_low
     fake_vllm.set_messages_fault_sequence(faults)
     fake_vllm.set_messages_factory(
         lambda _body: MessagesReply(thinking="a" * 10, output_tokens=20, input_tokens=100)
@@ -559,50 +538,6 @@ def test_effective_is_none_when_the_lower_group_was_truncated_by_max_tokens(
     assert outcome.effective is None
     assert "打ち切られた回を含む" in outcome.detail
     assert "2 対 1" in outcome.detail
-
-
-def test_detail_reports_the_sixth_comparison_based_on_output_tokens_only(
-    tmp_path: Path, fake_vllm: FakeVllm
-) -> None:
-    """6 対 1 (`chat_template_off`) は `output_tokens` だけで判定され、`effective` を
-    左右しない (issue #131、決めごとの 6)。`output_config_low`/`chat_template_low` は
-    `none` と重なるので、`effective` は `False` になるが、6 番目の
-    `output_tokens` は `none` より低く、6 対 1 の説明文には「減った」が出る。"""
-    table = _table(
-        chat_template_off=[
-            MessagesReply(thinking="a" * 30, output_tokens=5, input_tokens=100),
-            MessagesReply(thinking="a" * 31, output_tokens=6, input_tokens=100),
-            MessagesReply(thinking="a" * 32, output_tokens=7, input_tokens=100),
-        ],
-    )
-    fake_vllm.set_messages_factory(sequenced_factory(table))
-
-    outcome = th.run_thinking(
-        base_url=fake_vllm.base_url, model=MODEL, var_root=tmp_path / "var", report=io.StringIO()
-    )
-
-    assert outcome.effective is False  # 2 対 1 も 3 対 1 も重なる (_table() の既定値)
-    assert "6 対 1" in outcome.detail
-    assert "output_tokens" in outcome.detail
-    assert "減った (期待どおり)" in outcome.detail
-
-
-def test_detail_reports_the_sixth_comparison_as_unchanged_when_output_tokens_overlap(
-    tmp_path: Path, fake_vllm: FakeVllm
-) -> None:
-    """6 対 1 の `output_tokens` が `none` と重なれば、6 対 1 の部分に「変わらなかった」が出る
-    (`chat_template_off` の既定値は `none` と同じ範囲)。5 対 1 も既定値で同じ文言を出すので、
-    `detail` 全体ではなく「6 対 1:」で始まる部分だけを見る。"""
-    table = _table()  # chat_template_off は none と同じ範囲 (_table() の既定値)
-    fake_vllm.set_messages_factory(sequenced_factory(table))
-
-    outcome = th.run_thinking(
-        base_url=fake_vllm.base_url, model=MODEL, var_root=tmp_path / "var", report=io.StringIO()
-    )
-
-    sixth = [part for part in outcome.detail.split("。") if part.startswith("6 対 1:")]
-    assert len(sixth) == 1
-    assert "変わらなかった (期待と違う)" in sixth[0]
 
 
 # --- 引数の確かめ (決めごとの 9) ------------------------------------------------
@@ -747,5 +682,5 @@ def test_result_is_written_under_a_utc_stamped_thinking_directory(
     assert expected.is_file()
     payload = json.loads(expected.read_text(encoding="utf-8"))
     assert payload["model"] == MODEL
-    assert len(payload["trials"]) == 6
+    assert len(payload["trials"]) == 5
     assert payload["effective"] == outcome.effective

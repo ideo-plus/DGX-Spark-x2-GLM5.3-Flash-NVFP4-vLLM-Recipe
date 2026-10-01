@@ -411,15 +411,12 @@ def test_real_profiles_file_loads_quick_and_full() -> None:
     assert full.quality.code_problem_limit is None
 
 
-@pytest.mark.parametrize("value", ["on", "enabled"])
-def test_thinking_rejects_values_other_than_server_default_or_off(
-    tmp_path: Path, value: str
-) -> None:
-    """thinking は、対象サーバーの既定 (`server_default`) か、テンプレートの切り替えを頼む
-    `off` (issue #131) しか選べない。それ以外の値は、まだ渡し方が決まっていない。
+@pytest.mark.parametrize("value", ["on", "off", "enabled"])
+def test_thinking_can_only_be_the_server_default(tmp_path: Path, value: str) -> None:
+    """thinking は、対象サーバーの既定しか選べない (task 8.4)。
 
-    2026-09-20 に実機で、`/v1/messages` からは切り替えられないと確かめた (task 8.4)。効かない
-    選択肢を受け付けると、「設定では切り替えたのに、実際には変わっていない」計測が黙って残る。
+    2026-09-20 に実機で、`/v1/messages` からは切り替えられないと確かめた。効かない選択肢を
+    受け付けると、「設定では切り替えたのに、実際には変わっていない」計測が黙って残る。
     """
     profiles_path = tmp_path / "profiles.toml"
     profiles_path.write_text(
@@ -432,14 +429,9 @@ def test_thinking_rejects_values_other_than_server_default_or_off(
     assert "profiles.tiny.sampling.thinking" in str(exc_info.value)
 
 
-def test_the_shipped_profiles_use_the_server_default_thinking_except_fast_thinking_off() -> None:
-    """`fast-thinking-off` だけが `off` で、ほかの構成は対象サーバーの既定のまま (issue #131)。"""
+def test_the_shipped_profiles_use_the_server_default_thinking() -> None:
     profiles = c.load_profiles()
-
-    assert profiles["fast-thinking-off"].sampling.thinking == "off"
-    others = {name: profile for name, profile in profiles.items() if name != "fast-thinking-off"}
-    assert others, "fast-thinking-off 以外の設定が 1 つもない"
-    assert {profile.sampling.thinking for profile in others.values()} == {"server_default"}
+    assert {profile.sampling.thinking for profile in profiles.values()} == {"server_default"}
 
 
 # --- 計測の 3 段 (issue #39) -------------------------------------------------
@@ -496,19 +488,6 @@ def test_real_profiles_include_fast_derived_from_quick() -> None:
     }
     excluded = {"name", "decode", "concurrency", "quality", "prefill"}
     assert fast.model_dump(exclude=excluded) == quick.model_dump(exclude=excluded)
-
-
-def test_real_profiles_include_fast_thinking_off_derived_from_fast() -> None:
-    """`fast-thinking-off` は `fast` を元に、思考オフの比較用に `sampling.thinking` だけを
-    変えた設定 (issue #131、K11)。"""
-    profiles = c.load_profiles()
-    toggle, fast = profiles["fast-thinking-off"], profiles["fast"]
-
-    assert c.select_profile("fast-thinking-off").name == "fast-thinking-off"
-    assert toggle.sampling.thinking == "off"
-    assert fast.sampling.thinking == "server_default"
-    excluded: dict[str, Any] = {"name": True, "sampling": {"thinking"}}
-    assert toggle.model_dump(exclude=excluded) == fast.model_dump(exclude=excluded)
 
 
 _EXPECTED_QUICK: dict[str, Any] = {

@@ -1277,15 +1277,13 @@ def test_watch_finding_has_the_two_findings() -> None:
     assert set(get_args(t.WatchFinding)) == {"unresponsive", "stalled"}
 
 
-def test_thinking_variant_has_the_six_ways() -> None:
-    """issue #131 で、思考オフの通り (`chat_template_off`) が 6 番目として足された。"""
+def test_thinking_variant_has_the_five_ways() -> None:
     assert set(get_args(t.ThinkingVariant)) == {
         "none",
         "output_config_low",
         "chat_template_low",
         "output_config_medium",
         "clear_thinking",
-        "chat_template_off",
     }
 
 
