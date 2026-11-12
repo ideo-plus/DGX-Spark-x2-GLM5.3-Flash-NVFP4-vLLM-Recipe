@@ -1,6 +1,6 @@
 # 作業の原則
 
-- 返答と文書は日本語にする。`.kiro/specs/`、`amadeus/`、`openspec/` の Markdown も日本語にする。
+- 返答と文書は日本語にする。`.kiro/specs/`、`aidlc/`、`openspec/` の Markdown も日本語にする。
 - 次の行動を選択肢で示す場合は、重複のない選択肢とし、推奨を先に置く。
 - GitHub の Pull Request に言及するときはリンクを付ける。
 - worktree を使う場合は、その worktree で `mise trust` を実行する。
